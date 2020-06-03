@@ -1,0 +1,11 @@
+<%= form_with(method: "get", local: true) do %>
+  <%= label_tag(:q, "Search for") %>
+  <%= text_field_tag(:q) %>
+  <%= submit_tag("Search") %>
+<% end %>
+
+<% if @trails %>
+  <% @trails.each do |trail| %>
+    <div><%= trail.name %></div>
+  <% end %>
+<% end %>
