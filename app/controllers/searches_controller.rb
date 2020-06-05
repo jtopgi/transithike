@@ -1,4 +1,7 @@
-class HomesController < ApplicationController
+class SearchesController < ApplicationController
+  def new
+  end
+
   def show
     @trails = nil
     return unless params[:q]

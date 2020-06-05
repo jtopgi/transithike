@@ -3,9 +3,3 @@
   <%= text_field_tag(:q) %>
   <%= submit_tag("Search") %>
 <% end %>
-
-<% if @trails %>
-  <% @trails.each do |trail| %>
-    <div><%= trail.name %></div>
-  <% end %>
-<% end %>
