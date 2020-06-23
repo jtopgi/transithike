@@ -4,7 +4,14 @@ class SearchesController < ApplicationController
   def show
     return unless params[:location]
 
-    coordinates = Geocoder.search(params[:location]).first.coordinates
-    @trails = HikingProjectService.get_trails(coordinates)
+    arrival_time = time_value(params, :datetime)
+
+    @trails = TrailsService.get_trails(location: params[:location], arrival_time: arrival_time)
+  end
+
+  private
+
+  def time_value(hash, field)
+    Time.zone.local(*(1..5).map { |i| hash["#{field}(#{i}i)"] }).to_i
   end
 end
