@@ -32,6 +32,8 @@ gem 'bootsnap', '>= 1.4.2', require: false
 gem 'faraday', '~> 1.0.1'
 # Object geocoding
 gem 'geocoder', '~> 1.6.3'
+# This is a ruby wrapper for the Google Maps api
+gem 'google-maps', '~> 3.0.6'
 
 group :development, :test do
   # Call 'byebug' anywhere in the code to stop execution and get a debugger console

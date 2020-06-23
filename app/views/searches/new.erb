@@ -1,0 +1,7 @@
+<%= form_with url: search_path, method: :get, local: true do |f| %>
+  <%= f.label :location %>
+  <%= f.text_field :location %>
+  <%= f.label :datetime %>
+  <%= f.datetime_select :datetime, {ampm: true, minute_step: 15, discard_year: true} %>
+  <%= f.submit "Submit", name: nil %>
+<% end %>
