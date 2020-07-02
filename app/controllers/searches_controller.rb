@@ -5,6 +5,7 @@ class SearchesController < ApplicationController
     return unless params[:location]
 
     arrival_time = time_value(params, :datetime)
+    byebug
 
     @trails = TrailsService.get_trails(location: params[:location], arrival_time: arrival_time)
   end

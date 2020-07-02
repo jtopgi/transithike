@@ -7,8 +7,11 @@
   </div>
   <div class="form-group">
     <%= f.label :datetime, "Arrival" %>
-    <div class="d-flex">
-      <%= f.datetime_select :datetime, {discard_year: true, ampm: true, minute_step: 15}, class: "form-control" %>
+    <div class="d-block">
+      📆<%= f.date_select :datetime, {discard_year: true}, class: "form-control w-auto custom-select" %>
+    </div>
+    <div class="d-block">
+      🕒<%= f.time_select :datetime, {ampm: true, minute_step: 15}, class: "form-control w-auto custom-select" %>
     </div>
   </div>
   <%= f.submit "Submit", name: nil, class: "btn btn-primary" %>
