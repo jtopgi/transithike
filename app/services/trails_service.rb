@@ -1,13 +1,14 @@
 module TrailsService
-  def self.get_trails(location:, arrival_time:)
-    location = Google::Maps.geocode(location).first
-    trails =
-      HikingProjectService.get_trails(lat: location.latitude, lon: location.longitude)
+  def self.get_trails(origin:, arrival_time:)
+    trails = HikingProjectService.get_trails(
+      lat: origin.latitude, lon: origin.longitude
+    )
 
     trails.each do |trail|
       trailhead = [trail.latitude, trail.longitude].join(',')
       begin
-        trail.duration = Google::Maps.duration(location, trailhead, {arrival_time: arrival_time})
+        options = {arrival_time: arrival_time}
+        trail.duration = Google::Maps.duration(origin, trailhead, options)
       rescue
         next
       end

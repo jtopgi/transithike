@@ -2,11 +2,13 @@ class SearchesController < ApplicationController
   def new;end
 
   def show
-    return unless params[:location]
+    arrival_time = time_value(params, :arrival_time)
+    return unless params[:origin] && arrival_time
 
-    arrival_time = time_value(params, :datetime)
+    origin = Google::Maps.geocode(params[:origin]).first
 
-    @trails = TrailsService.get_trails(location: params[:location], arrival_time: arrival_time)
+    @trails =
+      TrailsService.get_trails(origin: origin, arrival_time: arrival_time)
   end
 
   private

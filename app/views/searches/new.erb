@@ -1,7 +1,18 @@
+<h1>New Search</h1>
+
 <%= form_with url: search_path, method: :get, local: true do |f| %>
-  <%= f.label :location %>
-  <%= f.text_field :location %>
-  <%= f.label :datetime %>
-  <%= f.datetime_select :datetime, {ampm: true, minute_step: 15, discard_year: true} %>
-  <%= f.submit "Submit", name: nil %>
+  <div class="form-group">
+    <%= f.label :origin %>
+    <%= f.text_field :origin, class: "form-control" %>
+  </div>
+  <div class="form-group">
+    <%= f.label :arrival_time, "Arrival" %>
+    <div class="pb-1">
+      📆<%= f.date_select :arrival_time, {discard_year: true}, class: "form-control w-auto custom-select" %>
+    </div>
+    <div>
+      🕒<%= f.time_select :arrival_time, {ampm: true, minute_step: 15}, class: "form-control w-auto custom-select" %>
+    </div>
+  </div>
+  <%= f.submit "Submit", name: nil, class: "btn btn-primary" %>
 <% end %>
