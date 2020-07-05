@@ -22,4 +22,3 @@ $(function () {
 })
 
 function requireAll(r) { r.keys().forEach(r); }
-requireAll(require.context('./searches/', true, /\.js$/));

@@ -8,7 +8,7 @@ module TrailsService
       trailhead = [trail.latitude, trail.longitude].join(',')
       begin
         options = {arrival_time: arrival_time}
-        trail.duration = Google::Maps.duration(location, trailhead, options)
+        trail.duration = Google::Maps.duration(origin, trailhead, options)
       rescue
         next
       end
