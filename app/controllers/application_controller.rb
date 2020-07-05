@@ -4,8 +4,7 @@ class ApplicationController < ActionController::Base
   private
 
   def set_timezone
-    time_zone = request_location.data["timezone"]
-    Time.zone = time_zone
+    Time.zone = request_location.data["timezone"]
   end
 
   def request_location
