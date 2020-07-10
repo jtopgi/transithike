@@ -1,1 +1,16 @@
-<div><%= trail.name %>: <%= trail.duration %></div>
+<div class="card mb-3">
+  <div class="row no-gutters">
+    <div class="col-md-4">
+      <img src="<%= trail.imgMedium %>" class="card-img">
+    </div>
+    <div class="col-md-8">
+      <div class="card-body">
+        <h5 class="card-title"><%= trail.name %></h5>
+        <p class="card-text">
+          <a href="<%= trail.google_maps_url %>">🚌<%= trail.duration %></a>
+        </p>
+        <p class="card-text"><%= trail.summary %></p>
+      </div>
+    </div>
+  </div>
+</div>
