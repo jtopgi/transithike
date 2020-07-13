@@ -6,7 +6,6 @@ module TrailsService
     "travelmode=transit"
   ].join('&')
 
-
   def self.get_trails(origin:, arrival_time:)
     trails = HikingProjectService.get_trails(
       lat: origin.latitude, lon: origin.longitude
