@@ -1,15 +1,30 @@
 <div class="card mb-3">
   <div class="row no-gutters">
-    <div class="col-md-4">
+    <div class="col-4 my-auto">
       <img src="<%= trail.imgMedium %>" class="card-img">
     </div>
-    <div class="col-md-8">
+    <div class="col-8">
       <div class="card-body">
-        <h5 class="card-title"><%= trail.name %></h5>
+        <h5 class="card-title"><%= trail.name %> <small>(<%= trail.location %>)</small></h5>
+        <table class="table table-hover table-sm">
+          <tr>
+            <th>🚌 Travel Time</th>
+            <td><%= trail.duration.text %></td>
+          </tr>
+          <tr>
+            <th>🥾 Length</th>
+            <td><%= trail.length %> miles</td>
+          </tr>
+          <tr>
+            <th>📈 Ascent</th>
+            <td><%= trail.ascent %> feet</td>
+          </tr>
+        </table>
         <p class="card-text">
-          <a href="<%= trail.google_maps_url %>">🚌<%= trail.duration %></a>
+          <%= trail.summary %>
         </p>
-        <p class="card-text"><%= trail.summary %></p>
+        <%= link_to "🧭 Directions", trail.google_maps_url, class: "card-link" %>
+        <%= link_to "🔎 More Info", trail.url, class: "card-link" %>
       </div>
     </div>
   </div>

@@ -8,7 +8,7 @@ class SearchesController < ApplicationController
     origin = Google::Maps.geocode(params[:origin]).first
 
     @trails =
-      TrailsService.get_trails(origin: origin, arrival_time: arrival_time)
+      TrailsService.get_trails(origin: origin, arrival_time: arrival_time, maximum_length: params[:maximum_length])
   end
 
   private
