@@ -34,6 +34,8 @@ gem 'geocoder', '~> 1.6.3'
 gem 'google-maps', '~> 3.0.6'
 # Middleware to handle HTTP caching
 gem 'faraday-http-cache', '~> 2.2'
+# Various middleware for Faraday
+gem 'faraday_middleware', '~> 1.0'
 
 group :development, :test do
   # Call 'byebug' anywhere in the code to stop execution and get a debugger console
