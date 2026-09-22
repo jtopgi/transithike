@@ -1,31 +1,21 @@
-<div class="card mb-3">
-  <div class="row no-gutters">
-    <div class="col-4 my-auto">
-      <img src="<%= trail.imgMedium %>" class="card-img">
-    </div>
-    <div class="col-8">
-      <div class="card-body">
-        <h5 class="card-title"><%= trail.name %> <small>(<%= trail.location %>)</small></h5>
-        <table class="table table-hover table-sm">
-          <tr>
-            <th>🚌 Travel Time</th>
-            <td><%= trail.duration.text %></td>
-          </tr>
-          <tr>
-            <th>🥾 Length</th>
-            <td><%= trail.length %> miles</td>
-          </tr>
-          <tr>
-            <th>📈 Ascent</th>
-            <td><%= trail.ascent %> feet</td>
-          </tr>
-        </table>
-        <p class="card-text">
-          <%= trail.summary %>
-        </p>
-        <%= link_to "🧭 Directions", trail.google_maps_url, class: "card-link" %>
-        <%= link_to "🔎 More Info", trail.url, class: "card-link" %>
-      </div>
-    </div>
+<article class="card mb-3">
+  <div class="card-body">
+    <h2 class="card-title h5"><%= trail.name %></h2>
+    <table class="table table-hover table-sm">
+      <caption class="visually-hidden">Route details for <%= trail.name %></caption>
+      <tbody>
+        <tr>
+          <th scope="row">🚌 Travel Time</th>
+          <td><%= (trail.duration / 60.0).ceil %> minutes</td>
+        </tr>
+        <tr>
+          <th scope="row">🥾 Approximate Length</th>
+          <td><%= number_with_precision(trail.length, precision: 1) %> miles</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="card-text"><%= trail.summary %></p>
+    <%= link_to "🧭 Directions", "https://www.google.com/maps/dir/?#{URI.encode_www_form(api: 1, origin: trail.origin, destination: "#{trail.latitude},#{trail.longitude}", travelmode: "transit")}", class: "card-link", aria: { label: "Transit directions to #{trail.name}" } %>
+    <%= link_to "🔎 OpenStreetMap route", "https://www.openstreetmap.org/relation/#{trail.osm_id}", class: "card-link", aria: { label: "#{trail.name} on OpenStreetMap" } %>
   </div>
-</div>
+</article>

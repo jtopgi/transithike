@@ -1,17 +1,19 @@
 {
   "name": "transithike",
   "private": true,
+  "engines": {
+    "node": ">=22 <25"
+  },
+  "packageManager": "yarn@1.22.22",
+  "scripts": {
+    "build": "esbuild app/javascript/application.js --bundle --sourcemap --outdir=app/assets/builds --public-path=/assets"
+  },
   "dependencies": {
-    "@rails/actioncable": "^6.0.0",
-    "@rails/activestorage": "^6.0.0",
-    "@rails/ujs": "^6.0.0",
-    "@rails/webpacker": "4.2.2",
-    "bootstrap": "^4.5.0",
-    "jquery": "^3.5.1",
-    "popper.js": "^1.16.1"
+    "@popperjs/core": "^2.11.8",
+    "bootstrap": "^5.3.8"
   },
   "version": "0.1.0",
   "devDependencies": {
-    "webpack-dev-server": "^3.11.0"
+    "esbuild": "^0.28.2"
   }
 }
