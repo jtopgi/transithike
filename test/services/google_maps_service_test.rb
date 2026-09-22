@@ -84,6 +84,15 @@ class GoogleMapsServiceTest < ActiveSupport::TestCase
     assert_equal 25, SearchHttp.connection(OverpassService::URL, timeout: 25).options.timeout
   end
 
+  test "connections reject oversized streamed responses" do
+    on_data = SearchHttp.connection(GoogleMapsService::ROUTES_URL).options.on_data
+    env = Faraday::Env.new
+
+    on_data.call("{}", 2, env)
+    assert_equal "{}", env[:streaming_response_body]
+    assert_raises(SearchErrors::UpstreamError) { on_data.call("x", SearchHttp::MAX_RESPONSE_BYTES + 1, env) }
+  end
+
   test "server environment key takes precedence with credentials fallback and missing key error" do
     credentials = Struct.new(:google_maps_key).new("credential-test-key")
     assert_equal "environment-test-key", GoogleMapsService.api_key(environment: { "GOOGLE_MAPS_API_KEY" => "environment-test-key" }, credentials: credentials)

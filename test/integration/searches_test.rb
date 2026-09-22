@@ -34,17 +34,17 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   end
 
   def geocode(body = { status: "OK", results: [{ geometry: { location: { lat: 47, lng: -122 } } }] })
-    @stubs.get(GoogleMapsService::GEOCODING_URL) { [200, {}, JSON.generate(body)] }
+    @stubs.get(URI(GoogleMapsService::GEOCODING_URL).path) { [200, {}, JSON.generate(body)] }
   end
 
   def hiking(elements)
-    @stubs.post(OverpassService::URL) { [200, {}, JSON.generate(elements: elements)] }
+    @stubs.post(URI(OverpassService::URL).path) { [200, {}, JSON.generate(elements: elements)] }
   end
 
   test "successful search renders accessible cards with honest geometry source and no key or photo fallback" do
     geocode
     hiking([route_element(name: "<script>alert(1)</script>")])
-    @stubs.post(GoogleMapsService::ROUTES_URL) { [200, {}, JSON.generate(routes: [{ duration: "601s" }])] }
+    @stubs.post(URI(GoogleMapsService::ROUTES_URL).path) { [200, {}, JSON.generate(routes: [{ duration: "601s" }])] }
     get search_path, params: valid_params.merge(origin: "A & B / 東京")
     assert_response :success
     assert_select "article.card", count: 1
@@ -78,7 +78,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   test "unreachable transit route renders empty state" do
     geocode
     hiking([route_element])
-    @stubs.post(GoogleMapsService::ROUTES_URL) { [200, {}, "{}"] }
+    @stubs.post(URI(GoogleMapsService::ROUTES_URL).path) { [200, {}, "{}"] }
     get search_path, params: valid_params
     assert_response :success
     assert_select "[role=status]", text: /No hiking routes/
@@ -121,7 +121,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   end
 
   test "upstream errors are safe service unavailable responses" do
-    @stubs.get(GoogleMapsService::GEOCODING_URL) { [403, {}, '{"error":"test-only-server-key"}'] }
+    @stubs.get(URI(GoogleMapsService::GEOCODING_URL).path) { [403, {}, '{"error":"test-only-server-key"}'] }
     get search_path, params: valid_params
     assert_response :service_unavailable
     assert_select "[role=alert]", text: /unavailable/
@@ -130,7 +130,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
 
   test "Overpass malformed response is not an empty success" do
     geocode
-    @stubs.post(OverpassService::URL) { [200, {}, "not json"] }
+    @stubs.post(URI(OverpassService::URL).path) { [200, {}, "not json"] }
     get search_path, params: valid_params
     assert_response :service_unavailable
   end
@@ -138,7 +138,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   test "transit timeout is a service failure" do
     geocode
     hiking([route_element])
-    @stubs.post(GoogleMapsService::ROUTES_URL) { raise Faraday::TimeoutError, "sensitive details" }
+    @stubs.post(URI(GoogleMapsService::ROUTES_URL).path) { raise Faraday::TimeoutError, "sensitive details" }
     get search_path, params: valid_params
     assert_response :service_unavailable
     refute_includes response.body, "sensitive details"
