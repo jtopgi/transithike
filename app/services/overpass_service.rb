@@ -5,11 +5,12 @@ module OverpassService
   RADIUS_METERS = 25_000
   MAX_RESULTS = 100
   MAX_TRANSIT_ROUTES = 10
+  CACHE_TTL = 15.minutes
   METERS_PER_MILE = 1609.344
-  Trail = Struct.new(:name, :summary, :latitude, :longitude, :length, :url,
-    :duration, :google_maps_url, keyword_init: true)
+  Trail = Struct.new(:name, :summary, :latitude, :longitude, :length, :osm_id,
+    :duration, :origin, keyword_init: true)
 
-  def self.get_trails(lat:, lon:, maximum_length:, connection: nil)
+  def self.get_trails(lat:, lon:, maximum_length:, connection: nil, cache: Rails.cache)
     unless SearchHttp.coordinates?(lat, lon)
       raise SearchErrors::InvalidInput, "The origin does not have valid coordinates."
     end
@@ -20,18 +21,25 @@ module OverpassService
       out geom #{MAX_RESULTS};
     QUERY
     connection ||= SearchHttp.connection(URL, timeout: 25)
-    data = SearchHttp.json do
-      connection.post do |request|
-        request.body = URI.encode_www_form(data: query)
-        request.headers["Content-Type"] = "application/x-www-form-urlencoded"
+    trails = nil
+    cache_key = "overpass:hiking:v1:#{RADIUS_METERS}:#{MAX_RESULTS}:#{lat.to_f}:#{lon.to_f}"
+    data = cache.fetch(cache_key, expires_in: CACHE_TTL) do
+      response = SearchHttp.json do
+        connection.post do |request|
+          request.body = URI.encode_www_form(data: query)
+          request.headers["Content-Type"] = "application/x-www-form-urlencoded"
+        end
       end
+      unless response["elements"].is_a?(Array) && !response.key?("remark")
+        raise SearchErrors::UpstreamError, "The hiking route provider returned an incomplete response."
+      end
+      # Validate before caching; retain only OSM data, never mutable transit results.
+      trails = response["elements"].first(MAX_RESULTS).filter_map { |element| map_trail(element) }
+      response
     end
-    unless data["elements"].is_a?(Array) && !data.key?("remark")
-      raise SearchErrors::UpstreamError, "The hiking route provider returned an incomplete response."
-    end
+    trails ||= data["elements"].first(MAX_RESULTS).filter_map { |element| map_trail(element) }
 
-    data["elements"].first(MAX_RESULTS).filter_map { |element| map_trail(element) }
-      .select { |trail| trail.length <= maximum_length }
+    trails.select { |trail| trail.length <= maximum_length }
       .sort_by { |trail| distance(lat, lon, trail.latitude, trail.longitude) }
       .first(MAX_TRANSIT_ROUTES)
   end
@@ -69,7 +77,7 @@ module OverpassService
       name: tags["name"].is_a?(String) && !tags["name"].strip.empty? ? tags["name"] : "Unnamed hiking route",
       summary: tags["description"].is_a?(String) ? tags["description"] : "A hiking route mapped by OpenStreetMap contributors.",
       latitude: start["lat"], longitude: start["lon"], length: meters / METERS_PER_MILE,
-      url: "https://www.openstreetmap.org/relation/#{element["id"]}"
+      osm_id: element["id"]
     )
   end
 

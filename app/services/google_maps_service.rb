@@ -6,11 +6,17 @@ module GoogleMapsService
   ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
   Location = Struct.new(:latitude, :longitude, keyword_init: true)
 
-  def self.api_key(environment: ENV, credentials: Rails.application.credentials)
-    key = environment["GOOGLE_MAPS_API_KEY"].presence || credentials.google_maps_key
+  def self.api_key(environment: ENV, credentials: nil)
+    key = environment["GOOGLE_MAPS_API_KEY"].presence
+    return key if key
+
+    credentials ||= Rails.application.credentials
+    key = credentials.google_maps_key
     raise SearchErrors::UpstreamError, "Transit search is not configured. Please try again later." if key.blank?
 
     key
+  rescue ActiveSupport::EncryptedFile::MissingKeyError, ActiveSupport::MessageEncryptor::InvalidMessage
+    raise SearchErrors::UpstreamError, "Transit search is not configured. Please try again later."
   end
 
   def self.geocode(origin, connection: nil, key: api_key)

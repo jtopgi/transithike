@@ -1,7 +1,7 @@
 require "test_helper"
 require_relative "../services/search_test_support"
 
-class SearchesTest < ActionDispatch::IntegrationTest
+class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   include SearchTestSupport
 
   setup do
@@ -45,12 +45,19 @@ class SearchesTest < ActionDispatch::IntegrationTest
     geocode
     hiking([route_element(name: "<script>alert(1)</script>")])
     @stubs.post(GoogleMapsService::ROUTES_URL) { [200, {}, JSON.generate(routes: [{ duration: "601s" }])] }
-    get search_path, params: valid_params
+    get search_path, params: valid_params.merge(origin: "A & B / 東京")
     assert_response :success
     assert_select "article.card", count: 1
     assert_select "th[scope=row]", count: 2
     assert_select "td", text: "11 minutes"
     assert_select "a[href='https://www.openstreetmap.org/relation/123']", count: 1
+    assert_select "a[href='https://maps.google.com']", text: "Google Maps"
+    assert_select "a[href^='https://www.google.com/maps/dir/?']" do |links|
+      query = URI.decode_www_form(URI(links.first["href"]).query).to_h
+      assert_equal "A & B / 東京", query["origin"]
+      assert_equal "47.0,-122.0", query["destination"]
+      assert_equal "transit", query["travelmode"]
+    end
     assert_select "img", count: 0
     assert_select "script", text: "alert(1)", count: 0
     assert_includes response.body, "&lt;script&gt;"

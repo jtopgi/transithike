@@ -45,10 +45,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
     results = search(maps: maps, hiking: hiking)
     assert_equal %w[fast slow], results.map(&:name)
     assert_equal({ lat: 47, lon: -122, maximum_length: 3 }, hiking.arguments)
-    query = URI.decode_www_form(URI(results.first.google_maps_url).query).to_h
-    assert_equal "A & B / 東京", query["origin"]
-    assert_equal "47.1,-122.1", query["destination"]
-    assert_equal "transit", query["travelmode"]
+    assert_equal "A & B / 東京", results.first.origin
   end
 
   test "filters unreachable routes and returns empty arrays consistently" do

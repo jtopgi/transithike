@@ -72,7 +72,10 @@ available under the ODbL. The public Overpass server is shared infrastructure:
 follow its [usage guidance](https://dev.overpass-api.de/overpass-doc/en/preface/commons.html).
 For significant traffic, arrange dedicated capacity and suitable caching rather
 than relying on this public instance. Provider calls have bounded timeouts and
-result limits, but searches involve multiple HTTP requests.
+result limits, but searches involve multiple HTTP requests. Validated OSM responses
+are cached by coordinates for **15 minutes** using Rails' cache; production uses
+a bounded, process-local memory store. Processes do not share that cache.
+Failures and Google responses are not cached.
 
 Google integration uses the current
 [Routes transit API](https://developers.google.com/maps/documentation/routes/transit-route)

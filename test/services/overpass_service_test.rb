@@ -26,7 +26,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
     assert_equal 47.0, trail.latitude
     assert_equal(-122.0, trail.longitude)
     assert_in_delta 0.691, trail.length, 0.001
-    assert_equal "https://www.openstreetmap.org/relation/123", trail.url
+    assert_equal 123, trail.osm_id
     assert_nil trail.duration
   end
 
@@ -43,7 +43,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
     long = route_element(id: 124)
     long["members"].first["geometry"].last["lat"] = 47.04
     assert_equal 2, fetch([route_element, long]).length
-    assert_equal [123], fetch([route_element, long], maximum_length: 1).map { |trail| trail.url.split("/").last.to_i }
+    assert_equal [123], fetch([route_element, long], maximum_length: 1).map(&:osm_id)
     assert_equal [], fetch([long], maximum_length: 1)
     assert_equal [], fetch([])
   end
@@ -79,7 +79,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
     routes = (1..120).map { |id| route_element(id: id, latitude: 47.0 + (120 - id) * 0.001) }
     trails = fetch(routes)
     assert_equal 10, trails.size
-    assert_equal "https://www.openstreetmap.org/relation/100", trails.first.url
+    assert_equal 100, trails.first.osm_id
   end
 
   test "malformed responses and provider errors are not empty successes" do
@@ -100,5 +100,90 @@ class OverpassServiceTest < ActiveSupport::TestCase
     assert_raises(SearchErrors::InvalidInput) do
       OverpassService.get_trails(lat: "0);node;out;", lon: 0, maximum_length: 3)
     end
+  end
+
+  test "caches raw OSM data for fifteen minutes but rebuilds mutable trail results" do
+    travel_to Time.utc(2026, 9, 22, 12) do
+      cache = ActiveSupport::Cache::MemoryStore.new
+      calls = 0
+      connection = stub_connection(:post, { "elements" => [route_element] }) { calls += 1 }
+      arguments = { lat: 47, lon: -122, maximum_length: 3, connection: connection, cache: cache }
+      first = OverpassService.get_trails(**arguments).first
+      first.duration = 600
+      first.origin = "A private origin"
+      first.name.replace("Mutated name")
+
+      travel 14.minutes
+      second = OverpassService.get_trails(**arguments).first
+      assert_equal 1, calls
+      assert_nil second.duration
+      assert_nil second.origin
+      assert_equal "Forest Loop", second.name
+      refute_same first, second
+
+      travel 2.minutes
+      OverpassService.get_trails(**arguments)
+      assert_equal 2, calls
+    end
+  end
+
+  test "cache varies by coordinates but length filtering remains per search" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    calls = 0
+    long = route_element
+    long["members"].first["geometry"].last["lat"] = 47.04
+    connection = stub_connection(:post, { "elements" => [long] }) { calls += 1 }
+    arguments = { lat: 47, lon: -122, connection: connection, cache: cache }
+    assert_empty OverpassService.get_trails(**arguments, maximum_length: 1)
+    assert_equal 1, OverpassService.get_trails(**arguments, maximum_length: 3).size
+    assert_equal 1, calls
+    OverpassService.get_trails(**arguments.merge(lat: 47.1), maximum_length: 3)
+    OverpassService.get_trails(**arguments.merge(lon: -122.1), maximum_length: 3)
+    assert_equal 3, calls
+  end
+
+  test "empty successful responses are cached" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    calls = 0
+    connection = stub_connection(:post, { "elements" => [] }) { calls += 1 }
+    2.times do
+      assert_empty OverpassService.get_trails(lat: 47, lon: -122, maximum_length: 3, connection: connection, cache: cache)
+    end
+    assert_equal 1, calls
+  end
+
+  test "invalid responses and provider failures are never cached" do
+    [
+      [200, "not json"],
+      [200, { "elements" => nil }],
+      [200, { "elements" => [nil] }],
+      [200, { "elements" => [], "remark" => "timed out" }],
+      [429, { "elements" => [] }]
+    ].each do |status, body|
+      cache = ActiveSupport::Cache::MemoryStore.new
+      calls = 0
+      connection = stub_connection(:post, body, status: status) { calls += 1 }
+      2.times do
+        assert_raises(SearchErrors::UpstreamError) do
+          OverpassService.get_trails(lat: 47, lon: -122, maximum_length: 3, connection: connection, cache: cache)
+        end
+      end
+      assert_equal 2, calls
+    end
+  end
+
+  test "timeouts are never cached" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    calls = 0
+    connection = stub_connection(:post, {}) do
+      calls += 1
+      raise Faraday::TimeoutError
+    end
+    2.times do
+      assert_raises(SearchErrors::UpstreamError) do
+        OverpassService.get_trails(lat: 47, lon: -122, maximum_length: 3, connection: connection, cache: cache)
+      end
+    end
+    assert_equal 2, calls
   end
 end

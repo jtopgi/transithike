@@ -99,4 +99,38 @@ class GoogleMapsServiceTest < ActiveSupport::TestCase
     assert_raises(SearchErrors::UpstreamError) { transit(stub_connection(:post, { "routes" => [{ "duration" => "#{'9' * 400}s" }] })) }
     assert_raises(SearchErrors::UpstreamError) { transit(stub_connection(:post, { "routes" => [], "error" => {} })) }
   end
+
+  test "environment key never decrypts credentials" do
+    credentials = Object.new
+    credentials.define_singleton_method(:google_maps_key) { raise "Credentials must not be decrypted" }
+    assert_equal "environment-test-key", GoogleMapsService.api_key(
+      environment: { "GOOGLE_MAPS_API_KEY" => "environment-test-key" }, credentials: credentials
+    )
+  end
+
+  test "missing master key is an actionable provider configuration error" do
+    [false, true].each do |require_key|
+      credentials = ActiveSupport::EncryptedConfiguration.new(
+        config_path: Rails.root.join("config/credentials.yml.enc"),
+        key_path: Rails.root.join("test/fixtures/files/nonexistent-master.key"),
+        env_key: "TRANSITHIKE_TEST_MISSING_MASTER_KEY", raise_if_missing_key: require_key
+      )
+      error = assert_raises(SearchErrors::UpstreamError) do
+        GoogleMapsService.api_key(environment: {}, credentials: credentials)
+      end
+      assert_includes error.message, "not configured"
+    end
+  end
+
+  test "unreadable encrypted credentials fail gracefully without exposing details" do
+    credentials = Object.new
+    credentials.define_singleton_method(:google_maps_key) do
+      raise ActiveSupport::MessageEncryptor::InvalidMessage, "private credential details"
+    end
+    error = assert_raises(SearchErrors::UpstreamError) do
+      GoogleMapsService.api_key(environment: {}, credentials: credentials)
+    end
+    assert_includes error.message, "not configured"
+    refute_includes error.message, "private credential details"
+  end
 end

@@ -15,7 +15,7 @@
       </tbody>
     </table>
     <p class="card-text"><%= trail.summary %></p>
-    <%= link_to "🧭 Directions", trail.google_maps_url, class: "card-link", aria: { label: "Transit directions to #{trail.name}" } %>
-    <%= link_to "🔎 OpenStreetMap route", trail.url, class: "card-link", aria: { label: "#{trail.name} on OpenStreetMap" } %>
+    <%= link_to "🧭 Directions", "https://www.google.com/maps/dir/?#{URI.encode_www_form(api: 1, origin: trail.origin, destination: "#{trail.latitude},#{trail.longitude}", travelmode: "transit")}", class: "card-link", aria: { label: "Transit directions to #{trail.name}" } %>
+    <%= link_to "🔎 OpenStreetMap route", "https://www.openstreetmap.org/relation/#{trail.osm_id}", class: "card-link", aria: { label: "#{trail.name} on OpenStreetMap" } %>
   </div>
 </article>
