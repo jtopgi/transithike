@@ -21,10 +21,13 @@ module SearchHttp
 
   def self.json
     response = yield
-    body = response.body || response.env[:streaming_response_body]
+    body = response.env[:streaming_response_body] || response.body
     unless response.success? && body.is_a?(String) && body.bytesize <= MAX_RESPONSE_BYTES
       raise SearchErrors::UpstreamError, "A search provider is unavailable. Please try again later."
     end
+
+    body = body.dup.force_encoding(Encoding::UTF_8)
+    raise JSON::ParserError unless body.valid_encoding?
 
     data = JSON.parse(body)
     raise JSON::ParserError unless data.is_a?(Hash)
