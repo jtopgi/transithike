@@ -3,6 +3,7 @@ require "json"
 
 module SearchHttp
   MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+  UNAVAILABLE_MESSAGE = "A search provider is unavailable. Please try again later."
 
   def self.connection(url, timeout: 5)
     Faraday.new(url: url) do |http|
@@ -10,7 +11,7 @@ module SearchHttp
       http.options.timeout = timeout
       http.options.on_data = lambda do |chunk, received_bytes, env|
         if received_bytes > MAX_RESPONSE_BYTES
-          raise SearchErrors::UpstreamError, "A search provider is unavailable. Please try again later."
+          raise SearchErrors::UpstreamError, UNAVAILABLE_MESSAGE
         end
 
         env[:streaming_response_body] ||= String.new(encoding: Encoding::BINARY)
@@ -23,11 +24,11 @@ module SearchHttp
     response = yield
     body = response.env[:streaming_response_body] || response.body
     unless response.success? && body.is_a?(String) && body.bytesize <= MAX_RESPONSE_BYTES
-      raise SearchErrors::UpstreamError, "A search provider is unavailable. Please try again later."
+      raise SearchErrors::UpstreamError, UNAVAILABLE_MESSAGE
     end
 
     body = body.dup.force_encoding(Encoding::UTF_8)
-    raise JSON::ParserError unless body.valid_encoding?
+    raise JSON::ParserError, "response body is not valid UTF-8" unless body.valid_encoding?
 
     data = JSON.parse(body)
     raise JSON::ParserError unless data.is_a?(Hash)
