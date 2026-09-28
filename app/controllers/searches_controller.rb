@@ -12,9 +12,10 @@ class SearchesController < ApplicationController
       raise SearchErrors::InvalidInput, "Choose a maximum length between 1 and 30 miles."
     end
 
-    @trails = TrailsService.get_trails(
+    result = TrailsService.search(
       origin: origin.strip, arrival_time: arrival_time, maximum_length: maximum_length.to_i
     )
+    @location, @trails = result.location, result.trails
   rescue SearchErrors::InvalidInput => error
     @error = error.message
     render :show, status: :unprocessable_content

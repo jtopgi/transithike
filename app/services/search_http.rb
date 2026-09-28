@@ -4,9 +4,11 @@ require "json"
 module SearchHttp
   MAX_RESPONSE_BYTES = 8 * 1024 * 1024
   UNAVAILABLE_MESSAGE = "A search provider is unavailable. Please try again later."
+  # Community-run providers require clients to identify themselves with a contact.
+  USER_AGENT = "TransitHike/0.1 (+https://github.com/jtopgi/transithike)"
 
   def self.connection(url, timeout: 5)
-    Faraday.new(url: url) do |http|
+    Faraday.new(url: url, headers: { "User-Agent" => USER_AGENT }) do |http|
       http.options.open_timeout = 3
       http.options.timeout = timeout
       http.options.on_data = lambda do |chunk, received_bytes, env|
@@ -20,7 +22,7 @@ module SearchHttp
     end
   end
 
-  def self.json
+  def self.json(expected = Hash)
     response = yield
     body = response.env[:streaming_response_body] || response.body
     unless response.success? && body.is_a?(String) && body.bytesize <= MAX_RESPONSE_BYTES
@@ -31,7 +33,7 @@ module SearchHttp
     raise JSON::ParserError, "response body is not valid UTF-8" unless body.valid_encoding?
 
     data = JSON.parse(body)
-    raise JSON::ParserError unless data.is_a?(Hash)
+    raise JSON::ParserError unless data.is_a?(expected)
 
     data
   rescue Faraday::Error, JSON::ParserError
