@@ -1,3 +1,13 @@
 <%= link_to "New Search", new_search_path, class: "btn btn-outline-primary mb-3" %>
 
-<%= render partial: "trail", collection: @trails %>
+<h1>Hiking routes</h1>
+<% if @error %>
+  <div class="alert alert-danger" role="alert"><%= @error %></div>
+<% elsif @trails.empty? %>
+  <p role="status">No hiking routes with transit directions were found for this search. Try a different origin, arrival time, or maximum length.</p>
+<% else %>
+  <p>Nearby mapped routes, sorted by transit travel time. Approximate lengths are calculated from OpenStreetMap geometry. Directions lead to the first mapped route point, not a verified trailhead or public access point.</p>
+  <%= render partial: "trail", collection: @trails %>
+<% end %>
+<p class="text-body-secondary">Location lookup and transit travel times provided by <%= link_to "Google Maps", "https://maps.google.com" %>.</p>
+<p class="text-body-secondary">Search covers up to 100 mapped hiking routes within 25 km and checks transit for the 10 nearest eligible routes. Photos and elevation data are not available. Data © <%= link_to "OpenStreetMap contributors", "https://www.openstreetmap.org/copyright" %>.</p>

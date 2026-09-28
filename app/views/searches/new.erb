@@ -1,21 +1,22 @@
 <h1>New Search</h1>
 
+<% default_arrival = 1.hour.from_now %>
 <%= form_with url: search_path, method: :get, local: true do |f| %>
-  <div class="form-group">
+  <div class="mb-3">
     <%= f.label :origin, "📍Origin" %>
-    <%= f.text_field :origin, class: "form-control" %>
+    <%= f.text_field :origin, class: "form-control", required: true, maxlength: 200 %>
   </div>
-  <div class="form-group">
-    <%= f.label :origin, "🥾 Maximum Length" %>
-    <%= f.select :maximum_length, options_for_select((1..30)), {}, {class: "form-control w-auto custom-select"} %>
+  <div class="mb-3">
+    <%= f.label :maximum_length, "🥾 Maximum Length (miles)" %>
+    <%= f.select :maximum_length, options_for_select((1..30)), {}, {class: "form-select w-auto"} %>
   </div>
-  <div class="form-group">
-    <%= f.label :arrival_time, "Arrival" %>
+  <div class="mb-3">
+    <%= f.label :arrival_time, "Arrival (#{Time.zone.name}, within 7 days)" %>
     <div class="pb-1">
-      📆<%= f.date_select :arrival_time, {discard_year: true}, class: "form-control w-auto custom-select" %>
+      📆<%= f.date_select :arrival_time, {default: default_arrival}, class: "form-select w-auto d-inline-block" %>
     </div>
     <div>
-      🕒<%= f.time_select :arrival_time, {ampm: true, minute_step: 15}, class: "form-control w-auto custom-select" %>
+      🕒<%= f.time_select :arrival_time, {default: default_arrival, ampm: true, minute_step: 15}, class: "form-select w-auto d-inline-block" %>
     </div>
   </div>
   <%= f.submit "Submit", name: nil, class: "btn btn-primary" %>
