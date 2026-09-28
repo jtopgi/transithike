@@ -1,0 +1,127 @@
+:root {
+  --th-forest: #14532d;
+  --th-forest-light: #166534;
+  --th-moss: #15803d;
+  --th-mist: #f5f7f4;
+  --bs-link-color-rgb: 21, 128, 61;
+  --bs-link-hover-color-rgb: 20, 83, 45;
+}
+
+body {
+  background-color: var(--th-mist);
+}
+
+.site-nav {
+  background: var(--th-forest);
+}
+
+.brand-mark {
+  font-size: 1.35rem;
+}
+
+.hero {
+  position: relative;
+  background:
+    radial-gradient(circle at 85% 10%, rgba(255, 255, 255, 0.14), transparent 45%),
+    linear-gradient(135deg, var(--th-forest) 0%, var(--th-forest-light) 55%, var(--th-moss) 100%);
+}
+
+/* Mountain ridge that blends into the page background. */
+.hero::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 -1px;
+  height: 72px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 72' preserveAspectRatio='none'%3E%3Cpath fill='%23f5f7f4' d='M0 72V50l110-26 120 30 140-44 150 38 130-26 150 34 160-40 150 32 140-22 190 36v20z'/%3E%3C/svg%3E") bottom / 100% 100% no-repeat;
+  pointer-events: none;
+}
+
+.hero-body {
+  position: relative;
+  z-index: 1;
+  padding-top: 3.5rem;
+  padding-bottom: 6.5rem;
+}
+
+.hero .lead,
+.hero-points {
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.hero-kicker {
+  color: #bbf7d0;
+  letter-spacing: 0.08em;
+}
+
+.hero-points li + li {
+  margin-top: 0.4rem;
+}
+
+.search-card {
+  border-radius: 1rem;
+}
+
+.search-card .form-control,
+.search-card .form-select,
+.search-card .btn {
+  border-radius: 0.6rem;
+}
+
+.step-icon {
+  font-size: 2rem;
+  line-height: 1;
+  margin-bottom: 0.75rem;
+}
+
+.results-hero {
+  background: linear-gradient(135deg, var(--th-forest) 0%, var(--th-moss) 100%);
+}
+
+.trail-card {
+  border-radius: 1rem;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.trail-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 0.75rem 1.5rem rgba(20, 83, 45, 0.14) !important;
+}
+
+.trail-stats {
+  display: flex;
+  gap: 2rem;
+  margin-bottom: 1rem;
+}
+
+.trail-stats dt {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--bs-secondary-color);
+}
+
+.trail-stats dd {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--th-forest);
+}
+
+.trail-summary {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.site-footer {
+  background: #e9eee7;
+  color: var(--bs-secondary-color);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trail-card,
+  .trail-card:hover {
+    transition: none;
+    transform: none;
+  }
+}

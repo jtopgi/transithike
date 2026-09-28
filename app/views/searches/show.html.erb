@@ -1,0 +1,39 @@
+<% content_for :title, @location&.name ? "Hikes near #{@location.name}" : "Hiking routes" %>
+<section class="results-hero text-white">
+  <div class="container py-4">
+    <%= link_to "← Change search", root_path(@search), class: "btn btn-sm btn-outline-light mb-3" %>
+    <h1 class="h2 fw-bold mb-1">Hiking routes</h1>
+    <% if @location&.name %>
+      <p class="mb-0">
+        Showing routes near <strong><%= @location.name %></strong>, arriving by
+        <strong><%= @arrival_time.strftime("%a, %b %-d at %-I:%M %p %Z") %></strong>.
+        Not the place you meant? Try a more specific starting point.
+      </p>
+    <% end %>
+  </div>
+</section>
+
+<div class="container py-4">
+  <% if @error %>
+    <div class="alert alert-danger" role="alert"><%= @error %></div>
+  <% elsif @trails.empty? %>
+    <div class="empty-state text-center py-5">
+      <div class="display-6 mb-3" aria-hidden="true">🧭</div>
+      <p class="lead mb-2" role="status">No hiking routes with transit directions were found for this search.</p>
+      <p class="text-body-secondary mb-0">Try a different starting point, a daytime arrival, or a longer hike.</p>
+    </div>
+  <% else %>
+    <p class="text-body-secondary">
+      <%= pluralize(@trails.size, "route") %>, sorted by travel time on public transit (or on foot, when walking is
+      faster). Lengths are approximate, calculated from OpenStreetMap geometry. Directions lead to the first mapped
+      point of each route, not a verified trailhead or public access point.
+    </p>
+    <div class="row row-cols-1 row-cols-md-2 g-4">
+      <%= render partial: "trail", collection: @trails %>
+    </div>
+  <% end %>
+  <p class="small text-body-secondary mt-4 mb-0">
+    Each search covers up to 100 mapped hiking routes within 25 km and checks transit for the 10 nearest eligible
+    routes. Photos and elevation data are not available.
+  </p>
+</div>

@@ -37,7 +37,7 @@ class TransitousServiceTest < ActiveSupport::TestCase
   end
 
   test "place search sends the query and maps the best match with a readable label" do
-    connection = stub_connection(:get, [match, match("name" => "Other place")]) do |request|
+    connection = stub_connection(:get, [match("tz" => "America/Los_Angeles"), match("name" => "Other place")]) do |request|
       assert_equal "A & B / 東京", request.params["text"]
       assert_equal "1", request.params["numResults"]
       assert_equal "en", request.params["language"]
@@ -46,6 +46,14 @@ class TransitousServiceTest < ActiveSupport::TestCase
     assert_equal 47.6086, location.latitude
     assert_equal(-122.3407, location.longitude)
     assert_equal "Pike Place Fish Market, Seattle, Washington, United States", location.name
+    assert_equal "America/Los_Angeles", location.time_zone
+  end
+
+  test "unusable time zones are ignored" do
+    [nil, 5, "", "../../etc/passwd", "America/Los Angeles"].each do |time_zone|
+      location = TransitousService.geocode("Seattle", connection: stub_connection(:get, [match("tz" => time_zone)]))
+      assert_nil location.time_zone
+    end
   end
 
   test "labels skip blank duplicate and malformed names" do

@@ -22,15 +22,13 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     travel_back
   end
 
+  # Arrival is wall-clock time at the origin: 12:30 PDT is 19:30 UTC.
   def valid_params
-    {
-      origin: "Seattle", maximum_length: "3",
-      "arrival_time(1i)" => "2026", "arrival_time(2i)" => "9", "arrival_time(3i)" => "23",
-      "arrival_time(4i)" => "12", "arrival_time(5i)" => "30"
-    }
+    { origin: "Seattle", arrival_time: "2026-09-23T12:30", maximum_length: "3" }
   end
 
-  def geocode(matches = [{ type: "PLACE", name: "Seattle", lat: 47, lon: -122, areas: [{ name: "Washington", adminLevel: 4 }] }])
+  def geocode(matches = [{ type: "PLACE", name: "Seattle", lat: 47, lon: -122, tz: "America/Los_Angeles",
+    areas: [{ name: "Washington", adminLevel: 4 }] }])
     @stubs.get(URI(TransitousService::GEOCODE_URL).path) do |env|
       assert_equal SearchHttp::USER_AGENT, env.request_headers["User-Agent"]
       [200, {}, JSON.generate(matches)]
@@ -40,12 +38,29 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   def plan(itineraries: [], direct: [])
     @stubs.get(URI(TransitousService::PLAN_URL).path) do |env|
       assert_equal SearchHttp::USER_AGENT, env.request_headers["User-Agent"]
+      assert_equal "2026-09-23T19:30:00Z", env.params["time"]
       [200, {}, JSON.generate(itineraries: itineraries, direct: direct)]
     end
   end
 
   def hiking(elements)
     @stubs.post(URI(OverpassService::URL).path) { [200, {}, JSON.generate(elements: elements)] }
+  end
+
+  test "the search form sends exactly the parameters the search reads" do
+    get root_path
+    assert_response :success
+    assert_equal %w[origin arrival_time maximum_length],
+      css_select("form[action='#{search_path}'] [name]").map { |field| field["name"] }
+    assert_select "input[type=datetime-local][name=arrival_time][required]"
+    assert_select "select[name=maximum_length] option[selected]", text: "5 mi"
+  end
+
+  test "the search form is refilled from a previous search" do
+    get root_path, params: valid_params.merge(maximum_length: "8", origin: ["ignored"])
+    assert_select "input[name=origin]:not([value])"
+    assert_select "input[name=arrival_time][value='2026-09-23T12:30']"
+    assert_select "select[name=maximum_length] option[selected]", text: "8 mi"
   end
 
   test "successful search renders accessible cards with honest geometry source attribution and no photo fallback" do
@@ -55,12 +70,14 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     get search_path, params: valid_params.merge(origin: "A & B / 東京")
     assert_response :success
     assert_select "strong", text: "Seattle, Washington"
-    assert_select "article.card", count: 1
-    assert_select "th[scope=row]", count: 2
-    assert_select "td", text: "11 minutes"
-    assert_select "a[href='https://www.openstreetmap.org/relation/123']", count: 1
-    assert_select "a[href='https://transitous.org/sources/']", text: "data sources"
-    assert_select "a[href='https://www.openstreetmap.org/copyright']", count: 1
+    assert_select "strong", text: "Wed, Sep 23 at 12:30 PM PDT"
+    assert_select "a[href=?]", root_path(valid_params.merge(origin: "A & B / 東京")), text: /Change search/
+    assert_select "article.trail-card", count: 1
+    assert_select "article.trail-card dt", count: 2
+    assert_select "article.trail-card dd", text: "11 min"
+    assert_select "a[href='https://www.openstreetmap.org/relation/123'][target=_blank]", count: 1
+    assert_select "footer a[href='https://transitous.org/sources/']", text: "data sources"
+    assert_select "footer a[href='https://www.openstreetmap.org/copyright']", count: 1
     assert_select "a[href^='https://www.google.com/maps/dir/?']" do |links|
       query = URI.decode_www_form(URI(links.first["href"]).query).to_h
       assert_equal "A & B / 東京", query["origin"]
@@ -106,20 +123,34 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "missing impossible malformed past and too distant arrival dates are rejected" do
+  test "missing and malformed arrival times are rejected before external requests" do
     [
-      { "arrival_time(1i)" => nil }, { "arrival_time(1i)" => ["2026"] },
-      { "arrival_time(2i)" => "2", "arrival_time(3i)" => "30" },
-      { "arrival_time(2i)" => "13" }, { "arrival_time(4i)" => "24" },
-      { "arrival_time(5i)" => "60" }, { "arrival_time(3i)" => "21" },
-      { "arrival_time(3i)" => "30" }, { "arrival_time(1i)" => "202x" }
-    ].each do |invalid|
-      get search_path, params: valid_params.merge(invalid)
+      nil, "", ["2026-09-23T12:30"], { date: "2026-09-23" }, "2026-02-30T10:00", "2026-13-01T10:00",
+      "2026-09-23T24:00", "2026-09-23T12:60", "202x-09-23T12:30", "2026-09-23 12:30", "2026-09-23"
+    ].each do |arrival_time|
+      get search_path, params: valid_params.merge(arrival_time: arrival_time)
       assert_response :unprocessable_content
-      assert_select "[role=alert]", text: /arrival/
+      assert_select "[role=alert]", text: "Choose a valid arrival date and time."
     end
     get search_path
     assert_response :unprocessable_content
+  end
+
+  test "arrival times with seconds are accepted" do
+    geocode
+    hiking([])
+    get search_path, params: valid_params.merge(arrival_time: "2026-09-23T12:30:00.000")
+    assert_response :success
+  end
+
+  test "past and too distant arrival times are rejected in the origin's time zone" do
+    geocode
+    # It is 05:00 PDT on September 22.
+    %w[2026-09-22T04:59 2026-09-29T05:01].each do |arrival_time|
+      get search_path, params: valid_params.merge(arrival_time: arrival_time)
+      assert_response :unprocessable_content
+      assert_select "[role=alert]", text: /in the future, within the next 7 days.*\(PDT\)/
+    end
   end
 
   test "unknown origin renders actionable 422" do

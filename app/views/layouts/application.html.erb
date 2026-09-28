@@ -1,22 +1,44 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
   <head>
-    <title>Transithike</title>
+    <meta charset="utf-8">
+    <title><%= content_for?(:title) ? "#{yield(:title)} · TransitHike" : "TransitHike · Hikes you can reach by public transit" %></title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Find hiking routes you can reach by bus, train, or on foot, sorted by travel time.">
+    <meta name="theme-color" content="#14532d">
     <%= csrf_meta_tags %>
     <%= csp_meta_tag %>
 
-    <%= stylesheet_link_tag 'application' %>
+    <%= stylesheet_link_tag "application" %>
+    <%= javascript_include_tag "application", defer: true %>
   </head>
 
-  <body>
-    <nav class="navbar navbar-light bg-light mb-1">
-      <a class="navbar-brand" href="/">TransitHike</a>
+  <body class="d-flex flex-column min-vh-100">
+    <nav class="navbar navbar-dark site-nav">
+      <div class="container">
+        <%= link_to root_path, class: "navbar-brand fw-bold d-flex align-items-center gap-2" do %>
+          <span class="brand-mark" aria-hidden="true">🥾</span> TransitHike
+        <% end %>
+        <%= link_to "GitHub", "https://github.com/jtopgi/transithike", class: "nav-link link-light link-opacity-75 link-opacity-100-hover small" %>
+      </div>
     </nav>
-    <div class="container">
-      <%= yield %>
 
-      <%= javascript_include_tag 'application', defer: true %>
-    </div>
+    <main class="flex-grow-1">
+      <%= yield %>
+    </main>
+
+    <footer class="site-footer py-4 mt-5">
+      <div class="container small">
+        <p class="mb-1">
+          Place search and transit travel times by <%= link_to "Transitous", "https://transitous.org" %>
+          (<%= link_to "data sources", TransitousService::SOURCES_URL %>).
+          Hiking routes © <%= link_to "OpenStreetMap contributors", "https://www.openstreetmap.org/copyright" %>.
+        </p>
+        <p class="mb-0">
+          Routes start at their first mapped point, which may not be an official trailhead, so check the route and
+          local conditions before you go. <%= link_to "Open source", "https://github.com/jtopgi/transithike" %> under the MIT license.
+        </p>
+      </div>
+    </footer>
   </body>
 </html>

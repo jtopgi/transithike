@@ -1,0 +1,48 @@
+<section class="hero text-white">
+  <div class="container hero-body">
+    <div class="row align-items-center gy-4 gx-lg-5">
+      <div class="col-lg-6">
+        <p class="hero-kicker text-uppercase fw-semibold small mb-2">Car-free hiking</p>
+        <h1 class="display-5 fw-bold mb-3">Find hikes you can reach by public transit</h1>
+        <p class="lead mb-4">
+          Tell us where you're starting and when you want to arrive. TransitHike finds mapped hiking routes nearby
+          and sorts them by how long it takes to get there by bus, train, or on foot.
+        </p>
+        <ul class="list-unstyled hero-points mb-0">
+          <li><span aria-hidden="true">🚌</span> Travel times from real public transit timetables</li>
+          <li><span aria-hidden="true">🥾</span> Hiking routes mapped by OpenStreetMap volunteers</li>
+          <li><span aria-hidden="true">💸</span> Free, with no account needed</li>
+        </ul>
+      </div>
+      <div class="col-lg-6">
+        <div class="card search-card border-0 shadow-lg">
+          <div class="card-body p-4 p-md-5">
+            <h2 class="h4 mb-4">Plan a hike</h2>
+            <%= render "form", search: @search %>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="container py-5">
+  <h2 class="visually-hidden">How it works</h2>
+  <div class="row g-4">
+    <div class="col-md-4">
+      <div class="step-icon" aria-hidden="true">📍</div>
+      <h3 class="h5">Pick a starting point</h3>
+      <p class="text-body-secondary mb-0">A city, neighborhood, station, or address.</p>
+    </div>
+    <div class="col-md-4">
+      <div class="step-icon" aria-hidden="true">🕒</div>
+      <h3 class="h5">Choose when to arrive</h3>
+      <p class="text-body-secondary mb-0">Trips are planned to arrive by then, in local time at your starting point.</p>
+    </div>
+    <div class="col-md-4">
+      <div class="step-icon" aria-hidden="true">🗺️</div>
+      <h3 class="h5">Compare and go</h3>
+      <p class="text-body-secondary mb-0">See travel time and hike length side by side, then open directions.</p>
+    </div>
+  </div>
+</section>

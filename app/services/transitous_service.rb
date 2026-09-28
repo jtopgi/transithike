@@ -12,11 +12,12 @@ module TransitousService
   MAX_POST_TRANSIT_SECONDS = 30 * 60
   GEOCODE_CACHE_TTL = 1.day
   PLAN_CACHE_TTL = 15.minutes
-  Location = Struct.new(:latitude, :longitude, :name, keyword_init: true)
+  TIME_ZONE_FORMAT = %r{\A[A-Za-z]+(?:/[A-Za-z0-9_+-]+)*\z}
+  Location = Struct.new(:latitude, :longitude, :name, :time_zone, keyword_init: true)
 
   def self.geocode(origin, connection: nil, cache: Rails.cache)
     # Cache plain attributes rather than app classes, which reload in development.
-    attributes = cache.fetch("transitous:geocode:v1:#{origin.downcase.squish}", expires_in: GEOCODE_CACHE_TTL) do
+    attributes = cache.fetch("transitous:geocode:v2:#{origin.downcase.squish}", expires_in: GEOCODE_CACHE_TTL) do
       connection ||= SearchHttp.connection(GEOCODE_URL)
       matches = SearchHttp.json(Array) do
         connection.get { |request| request.params = { text: origin, numResults: 1, language: "en" } }
@@ -51,7 +52,11 @@ module TransitousService
       raise SearchErrors::UpstreamError, "The location provider returned invalid coordinates."
     end
 
-    Location.new(latitude: match["lat"], longitude: match["lon"], name: label(match))
+    Location.new(
+      latitude: match["lat"], longitude: match["lon"], name: label(match),
+      # IANA name such as "America/Los_Angeles", used to read arrival times as local time.
+      time_zone: match["tz"].is_a?(String) && match["tz"].match?(TIME_ZONE_FORMAT) ? match["tz"] : nil
+    )
   end
 
   # For example "Pike Place Fish Market, Seattle, Washington, United States".

@@ -1,0 +1,26 @@
+<%= form_with url: search_path, method: :get, class: "search-form", data: { search_form: "" } do |f| %>
+  <div class="mb-3">
+    <%= f.label :origin, "Starting point", class: "form-label fw-semibold" %>
+    <%= f.text_field :origin, value: search[:origin], class: "form-control form-control-lg", required: true,
+          maxlength: 200, autocomplete: "off", placeholder: "e.g. Seattle, WA or Union Station, Denver" %>
+  </div>
+  <div class="row g-3 mb-4">
+    <div class="col-sm-7">
+      <%= f.label :arrival_time, "Arrive by", class: "form-label fw-semibold" %>
+      <%= f.datetime_local_field :arrival_time, value: search[:arrival_time], class: "form-control", required: true,
+            aria: { describedby: "arrival-time-help" } %>
+      <div id="arrival-time-help" class="form-text">Local time at your starting point, within the next 7 days.</div>
+    </div>
+    <div class="col-sm-5">
+      <%= f.label :maximum_length, "Longest hike", class: "form-label fw-semibold" %>
+      <%= f.select :maximum_length,
+            options_for_select((1..30).map { |miles| ["#{miles} mi", miles] }, search[:maximum_length] || 5),
+            {}, class: "form-select" %>
+    </div>
+  </div>
+  <button type="submit" class="btn btn-success btn-lg w-100" data-search-submit>
+    <span class="spinner-border spinner-border-sm me-2 d-none" aria-hidden="true"></span>
+    <span data-search-label>Find hikes</span>
+  </button>
+  <p class="form-text text-center mt-2 mb-0">A search can take up to half a minute.</p>
+<% end %>
