@@ -1,0 +1,27 @@
+<div class="col">
+  <article class="card trail-card h-100 border-0 shadow-sm">
+    <div class="card-body d-flex flex-column p-4">
+      <h2 class="card-title h5 mb-3"><%= trail.name %></h2>
+      <dl class="trail-stats">
+        <div>
+          <dt><span aria-hidden="true">🚌</span> Travel time</dt>
+          <dd><%= (trail.duration / 60.0).ceil %> min</dd>
+        </div>
+        <div>
+          <dt><span aria-hidden="true">🥾</span> Length</dt>
+          <dd>≈ <%= number_with_precision(trail.length, precision: 1) %> mi</dd>
+        </div>
+      </dl>
+      <p class="card-text trail-summary text-body-secondary flex-grow-1"><%= trail.summary %></p>
+      <div class="d-flex flex-wrap gap-2">
+        <%= link_to "🧭 Directions",
+              "https://www.google.com/maps/dir/?#{URI.encode_www_form(api: 1, origin: trail.origin, destination: "#{trail.latitude},#{trail.longitude}", travelmode: "transit")}",
+              class: "btn btn-success btn-sm", target: "_blank", rel: "noopener",
+              aria: { label: "Transit directions to #{trail.name}" } %>
+        <%= link_to "View on OpenStreetMap", "https://www.openstreetmap.org/relation/#{trail.osm_id}",
+              class: "btn btn-outline-secondary btn-sm", target: "_blank", rel: "noopener",
+              aria: { label: "#{trail.name} on OpenStreetMap" } %>
+      </div>
+    </div>
+  </article>
+</div>

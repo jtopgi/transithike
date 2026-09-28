@@ -1,8 +1,10 @@
 # TransitHike
 
+[![CI](https://github.com/jtopgi/transithike/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/jtopgi/transithike/actions/workflows/ci.yml)
+
 Find nearby hiking routes reachable by public transit, ordered by estimated
-travel time. The application is Rails-rendered and retains its original simple
-search form and results cards.
+travel time. The application is Rails-rendered: a single search form and a page
+of route cards styled with Bootstrap.
 
 ## Requirements
 
@@ -57,8 +59,9 @@ test Overpass connectivity from your deployment before launching.
 - Only routes reachable by public transit, or by a direct walk of up to 30
   minutes, are displayed, sorted by travel time. Journeys may include up to
   15 minutes' walk to the first stop and 30 minutes from the last stop.
-  Arrival must be in the future and within **7 days**, in the displayed Rails
-  timezone (UTC by default).
+  Arrival is local time at the origin, using the time zone Transitous reports
+  for the matched place (UTC when it reports none), and must be in the future
+  and within **7 days**. The form suggests an hour from now on the visitor's clock.
 - Missing photos and elevation are omitted rather than fabricated.
 - Provider failures produce a friendly error, not misleading empty results.
 
@@ -101,13 +104,17 @@ yarn audit
 RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1 bin/rails assets:precompile
 ```
 
-Service and request tests use deterministic provider doubles: no external API
-traffic is required. Tests cover input validation, route filtering,
-sorting, empty results, malformed responses, and upstream failures. The browser
-test checks that the search form and bundled Bootstrap styles load.
+Service, request, and browser tests use deterministic provider doubles: no
+external API traffic is required. Tests cover input validation, time zones, route
+filtering, sorting, empty results, malformed responses, and upstream failures.
+Request tests also check that the form sends the parameters the search reads and
+that pages still render when a browser returns its session cookie with forgery
+protection on, as in production. The browser tests submit the real form.
 
-GitHub Actions runs these checks against PostgreSQL, and builds the production
-container image and smoke-tests it without a database. Dependabot checks Ruby,
+[GitHub Actions](.github/workflows/ci.yml) runs these checks against PostgreSQL
+on every push and pull request. It also builds the production container image
+and smoke-tests it without a database, including a session-cookie round trip.
+Dependabot checks Ruby,
 JavaScript, and GitHub Actions dependencies weekly. Commit both lockfiles when
 updating dependencies.
 
@@ -144,7 +151,9 @@ and deploys from GitHub Actions:
 
 - After CI passes on `master`, the `deploy` job signs in to Azure with OpenID
   Connect (no stored passwords), pushes the image to Azure Container Registry
-  tagged with the commit SHA, and updates the container app. Deployments and the
+  tagged with the commit SHA, and updates the container app. It then checks the
+  new revision, loads the site twice with its session cookie, and runs one real
+  search; a provider outage there only produces a warning. Deployments and the
   app URL appear under the repository's `production` environment.
 - Images are built by GitHub Actions because Azure free-credit subscriptions
   cannot use Container Registry build tasks.

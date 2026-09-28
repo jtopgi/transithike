@@ -84,16 +84,22 @@ jobs:
             http://localhost:3000/up
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://localhost:3000/)" = 301
           https=(--silent --show-error --header "X-Forwarded-Proto: https")
-          curl --fail "${https[@]}" --output page.html http://localhost:3000/
-          grep --quiet "New Search" page.html
+          curl --fail "${https[@]}" --dump-header headers.txt --output page.html http://localhost:3000/
+          grep --quiet "Find hikes" page.html
+          # Browsers send the session cookie back with every later request.
+          cookie=$(tr -d '\r' < headers.txt | sed -n -E 's/^[Ss]et-[Cc]ookie: ([^;]+).*/\1/p')
+          test -n "$cookie"
+          curl --fail "${https[@]}" --header "Cookie: $cookie" --output /dev/null http://localhost:3000/
           stylesheet=$(grep --only-matching --max-count 1 '/assets/application-[^"]*\.css' page.html)
           curl --fail "${https[@]}" --output application.css "http://localhost:3000${stylesheet}"
           grep --quiet btn-primary application.css
-          status=$(curl "${https[@]}" --output search.html --write-out '%{http_code}' \
+          status=$(curl "${https[@]}" --header "Cookie: $cookie" --output search.html --write-out '%{http_code}' \
             "http://localhost:3000/search?origin=&maximum_length=5")
           test "$status" = 422
           grep --quiet "Enter an origin" search.html
           grep --quiet "https://transitous.org/sources/" search.html
+          # Origins' local times need the container's time zone data.
+          docker exec transithike bin/rails runner 'exit ActiveSupport::TimeZone["America/Los_Angeles"].now.zone.start_with?("P")'
       - name: Show container logs
         if: always()
         run: docker logs transithike || true
@@ -150,8 +156,23 @@ jobs:
         run: |
           curl --fail --silent --show-error --max-time 90 --retry 6 --retry-delay 10 --retry-all-errors \
             "$REVISION_URL/up"
+          # Load the page twice, as a browser does, returning the session cookie.
           curl --fail --silent --show-error --max-time 90 --retry 3 --retry-delay 10 --retry-all-errors \
-            --output /dev/null "$URL/"
+            --cookie-jar cookies.txt --output /dev/null "$URL/"
+          curl --fail --silent --show-error --max-time 90 --cookie cookies.txt --output /dev/null "$URL/"
         env:
           REVISION_URL: ${{ steps.deploy.outputs.revision-url }}
+          URL: ${{ steps.deploy.outputs.url }}
+      # Uses the live providers; an outage there is reported without failing the deployment.
+      - name: Run a real search
+        run: |
+          status=$(curl --silent --show-error --max-time 120 --output search.html --write-out '%{http_code}' \
+            --get "$URL/search" --data-urlencode "origin=Seattle, WA" --data-urlencode "maximum_length=10" \
+            --data-urlencode "arrival_time=$(date -u -d tomorrow +%Y-%m-%dT12:00)")
+          case "$status" in
+            200) grep --quiet "Showing routes near" search.html ;;
+            503) echo "::warning::A search provider was unavailable, but the app handled it." ;;
+            *) echo "::error::The search returned HTTP $status."; exit 1 ;;
+          esac
+        env:
           URL: ${{ steps.deploy.outputs.url }}

@@ -23,9 +23,10 @@ RUN yarn build
 FROM docker.io/library/ruby:${RUBY_VERSION}-slim AS base
 WORKDIR /rails
 
-# Install runtime packages and enable jemalloc for lower memory use.
+# Install runtime packages, time zone data for origins' local times, and jemalloc
+# for lower memory use.
 RUN apt-get update -qq && \
-    apt-get install --no-install-recommends -y curl libjemalloc2 libpq5 && \
+    apt-get install --no-install-recommends -y curl libjemalloc2 libpq5 tzdata && \
     ln -s /usr/lib/$(uname -m)-linux-gnu/libjemalloc.so.2 /usr/local/lib/libjemalloc.so && \
     rm -rf /var/lib/apt/lists /var/cache/apt/archives
 

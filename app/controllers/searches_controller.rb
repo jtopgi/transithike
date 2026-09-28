@@ -1,7 +1,13 @@
 class SearchesController < ApplicationController
-  def new; end
+  # The value of an <input type="datetime-local">, e.g. "2026-10-03T10:00".
+  ARRIVAL_FORMAT = /\A(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2}(?:\.\d{1,3})?)?\z/
+
+  def new
+    @search = search_params
+  end
 
   def show
+    @search = search_params
     @trails = []
     origin = params[:origin]
     unless origin.is_a?(String) && origin.strip.present? && origin.length <= 200
@@ -13,9 +19,9 @@ class SearchesController < ApplicationController
     end
 
     result = TrailsService.search(
-      origin: origin.strip, arrival_time: arrival_time, maximum_length: maximum_length.to_i
+      origin: origin.strip, arrival: arrival, maximum_length: maximum_length.to_i
     )
-    @location, @trails = result.location, result.trails
+    @location, @arrival_time, @trails = result.location, result.arrival_time, result.trails
   rescue SearchErrors::InvalidInput => error
     @error = error.message
     render :show, status: :unprocessable_content
@@ -26,22 +32,19 @@ class SearchesController < ApplicationController
 
   private
 
-  def arrival_time
-    parts = (1..5).map do |index|
-      value = params["arrival_time(#{index}i)"]
-      unless value.is_a?(String) && value.match?(/\A\d{1,4}\z/)
-        raise SearchErrors::InvalidInput, "Choose a valid arrival date and time."
-      end
-      value.to_i
-    end
-    year, month, day, hour, minute = parts
-    unless Date.valid_date?(year, month, day) && hour.between?(0, 23) && minute.between?(0, 59)
+  # Wall-clock parts; TrailsService reads them in the origin's time zone.
+  def arrival
+    value = params[:arrival_time]
+    parts = value.is_a?(String) ? ARRIVAL_FORMAT.match(value)&.captures&.map(&:to_i) : nil
+    unless parts && Date.valid_date?(*parts.first(3)) && parts[3].between?(0, 23) && parts[4].between?(0, 59)
       raise SearchErrors::InvalidInput, "Choose a valid arrival date and time."
     end
-    time = Time.zone.local(*parts)
-    unless time > Time.current && time <= 7.days.from_now
-      raise SearchErrors::InvalidInput, "Choose an arrival time in the future, within the next 7 days."
-    end
-    time
+
+    parts
+  end
+
+  # Scalar values used to refill the search form.
+  def search_params
+    params.permit(:origin, :arrival_time, :maximum_length).to_h.symbolize_keys
   end
 end
