@@ -6,8 +6,7 @@
 # Requires the Azure CLI (run `az login` first) and the GitHub CLI with admin
 # access to the repository. Everything lives in one resource group, so
 # `az group delete --name rg-transithike` removes it all. Optional settings:
-#   AZURE_LOCATION (default eastus), AZURE_RESOURCE_GROUP, AZURE_CONTAINER_APP,
-#   AZURE_BUDGET_EMAIL and AZURE_BUDGET_AMOUNT (monthly cost alert, default 10 USD).
+#   AZURE_LOCATION (default eastus), AZURE_RESOURCE_GROUP, AZURE_CONTAINER_APP.
 set -euo pipefail
 
 az account show --output none || { echo "Run 'az login' first." >&2; exit 1; }
@@ -77,7 +76,7 @@ az identity federated-credential create --resource-group "$group" --identity-nam
   --name github-production --issuer https://token.actions.githubusercontent.com \
   --subject "repo:$repository:environment:production" --audiences api://AzureADTokenExchange --output none
 
-step "Container Apps environment $environment"
+step "Container Apps environment $environment (first creation can take up to 30 minutes)"
 if ! az containerapp env show --resource-group "$group" --name "$environment" --output none 2>/dev/null; then
   az containerapp env create --resource-group "$group" --name "$environment" --location "$location" \
     --logs-workspace-id "$(az monitor log-analytics workspace show --resource-group "$group" \
@@ -99,23 +98,6 @@ if ! az containerapp show --resource-group "$group" --name "$app" --output none 
 fi
 fqdn="$(az containerapp show --resource-group "$group" --name "$app" \
   --query properties.configuration.ingress.fqdn --output tsv)"
-
-if [ -n "${AZURE_BUDGET_EMAIL:-}" ]; then
-  step "Monthly budget alert for $group"
-  budget=$(cat <<JSON
-{"properties": {"category": "Cost", "amount": ${AZURE_BUDGET_AMOUNT:-10}, "timeGrain": "Monthly",
-  "timePeriod": {"startDate": "$(date -u +%Y-%m-01)T00:00:00Z"},
-  "notifications": {
-    "actual80": {"enabled": true, "operator": "GreaterThanOrEqualTo", "threshold": 80,
-      "contactEmails": ["$AZURE_BUDGET_EMAIL"]},
-    "forecast100": {"enabled": true, "operator": "GreaterThanOrEqualTo", "threshold": 100,
-      "thresholdType": "Forecasted", "contactEmails": ["$AZURE_BUDGET_EMAIL"]}}}}
-JSON
-)
-  az rest --method put --output none --body "$budget" \
-    --url "https://management.azure.com$group_id/providers/Microsoft.Consumption/budgets/$app-monthly?api-version=2023-05-01" ||
-    echo "Warning: could not create the budget alert; set one up in Cost Management instead." >&2
-fi
 
 step "GitHub environment 'production' in $repository (deploys only from $branch)"
 gh api --method PUT "repos/$repository/environments/production" --silent --input - \

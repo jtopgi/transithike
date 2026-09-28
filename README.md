@@ -163,16 +163,15 @@ and [GitHub CLI](https://cli.github.com/), then run:
 
 ```sh
 az login
-AZURE_BUDGET_EMAIL=you@example.com bin/azure-setup
+bin/azure-setup
 ```
 
 The idempotent script creates the `rg-transithike` resource group with the
 registry, Log Analytics workspace, Container Apps environment and app, and two
 managed identities: one pulls images, and the other is trusted only by this
 repository's `production` GitHub environment to deploy. It stores a generated
-`SECRET_KEY_BASE` as a Container Apps secret, restricts that GitHub environment
-to the default branch, and, when `AZURE_BUDGET_EMAIL` is set, adds a monthly
-budget alert. Push or merge to `master` to deploy.
+`SECRET_KEY_BASE` as a Container Apps secret and restricts that GitHub
+environment to the default branch. Push or merge to `master` to deploy.
 
 ### Operations
 
