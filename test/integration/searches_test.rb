@@ -8,8 +8,6 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     travel_to Time.utc(2026, 9, 22, 12)
     @old_adapter = Faraday.default_adapter
     @old_adapter_options = Faraday.default_adapter_options
-    @old_key = ENV["GOOGLE_MAPS_API_KEY"]
-    ENV["GOOGLE_MAPS_API_KEY"] = "test-only-server-key"
     @stubs = Faraday::Adapter::Test::Stubs.new
     stubs = @stubs
     Faraday.default_adapter = Class.new(Faraday::Adapter::Test) do
@@ -21,7 +19,6 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   teardown do
     Faraday.default_adapter = @old_adapter
     Faraday.default_adapter_options = @old_adapter_options
-    ENV["GOOGLE_MAPS_API_KEY"] = @old_key
     travel_back
   end
 
@@ -33,25 +30,37 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     }
   end
 
-  def geocode(body = { status: "OK", results: [{ geometry: { location: { lat: 47, lng: -122 } } }] })
-    @stubs.get(URI(GoogleMapsService::GEOCODING_URL).path) { [200, {}, JSON.generate(body)] }
+  def geocode(matches = [{ type: "PLACE", name: "Seattle", lat: 47, lon: -122, areas: [{ name: "Washington", adminLevel: 4 }] }])
+    @stubs.get(URI(TransitousService::GEOCODE_URL).path) do |env|
+      assert_equal SearchHttp::USER_AGENT, env.request_headers["User-Agent"]
+      [200, {}, JSON.generate(matches)]
+    end
+  end
+
+  def plan(itineraries: [], direct: [])
+    @stubs.get(URI(TransitousService::PLAN_URL).path) do |env|
+      assert_equal SearchHttp::USER_AGENT, env.request_headers["User-Agent"]
+      [200, {}, JSON.generate(itineraries: itineraries, direct: direct)]
+    end
   end
 
   def hiking(elements)
     @stubs.post(URI(OverpassService::URL).path) { [200, {}, JSON.generate(elements: elements)] }
   end
 
-  test "successful search renders accessible cards with honest geometry source and no key or photo fallback" do
+  test "successful search renders accessible cards with honest geometry source attribution and no photo fallback" do
     geocode
     hiking([route_element(name: "<script>alert(1)</script>")])
-    @stubs.post(URI(GoogleMapsService::ROUTES_URL).path) { [200, {}, JSON.generate(routes: [{ duration: "601s" }])] }
+    plan(itineraries: [{ duration: 601 }])
     get search_path, params: valid_params.merge(origin: "A & B / 東京")
     assert_response :success
+    assert_select "strong", text: "Seattle, Washington"
     assert_select "article.card", count: 1
     assert_select "th[scope=row]", count: 2
     assert_select "td", text: "11 minutes"
     assert_select "a[href='https://www.openstreetmap.org/relation/123']", count: 1
-    assert_select "a[href='https://maps.google.com']", text: "Google Maps"
+    assert_select "a[href='https://transitous.org/sources/']", text: "data sources"
+    assert_select "a[href='https://www.openstreetmap.org/copyright']", count: 1
     assert_select "a[href^='https://www.google.com/maps/dir/?']" do |links|
       query = URI.decode_www_form(URI(links.first["href"]).query).to_h
       assert_equal "A & B / 東京", query["origin"]
@@ -62,7 +71,6 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_select "script", text: "alert(1)", count: 0
     assert_includes response.body, "&lt;script&gt;"
     assert_includes response.body, "not a verified trailhead"
-    refute_includes response.body, "test-only-server-key"
     @stubs.verify_stubbed_calls
   end
 
@@ -78,10 +86,11 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   test "unreachable transit route renders empty state" do
     geocode
     hiking([route_element])
-    @stubs.post(URI(GoogleMapsService::ROUTES_URL).path) { [200, {}, "{}"] }
+    plan
     get search_path, params: valid_params
     assert_response :success
     assert_select "[role=status]", text: /No hiking routes/
+    @stubs.verify_stubbed_calls
   end
 
   test "invalid scalar origins and length are rejected before external requests" do
@@ -114,18 +123,18 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   end
 
   test "unknown origin renders actionable 422" do
-    geocode(status: "ZERO_RESULTS", results: [])
+    geocode([])
     get search_path, params: valid_params
     assert_response :unprocessable_content
     assert_select "[role=alert]", text: /could not find that origin/
   end
 
   test "upstream errors are safe service unavailable responses" do
-    @stubs.get(URI(GoogleMapsService::GEOCODING_URL).path) { [403, {}, '{"error":"test-only-server-key"}'] }
+    @stubs.get(URI(TransitousService::GEOCODE_URL).path) { [503, {}, '{"error":"private provider details"}'] }
     get search_path, params: valid_params
     assert_response :service_unavailable
     assert_select "[role=alert]", text: /unavailable/
-    refute_includes response.body, "test-only-server-key"
+    refute_includes response.body, "private provider details"
   end
 
   test "Overpass malformed response is not an empty success" do
@@ -138,7 +147,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   test "transit timeout is a service failure" do
     geocode
     hiking([route_element])
-    @stubs.post(URI(GoogleMapsService::ROUTES_URL).path) { raise Faraday::TimeoutError, "sensitive details" }
+    @stubs.get(URI(TransitousService::PLAN_URL).path) { raise Faraday::TimeoutError, "sensitive details" }
     get search_path, params: valid_params
     assert_response :service_unavailable
     refute_includes response.body, "sensitive details"

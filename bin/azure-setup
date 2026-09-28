@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# Creates, or re-checks, the Azure resources that host TransitHike and lets the
+# GitHub `production` environment deploy to them. Safe to re-run: it never
+# replaces the deployed image or existing app secrets.
+#
+# Requires the Azure CLI (run `az login` first) and the GitHub CLI with admin
+# access to the repository. Everything lives in one resource group, so
+# `az group delete --name rg-transithike` removes it all. Optional settings:
+#   AZURE_LOCATION (default eastus), AZURE_RESOURCE_GROUP, AZURE_CONTAINER_APP.
+set -euo pipefail
+
+az account show --output none || { echo "Run 'az login' first." >&2; exit 1; }
+
+location="${AZURE_LOCATION:-eastus}"
+group="${AZURE_RESOURCE_GROUP:-rg-transithike}"
+app="${AZURE_CONTAINER_APP:-transithike}"
+environment="cae-$app"
+workspace="log-$app"
+repository="${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
+branch="$(gh repo view "$repository" --json defaultBranchRef --jq .defaultBranchRef.name)"
+subscription="$(az account show --query id --output tsv)"
+tenant="$(az account show --query tenantId --output tsv)"
+# Registry names are globally unique, so derive a stable suffix from the subscription.
+registry="${AZURE_CONTAINER_REGISTRY:-cr${app}$(printf %s "$subscription" | cksum | cut -d ' ' -f 1)}"
+
+step() { printf '\n==> %s\n' "$*"; }
+
+retry() {
+  for attempt in 1 2 3 4 5; do
+    "$@" && return
+    [ "$attempt" = 5 ] && return 1
+    echo "Retrying in 15 seconds while Azure propagates new identities..." >&2
+    sleep 15
+  done
+}
+
+assign_role() { # principal-id role scope
+  if [ -z "$(az role assignment list --scope "$3" --role "$2" --query "[?principalId=='$1'].id" --output tsv)" ]; then
+    retry az role assignment create --assignee-object-id "$1" --assignee-principal-type ServicePrincipal \
+      --role "$2" --scope "$3" --output none
+  fi
+}
+
+step "Registering resource providers (first run can take a few minutes)"
+for namespace in Microsoft.App Microsoft.ContainerRegistry Microsoft.ManagedIdentity Microsoft.OperationalInsights; do
+  az provider register --namespace "$namespace" --wait --output none
+done
+
+step "Resource group $group in $location"
+az group create --name "$group" --location "$location" --output none
+group_id="$(az group show --name "$group" --query id --output tsv)"
+
+step "Log Analytics workspace $workspace (30-day retention, 0.1 GB daily cap)"
+az monitor log-analytics workspace create --resource-group "$group" --workspace-name "$workspace" \
+  --location "$location" --retention-time 30 --quota 0.1 --output none
+
+step "Container registry $registry (Basic)"
+if ! az acr show --resource-group "$group" --name "$registry" --output none 2>/dev/null; then
+  az acr create --resource-group "$group" --name "$registry" --location "$location" \
+    --sku Basic --admin-enabled false --output none
+fi
+registry_id="$(az acr show --resource-group "$group" --name "$registry" --query id --output tsv)"
+
+step "Managed identities for pulling images and for GitHub Actions deployments"
+for identity in "id-$app-app" "id-$app-deploy"; do
+  az identity create --resource-group "$group" --name "$identity" --location "$location" --output none
+done
+app_identity_id="$(az identity show --resource-group "$group" --name "id-$app-app" --query id --output tsv)"
+app_principal="$(az identity show --resource-group "$group" --name "id-$app-app" --query principalId --output tsv)"
+deploy_client="$(az identity show --resource-group "$group" --name "id-$app-deploy" --query clientId --output tsv)"
+deploy_principal="$(az identity show --resource-group "$group" --name "id-$app-deploy" --query principalId --output tsv)"
+assign_role "$app_principal" AcrPull "$registry_id"
+assign_role "$deploy_principal" AcrPush "$registry_id"
+assign_role "$deploy_principal" Contributor "$group_id"
+az identity federated-credential create --resource-group "$group" --identity-name "id-$app-deploy" \
+  --name github-production --issuer https://token.actions.githubusercontent.com \
+  --subject "repo:$repository:environment:production" --audiences api://AzureADTokenExchange --output none
+
+step "Container Apps environment $environment (first creation can take up to 30 minutes)"
+if ! az containerapp env show --resource-group "$group" --name "$environment" --output none 2>/dev/null; then
+  az containerapp env create --resource-group "$group" --name "$environment" --location "$location" \
+    --logs-workspace-id "$(az monitor log-analytics workspace show --resource-group "$group" \
+      --workspace-name "$workspace" --query customerId --output tsv)" \
+    --logs-workspace-key "$(az monitor log-analytics workspace get-shared-keys --resource-group "$group" \
+      --workspace-name "$workspace" --query primarySharedKey --output tsv)" \
+    --output none
+fi
+
+step "Container app $app (0.5 vCPU, 1 GiB, scales to zero when idle)"
+if ! az containerapp show --resource-group "$group" --name "$app" --output none 2>/dev/null; then
+  # Starts with a public placeholder image; the first GitHub Actions deployment replaces it.
+  az containerapp create --resource-group "$group" --name "$app" --environment "$environment" \
+    --image mcr.microsoft.com/k8se/quickstart:latest --target-port 3000 --ingress external \
+    --user-assigned "$app_identity_id" --registry-server "$registry.azurecr.io" \
+    --registry-identity "$app_identity_id" --cpu 0.5 --memory 1.0Gi --min-replicas 0 --max-replicas 1 \
+    --secrets "secret-key-base=$(openssl rand -hex 64)" --env-vars SECRET_KEY_BASE=secretref:secret-key-base \
+    --output none
+fi
+fqdn="$(az containerapp show --resource-group "$group" --name "$app" \
+  --query properties.configuration.ingress.fqdn --output tsv)"
+
+step "GitHub environment 'production' in $repository (deploys only from $branch)"
+gh api --method PUT "repos/$repository/environments/production" --silent --input - \
+  <<<'{"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}'
+policies="$(gh api "repos/$repository/environments/production/deployment-branch-policies" \
+  --jq '.branch_policies[].name')"
+if ! grep --quiet --line-regexp --fixed-strings "$branch" <<<"$policies"; then
+  gh api --method POST "repos/$repository/environments/production/deployment-branch-policies" \
+    --silent --raw-field name="$branch" --raw-field type=branch
+fi
+gh secret set AZURE_CLIENT_ID --repo "$repository" --env production --body "$deploy_client"
+gh secret set AZURE_TENANT_ID --repo "$repository" --env production --body "$tenant"
+gh secret set AZURE_SUBSCRIPTION_ID --repo "$repository" --env production --body "$subscription"
+gh variable set AZURE_RESOURCE_GROUP --repo "$repository" --env production --body "$group"
+gh variable set AZURE_CONTAINER_APP --repo "$repository" --env production --body "$app"
+gh variable set AZURE_CONTAINER_REGISTRY --repo "$repository" --env production --body "$registry"
+
+step "Done"
+echo "App URL: https://$fqdn"
+echo "Pushes to $branch that pass CI now build and deploy the app."
