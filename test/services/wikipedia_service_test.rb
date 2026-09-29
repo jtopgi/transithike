@@ -78,6 +78,13 @@ class WikipediaServiceTest < ActiveSupport::TestCase
     island = page("Iona Island", lat: 47.661, description: "Island of the Hudson River in the town of Stony Point, New York")
     assert_equal "Iona Island", area([fort, island])[:title]
     assert_nil area([fort, page("Doodletown", lat: 47.661, description: "Isolated settlement in the Hudson Highlands")])
+    # "Of" is often part of the kind, but places people live aren't natural areas.
+    assert_equal "Malvern Hills", area([page("Malvern Hills", lat: 47.66, description: "Range of hills in central England")])[:title]
+    assert_equal "Wallkill River", area([page("Wallkill River", lat: 47.66, description: "Tributary of the Hudson River")])[:title]
+    assert_nil area([page("Katoomba", lat: 47.66, description: "Suburb of the Blue Mountains, New South Wales, Australia"),
+      page("Mürren", lat: 47.661, description: "Mountain village in Switzerland")])
+    # Without a description, a title such as this one's is the kind.
+    assert_equal "Village Creek State Park", area([page("Village Creek State Park", lat: 47.66)])[:title]
   end
 
   test "the photos near a route start with the nearest park's lead image, credited to its author and license" do
@@ -133,6 +140,13 @@ class WikipediaServiceTest < ActiveSupport::TestCase
     ]
     assert_nil area(pages)
     assert_nil photos(pages)
+  end
+
+  test "the river Inn isn't taken for an inn" do
+    files = ["Inn in Samedan 2022-09-26 01.jpg", "Inn - Madulain, Switzerland.jpg", "Blick auf den Inn.jpg", "Bear Mountain Inn NY1.jpg",
+      "The Holiday Inn Express.jpg"].each_with_index.map { |title, index| commons_file(title, lat: index * 0.001) }
+    assert_equal ["Inn in Samedan 2022-09-26 01", "Inn - Madulain, Switzerland", "Blick auf den Inn"],
+      photos([], files: files)[:photos].pluck(:caption)
   end
 
   test "an unknown author still credits the license" do

@@ -168,7 +168,8 @@ test Overpass connectivity from your deployment before launching.
   natural area's Wikipedia article, then photos taken nearby from Wikimedia
   Commons, up to eight, in a gallery of thumbnails. Articles count as natural
   areas by the kind of thing their short description names first ("State park in
-  New York", but not "Fort on the Hudson River"), or by their title when they have
+  New York" or "Range of hills in central England", but not "Fort on the Hudson
+  River" or "Mountain village in Switzerland"), or by their title when they have
   none. Commons photos are JPEGs at least 800 px wide and at most three times
   wider than tall, leaving out titles that suggest maps, signs, buildings, shops,
   cars, artworks, or observation-app close-ups of species; titles that suggest
