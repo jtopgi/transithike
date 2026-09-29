@@ -108,6 +108,30 @@ class OverpassServiceTest < ActiveSupport::TestCase
     assert_equal OverpassService::URLS, OverpassService.urls(cache)
   end
 
+  test "queries wait for one of the process's two slots, highlights don't wait, and cached lookups need none" do
+    slots = Rails.configuration.x.overpass_slots
+    cache = ActiveSupport::Cache::MemoryStore.new
+    calls = 0
+    connection = overpass_connection
+    counted = stub_connection(:post, { "elements" => [] }) { calls += 1 }
+    cached = candidates(connection, cache: cache)
+    trails = [OverpassService::Trail.new(osm_id: 1, path: [[[47.0, -122.0], [47.02, -122.0]]])]
+    assert slots.try_acquire(2, 1)
+
+    assert_equal cached, candidates(counted, cache: cache)
+    error = stub_const(OverpassService, :SLOT_WAIT_SECONDS, 0.05) do
+      assert_raises(SearchErrors::ProviderBusy) { candidates(counted, lat: 48.0, cache: cache) }
+    end
+    assert_equal OverpassService::BUSY, error.message
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    assert_raises(SearchErrors::ProviderBusy) { OverpassService.highlights(trails, connections: [counted], cache: cache) }
+    assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 0.05
+    assert_equal 0, calls
+    assert_nil cache.read(OverpassService::FAILOVER_KEY)
+  ensure
+    slots.release(2)
+  end
+
   test "invalid origin cannot be interpolated into the query" do
     assert_raises(SearchErrors::InvalidInput) { OverpassService.candidates(lat: "0);node;out;", lon: 0) }
   end
