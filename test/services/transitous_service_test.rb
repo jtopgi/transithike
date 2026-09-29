@@ -284,10 +284,12 @@ class TransitousServiceTest < ActiveSupport::TestCase
     ] }, TransitousService.journey(origin: origin, destination: destination, time: DEPARTURE, connection: connection))
   end
 
-  # A trip back, leaving and arriving at these UTC times on September 24, on a bus or a train between two stops.
+  # A trip back on a bus or a train between two stops, leaving and arriving at
+  # these UTC times: in the afternoon or evening of September 23, or early on September 24.
   def trip_back(leave, home, mode: "BUS", name: "206", from: nil, to: nil)
-    itinerary("2026-09-24T#{leave}:00Z", "2026-09-24T#{home}:00Z", [leg(mode, "routeShortName" => name,
-      "from" => { "stopId" => from }.compact, "to" => { "stopId" => to }.compact)])
+    leave, home = [leave, home].map { |time| "2026-09-#{time >= '12:00' ? 23 : 24}T#{time}:00Z" }
+    itinerary(leave, home, [leg(mode, "routeShortName" => name, "from" => { "stopId" => from }.compact,
+      "to" => { "stopId" => to }.compact)])
   end
 
   # A journey there riding 2 h 20 min: the city bus to the station, then two trains.
@@ -365,6 +367,20 @@ class TransitousServiceTest < ActiveSupport::TestCase
     # When every way back is slow, the quickest of them still shows.
     slow = stub_connection(:get, { "itineraries" => [trip_back("00:30", "05:00", name: "slow")], "direct" => [] })
     assert_equal "slow", ways_back(slow, earliest: Time.utc(2026, 9, 24, 0, 5))[:back][:legs].sole[:name]
+  end
+
+  test "a slow trip after the hike beats quick ones that leave before it's over" do
+    connection = stub_connection(:get, lambda { |request|
+      itineraries = if request.params["via"]
+        [trip_back("18:00", "20:00", name: "the same way, before the hike ends")]
+      else
+        [trip_back("18:30", "20:30", name: "quick, before the hike ends"), trip_back("21:00", "00:20", name: "slow, after the hike")]
+      end
+      { "itineraries" => itineraries, "direct" => [] }
+    })
+    ways = ways_back(connection, earliest: Time.utc(2026, 9, 23, 20))
+    assert_equal ["slow, after the hike", "slow, after the hike", false],
+      [ways[:back][:legs].sole[:name], ways[:last][:legs].sole[:name], ways[:same_way]]
   end
 
   test "where the same way doesn't get home in time, or the planner doesn't know its stops, any way back does" do

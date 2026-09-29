@@ -214,7 +214,8 @@ module TransitousService
   # transit or the city's subway and light rail. Trips back that ride much longer
   # than the journey there, as slow buses late in the evening do, don't count.
   # Where the same way has no trip back after earliest, any way does, and
-  # same_way is false; it is nil when there is no journey to follow.
+  # same_way is false; it is nil when there is no journey to follow. Only when
+  # nothing leaves after earliest is the way back the last trip before it.
   def self.ways_back(origin:, destination:, like:, earliest:, deadline:, connection: nil, cache: Rails.cache)
     params = {
       fromPlace: place(origin), toPlace: place(destination), time: deadline.utc.iso8601, arriveBy: true,
@@ -244,12 +245,15 @@ module TransitousService
       return { back: back, last: last_trip(same), same_way: true } if back
     end
     trips = trips_for.(params)
-    trips = swift.(trips).presence || trips
-    back = first_home(trips, earliest)
-    # When no way back leaves after the hike, the last one the same way is still the one to take.
-    return { back: last_trip(same), last: last_trip(same), same_way: true } if back.nil? && same.any?
+    other_way = (false unless constrained == params)
+    after = trips.select { |trip| trip[:departure] >= earliest.utc.iso8601 }
+    # A slow trip after the hike still beats a quick one that leaves before it's over.
+    pool = swift.(after).presence || after
+    return { back: first_home(pool, earliest), last: last_trip(pool), same_way: other_way } if pool.any?
 
-    { back: back || last_trip(trips), last: last_trip(trips), same_way: (false unless constrained == params) }
+    # When no way back leaves after the hike, the last one is still the one to take, the same way if it can be.
+    before = same.presence || swift.(trips).presence || trips
+    { back: last_trip(before), last: last_trip(before), same_way: same.any? || other_way }
   end
 
   # The trip home soonest that leaves at earliest or later, riding the least
