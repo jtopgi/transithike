@@ -47,13 +47,17 @@ class SearchesTest < ApplicationSystemTestCase
         end
         [200, {}, JSON.generate(transit_durations: durations, street_durations: [])]
       end
-      # The trains and buses each card shows once the search is done.
+      # The train there and the bus back that each card shows once the search is done, riding five minutes
+      # less each way than the search's estimate for the route. The last bus back leaves three hours before 11 PM.
       stub.get(URI(TransitousService::PLAN_URL).path) do |env|
-        leave = Time.iso8601(env.params["time"])
-        leg = env.params["arriveBy"] == "true" ? { mode: "BUS", routeShortName: "11" } : { mode: "SUBURBAN", routeLongName: "Sounder N Line" }
-        start, finish = env.params["arriveBy"] == "true" ? [leave - 3.hours, leave - 2.hours] : [leave + 10.minutes, leave + 1.hour]
-        itinerary = { duration: (finish - start).to_i, transfers: 0, startTime: start.utc.iso8601, endTime: finish.utc.iso8601,
-          legs: [leg.merge(startTime: start.utc.iso8601, endTime: finish.utc.iso8601, agencyName: "Sound Transit")] }
+        back = env.params["arriveBy"] == "true"
+        latitude = Float(env.params[back ? "fromPlace" : "toPlace"].split(",").first)
+        ride = ROUTES.min_by { |_, route_latitude| (route_latitude - latitude).abs }.last.sole[:duration] - 300
+        time = Time.iso8601(env.params["time"])
+        start = back ? time - 3.hours : time + 10.minutes
+        leg = back ? { mode: "BUS", routeShortName: "11" } : { mode: "SUBURBAN", routeLongName: "Sounder N Line" }
+        times = { startTime: start.utc.iso8601, endTime: (start + ride).utc.iso8601 }
+        itinerary = { duration: ride, transfers: 0, **times, legs: [leg.merge(times, agencyName: "Sound Transit")] }
         [200, {}, JSON.generate(itineraries: [itinerary], direct: [])]
       end
       stub.get(URI(WikipediaService::API_URL).path) do |env|
@@ -113,16 +117,18 @@ class SearchesTest < ApplicationSystemTestCase
     assert_selector "article.trail-card", count: 3
     assert_no_selector "[data-skeleton]"
     assert_selector ".trail-map.leaflet-container", minimum: 1
-    assert_selector "article.trail-card dd", text: "1 transfer"
     assert_selector "article.trail-card .trail-return", text: /Last trip back \d+:\d\d [AP]M/, count: 3
     # Capybara reads non-breaking spaces as spaces.
     assert_selector "[data-departure]", text: /with a way back by 11 PM/
-    # Each card shows the trains and other transit there and back once the search is done.
+    # Each card shows the trains and other transit there and back once the search is done, and the planned
+    # trips replace the search's estimates: the rides there and back, and the last trip back and time there.
     assert_selector ".trail-trip", text: /There: 🚆 Sounder N Line · leave \d+:\d\d [AP]M, arrive/, minimum: 1
-    assert_selector ".trail-trip", text: /Back: 🚌 11 · leave \d+:\d\d [AP]M, home by 9:00 PM/, minimum: 1
-    # The planned trips replace the search's estimates: a 50-minute ride, and the last trip back three hours before 11 PM.
-    assert_selector "article.trail-card [data-travel-time]", text: "50 min", minimum: 1
-    assert_selector "article.trail-card .trail-return", text: /Last trip back 8:00 PM/, minimum: 1
+    within find("article.trail-card", text: "Short Loop") do
+      assert_selector ".trail-trip", text: "Back: 🚌 11 · leave 8:00 PM, home 9:15 PM"
+      assert_selector "[data-travel-time]", text: "2 h 30 min"
+      assert_selector "[data-travel-detail]", text: "1 h 15 min there · 1 h 15 min back"
+      assert_selector ".trail-return", text: "Last trip back 8:00 PM · up to 10 h there"
+    end
   end
 
   test "hikes stream in, are ranked once highlights and popularity arrive, and can be sorted and filtered" do
@@ -135,7 +141,8 @@ class SearchesTest < ApplicationSystemTestCase
     assert_text "Showing 3 of 3 hikes"
     assert_equal ["Ridge Trail", "Long Traverse", "Short Loop"], route_names
 
-    { "Fastest to reach" => ["Ridge Trail", "Short Loop", "Long Traverse"],
+    # Planned trips there and back keep these orders.
+    { "Least travel" => ["Ridge Trail", "Short Loop", "Long Traverse"],
       "Most time there" => ["Ridge Trail", "Short Loop", "Long Traverse"],
       "Most scenic" => ["Short Loop", "Long Traverse", "Ridge Trail"],
       "Most popular" => ["Ridge Trail", "Long Traverse", "Short Loop"],
@@ -145,7 +152,7 @@ class SearchesTest < ApplicationSystemTestCase
       assert_equal names, route_names, order
     end
 
-    select "Up to 1½ hours", from: "Trip"
+    select "Up to 3 hours", from: "Round trip"
     assert_text "Showing 2 of 3 hikes"
     assert_equal ["Short Loop", "Ridge Trail"], route_names
     find("label", text: "Under 3 mi").click
@@ -153,7 +160,7 @@ class SearchesTest < ApplicationSystemTestCase
     assert_equal ["Short Loop"], route_names
     find("label", text: "Over 6 mi").click
     assert_text "No hikes match these filters"
-    select "Any travel time", from: "Trip"
+    select "Any travel time", from: "Round trip"
     assert_equal ["Long Traverse"], route_names
   end
 

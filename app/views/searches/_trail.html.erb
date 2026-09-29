@@ -1,6 +1,7 @@
 <div class="col" data-trail data-osm-id="<%= trail.osm_id %>" data-score="<%= trail.score %>"
-     data-duration="<%= trail.duration.round %>" data-length="<%= trail.length.round(2) %>"
+     data-travel="<%= TrailsService.round_trip_seconds(trail).round %>" data-length="<%= trail.length.round(2) %>"
      data-distance="<%= trail.distance.round(2) %>" data-stay="<%= stay_seconds(trail) %>"
+     data-required="<%= (TrailsService.required_hours(trail) * 3600).round %>"
      data-popularity="<%= trail.area&.dig(:monthly_views).to_i %>" data-scenic="<%= TrailsService.scenic(trail) %>">
   <article class="card trail-card h-100 border-0 shadow-sm">
     <div class="trail-media">
@@ -17,11 +18,13 @@
       <div data-chips><%= render "searches/chips", trail: trail %></div>
       <dl class="trail-stats">
         <div>
-          <dt><span aria-hidden="true">🕒</span> Travel time</dt>
+          <dt><span aria-hidden="true">🕒</span> Round trip</dt>
           <dd>
-            <%# From setting out, waiting for the train included, until the planned trip shows the ride itself. %>
-            <span data-travel-time><%= (trail.duration / 60.0).ceil %> min</span>
-            <small class="trail-transfers"><%= transfers_label(trail.transfers) %></small>
+            <%# Twice the trip there, waiting for the train included, until the planned trips there and back show. %>
+            <span data-travel-time>≈ <%= duration_label(TrailsService.round_trip_seconds(trail), approximate: true) %></span>
+            <small class="trail-transfers" data-travel-detail>
+              ≈ <%= duration_label(trail.duration, approximate: true) %> each way · <%= transfers_label(trail.transfers) %>
+            </small>
           </dd>
         </div>
         <div>
@@ -35,8 +38,8 @@
       </dl>
       <p class="trail-return">
         <% if trail.last_return %>
-          <span aria-hidden="true">↩️</span> Last trip back <strong><%= clock(trail.last_return, result) %></strong>
-          <span class="text-body-secondary">· up to <%= stay_label(trail) %> there</span>
+          <span aria-hidden="true" data-return-icon>↩️</span> Last trip back <strong><%= clock(trail.last_return, result) %></strong>
+          <span class="text-body-secondary" data-stay-label>· up to <%= stay_label(trail) %> there</span>
         <% else %>
           <span aria-hidden="true">⚠️</span> We couldn't check the way back. Check it before you go.
         <% end %>

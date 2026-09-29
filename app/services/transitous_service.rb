@@ -42,6 +42,10 @@ module TransitousService
   RIDE_LIMITS = [nil, 120, 80].freeze
   # Weekend timetables rarely change, so a day's stations are shared for hours.
   RAIL_CACHE_TTL = 6.hours
+  # Trips back may ride this much longer than the trip there, for a slower
+  # connection home or a wait at a transfer, but no longer.
+  BACK_RIDE_FACTOR = 1.25
+  BACK_RIDE_SLACK = 15.minutes
   # Legs in these modes are on foot or by private vehicle, not on transit.
   STREET_MODES = %w[WALK BIKE RENTAL CAR HGV CAR_PARKING CAR_DROPOFF ODM RIDE_SHARING FLEX].freeze
   TRIP_CACHE_TTL = 15.minutes
@@ -187,31 +191,109 @@ module TransitousService
   end
 
   # A trip for showing its legs, as { departure:, arrival:, legs: [{ mode:, name:,
-  # agency:, headsign: }] } with ISO 8601 times and only the legs on transit
-  # (none for walking the whole way), or nil when there is none. By default it
-  # leaves at time and arrives soonest; with arrive_by, it arrives by time and
-  # leaves as late as possible.
-  def self.journey(origin:, destination:, time:, arrive_by: false, connection: nil, cache: Rails.cache)
+  # agency:, headsign:, from:, to: }] } with ISO 8601 times, the ids
+  # of the stops each leg rides between (nil when unknown), and only the legs on
+  # transit (none for walking the whole way), or nil when there is none. It
+  # leaves at time and arrives soonest.
+  def self.journey(origin:, destination:, time:, connection: nil, cache: Rails.cache)
     params = {
       fromPlace: place(origin), toPlace: place(destination), time: time.utc.iso8601,
-      arriveBy: arrive_by, timetableView: false, detailedLegs: false, maxPostTransitTime: MAX_POST_TRANSIT_SECONDS
+      arriveBy: false, timetableView: false, detailedLegs: false, maxPostTransitTime: MAX_POST_TRANSIT_SECONDS
     }
-    # Coming back starts with the walk from the route to a stop.
-    params[:maxPreTransitTime] = MAX_POST_TRANSIT_SECONDS if arrive_by
-    cache_key = "transitous:journey:v2:#{params.values_at(:fromPlace, :toPlace, :time, :arriveBy).join(':')}"
-    cache.fetch(cache_key, expires_in: TRIP_CACHE_TTL) do
+    cache.fetch("transitous:journey:v3:#{params.values_at(:fromPlace, :toPlace, :time).join(':')}", expires_in: TRIP_CACHE_TTL) do
       connection ||= SearchHttp.connection(PLAN_URL, timeout: 10)
-      data = SearchHttp.json { connection.get { |request| request.params = params } }
-      journeys = data.values_at("itineraries", "direct")
-      raise SearchErrors::UpstreamError, INVALID_RESPONSE unless journeys.all?(Array)
+      plan(connection, params).min_by { |journey| journey[:arrival] }
+    end
+  end
 
-      summaries = journeys.flatten(1).filter_map { |journey| journey_summary(journey) }
-      if arrive_by
-        summaries.select { |journey| journey[:arrival] <= params[:time] }.max_by { |journey| journey[:departure] }
-      else
-        summaries.min_by { |journey| journey[:arrival] }
+  # The trips back from a route to the origin, by the same way as the journey
+  # there, as { back:, last:, same_way: }, each trip like #journey's or nil.
+  # back is home soonest while leaving at earliest or later, as after a hike, and
+  # last leaves latest while home by the deadline. The same way rides the
+  # journey's trains back between the same stations, with the same kinds of
+  # transit or the city's subway and light rail. Trips back that ride much longer
+  # than the journey there, as slow buses late in the evening do, don't count.
+  # Where the same way has no trip back after earliest, any way does, and
+  # same_way is false; it is nil when there is no journey to follow. Only when
+  # nothing leaves after earliest is the way back the last trip before it.
+  def self.ways_back(origin:, destination:, like:, earliest:, deadline:, connection: nil, cache: Rails.cache)
+    params = {
+      fromPlace: place(origin), toPlace: place(destination), time: deadline.utc.iso8601, arriveBy: true,
+      # Every trip that leaves from earliest until the last one is listed.
+      timetableView: true, searchWindow: (deadline - earliest).clamp(1.hour, 14.hours).to_i,
+      detailedLegs: false, maxPreTransitTime: MAX_POST_TRANSIT_SECONDS, maxPostTransitTime: MAX_POST_TRANSIT_SECONDS
+    }
+    trips_for = lambda do |query|
+      cache.fetch("transitous:ways-back:v2:#{Digest::SHA256.hexdigest(query.to_json)}", expires_in: TRIP_CACHE_TTL) do
+        connection ||= SearchHttp.connection(PLAN_URL, timeout: 15)
+        plan(connection, query).select { |trip| trip[:arrival] <= params[:time] }
       end
     end
+    longest = ride_seconds(like) * BACK_RIDE_FACTOR + BACK_RIDE_SLACK if like
+    swift = ->(trips) { longest ? trips.select { |trip| ride_seconds(trip) <= longest } : trips }
+
+    constrained = params.merge(same_way(like))
+    same = []
+    unless constrained == params
+      same = begin
+        swift.(trips_for.(constrained))
+      rescue SearchErrors::UpstreamError
+        # The planner may not know a station, so any way back is looked up instead.
+        []
+      end
+      back = first_home(same, earliest)
+      return { back: back, last: last_trip(same), same_way: true } if back
+    end
+    trips = trips_for.(params)
+    other_way = (false unless constrained == params)
+    after = trips.select { |trip| trip[:departure] >= earliest.utc.iso8601 }
+    # A slow trip after the hike still beats a quick one that leaves before it's over.
+    pool = swift.(after).presence || after
+    return { back: first_home(pool, earliest), last: last_trip(pool), same_way: other_way } if pool.any?
+
+    # When no way back leaves after the hike, the last one is still the one to take, the same way if it can be.
+    before = same.presence || swift.(trips).presence || trips
+    { back: last_trip(before), last: last_trip(before), same_way: same.any? || other_way }
+  end
+
+  # The trip home soonest that leaves at earliest or later, riding the least
+  # when several are home at once.
+  def self.first_home(trips, earliest)
+    trips.select { |trip| trip[:departure] >= earliest.utc.iso8601 }
+      .min_by { |trip| [trip[:arrival], -Time.iso8601(trip[:departure]).to_i] }
+  end
+
+  # The trip that leaves latest, and of those, the one home soonest.
+  def self.last_trip(trips)
+    trips.min_by { |trip| [-Time.iso8601(trip[:departure]).to_i, trip[:arrival]] }
+  end
+
+  def self.ride_seconds(trip)
+    Time.iso8601(trip[:arrival]) - Time.iso8601(trip[:departure])
+  end
+
+  # The via stations and transit modes that keep a trip back to the journey's
+  # way, as plan parameters: its trains ridden back from the station where they
+  # stopped to the one where they started. Stations are the same both ways,
+  # while buses often stop across the street, so only the kinds of transit
+  # keep a journey without trains to its way.
+  def self.same_way(journey)
+    legs = Array(journey && journey[:legs])
+    return {} if legs.empty?
+
+    trains = legs.select { |leg| TRAIN_MODES.include?(leg[:mode]) }
+    via = [trains.last&.dig(:to), trains.first&.dig(:from)].compact.uniq
+    modes = (legs.map { |leg| leg[:mode] } + CITY_MODES).uniq
+    { via: via.join(",").presence, transitModes: modes.join(",") }.compact
+  end
+
+  # The trips in a plan response, skipping malformed ones.
+  def self.plan(connection, params)
+    data = SearchHttp.json { connection.get { |request| request.params = params } }
+    journeys = data.values_at("itineraries", "direct")
+    raise SearchErrors::UpstreamError, INVALID_RESPONSE unless journeys.all?(Array)
+
+    journeys.flatten(1).filter_map { |journey| journey_summary(journey) }
   end
 
   def self.journey_summary(journey)
@@ -227,8 +309,14 @@ module TransitousService
       names = leg.values_at("routeShortName", "routeLongName")
       names.reverse! if TRAIN_MODES.include?(leg["mode"])
       { mode: leg["mode"], name: text(names.first) || text(names.last) || text(leg["displayName"]),
-        agency: text(leg["agencyName"]), headsign: text(leg["headsign"]) }
+        agency: text(leg["agencyName"]), headsign: text(leg["headsign"]), from: stop_id(leg["from"]), to: stop_id(leg["to"]) }
     end }
+  end
+
+  # A stop's id, which plans can be asked to go via, or nil.
+  def self.stop_id(place)
+    id = place["stopId"] if place.is_a?(Hash)
+    id if id.is_a?(String) && id.match?(/\A[^,\s]{1,200}\z/)
   end
 
   def self.parse_time(value)

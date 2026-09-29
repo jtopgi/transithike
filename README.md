@@ -9,10 +9,11 @@ the subway already reaches. The application is Rails-rendered with Bootstrap: a
 starting-point box that suggests places as you type (or uses the device's
 location) with a Saturday/Sunday choice, and a results page that shows at once
 and streams in hikes as they are found. Each card has a map preview, a nearby
-photo, highlights, popularity, the last trip back and how long that leaves there,
-and the trains and other transit to take each way. Hikes can be sorted by
-recommendation, travel time, time there, distance, popularity, scenery, or length,
-and filtered by length and travel time.
+photo, highlights, popularity, the round trip's travel time, the last trip back
+and how long that leaves there, and the trains and other transit to take each
+way, coming back the same way. Hikes can be sorted by recommendation, round trip,
+time there, distance, popularity, scenery, or length, and filtered by length and
+round trip.
 
 ## Requirements
 
@@ -100,6 +101,22 @@ test Overpass connectivity from your deployment before launching.
   1½ and at most 4 hours (long routes can be shortened). Journeys may include up
   to 30 minutes' walk from the last stop, and from the route to the first stop on
   the way back.
+- **There and back the same way.** Each card shows the round trip: the rides
+  there and back. Until a card's trips are planned, it is twice the trip there
+  (waiting for the first train included), since coming back the same way takes
+  about as long; ranking, sorting, and the round-trip filter start from that.
+  Once the card scrolls into view, its trips are planned: the soonest trip there,
+  then the trips back that ride the same trains back between the same stations
+  (via the station where the last train stopped and the one where the first
+  started), with the same kinds of transit or the subway and light rail for the
+  ride home. Buses often stop across the street on the way back, so a trip there
+  without trains keeps only its kinds of transit. Trips back that ride more than
+  a quarter longer than the trip there, plus 15 minutes, don't count, so an
+  evening bus or a slow detour isn't suggested. The way back shown is the one
+  home soonest after hiking for the time the search requires, and the last trip
+  back is the last such trip, which also sets the time there (flagged when it's
+  less than the hike needs). Where the same way doesn't run after the hike, the
+  quickest other way is shown, and the card says so.
 - **Not the city's parks.** Hikes the subway, metro, or light rail
   (`TransitousService::CITY_MODES`: Transitous's `SUBWAY` and `TRAM`; its `METRO`
   means suburban trains) reach within those 3½ hours are left out, since
@@ -113,12 +130,11 @@ test Overpass connectivity from your deployment before launching.
   to 16 miles, a quarter for shorter ones), up to two for highlights, about 0.75
   per tenfold increase in page views above 100, and half a point for routes with
   Wikipedia or Wikidata entries. It subtracts up to 1.25 points for partly paved
-  routes, one for generic names such as "Trail 2", half a point per hour of travel
-  beyond an hour and a half plus another point per hour beyond three hours, 0.1 per
-  transfer,
-  half a point when there isn't time to hike the whole route before the last trip
-  back, and 1.5 points for each route after the first two in one park or natural
-  area, for variety.
+  routes, one for generic names such as "Trail 2", a quarter point per hour of
+  round trip beyond three hours plus another half point per hour beyond six hours,
+  0.1 per transfer, half a point when there isn't time to hike the whole route
+  before the last trip back, and 1.5 points for each route after the first two in
+  one park or natural area, for variety.
 - **Highlights** are mapped waterfalls, summits, and viewpoints within 150 m of a
   route's ways; waterfalls and summits count twice as much as viewpoints, and
   unnamed ones half as much as named ones. The paved share comes from mapped
@@ -167,8 +183,10 @@ hours for origins within about 100 m. Then for each batch, it asks for every
 route's trip there, the trip there by city transit, and the latest trip back in
 three requests to the experimental one-to-many API, all cached for 15 minutes. If
 that API fails, it plans up to 15 of the nearest routes one at a time. Once a search is
-done, each card the visitor scrolls to plans its trips there and back to show
-their legs, cached the same way. Transitous serializes concurrent requests from one
+done, each card the visitor scrolls to plans its trip there, then its trips back
+the same way from the end of the hike until the last one in one timetable
+request (and any way back in another, when the same way has none), cached the
+same way. Transitous serializes concurrent requests from one
 client, so a search's requests are never sent in parallel. It also supplies each
 origin's time zone and area name, cached for 30 days. Transit coverage depends on
 the feeds Transitous has for a region.
