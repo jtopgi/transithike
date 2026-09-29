@@ -146,24 +146,24 @@ sessions may need to be renewed.
 
 ## Deploying to Azure
 
-The app runs on [Azure Container Apps](https://learn.microsoft.com/azure/container-apps/)
-and deploys from GitHub Actions:
+The app runs at <https://transithike.azurewebsites.net> on
+[Azure App Service](https://learn.microsoft.com/azure/app-service/) and deploys
+from GitHub Actions:
 
 - After CI passes on `master`, the `deploy` job signs in to Azure with OpenID
   Connect (no stored passwords), pushes the image to Azure Container Registry
-  tagged with the commit SHA, and updates the container app. It then checks the
-  new revision, loads the site twice with its session cookie, and runs one real
-  search; a provider outage there only produces a warning. Deployments and the
-  app URL appear under the repository's `production` environment.
+  tagged with the commit SHA, and points the web app at it. The image reports
+  its commit in an `X-App-Revision` header, so the job waits until the new build
+  serves traffic, loads the site twice with its session cookie, and runs one
+  real search; a provider outage there only produces a warning. Deployments and
+  the app URL appear under the repository's `production` environment.
 - Images are built by GitHub Actions because Azure free-credit subscriptions
   cannot use Container Registry build tasks.
-- The app scales to zero when idle, so the first request after a quiet period
-  takes 10–20 seconds while it starts. It runs at most one 0.5 vCPU/1 GiB replica.
-  Logs go to Log Analytics with 30-day retention and a 0.1 GB daily cap.
+- A Linux B1 plan keeps one instance always on, so there are no cold starts.
+  App Service terminates HTTPS and health-checks `/up`.
 
-Expected cost is about **US$5/month** for the Basic registry; light traffic stays
-within the Container Apps monthly free grant. Keeping one replica running
-(`--min-replicas 1`) adds roughly US$10/month.
+Expected cost is about **US$18/month**: roughly US$13 for the B1 plan and US$5
+for the Basic registry.
 
 ### One-time setup
 
@@ -176,19 +176,22 @@ bin/azure-setup
 ```
 
 The idempotent script creates the `rg-transithike` resource group with the
-registry, Log Analytics workspace, Container Apps environment and app, and two
-managed identities: one pulls images, and the other is trusted only by this
-repository's `production` GitHub environment to deploy. It stores a generated
-`SECRET_KEY_BASE` as a Container Apps secret and restricts that GitHub
-environment to the default branch. Push or merge to `master` to deploy.
+registry, App Service plan and web app, and two managed identities: one pulls
+images, and the other is trusted only by this repository's `production` GitHub
+environment to deploy. It stores a generated `SECRET_KEY_BASE` as an app setting
+and restricts that GitHub environment to the default branch. It keeps the short
+`<app>.azurewebsites.net` host name, so set `AZURE_WEBAPP` if `transithike` is
+taken. Credit-based subscriptions have no App Service quota in some regions; the
+production plan is in `centralus` for that reason (`AZURE_WEBAPP_LOCATION`).
+Push or merge to `master` to deploy.
 
 ### Operations
 
 ```sh
-az containerapp logs show -n transithike -g rg-transithike --follow     # stream logs
-az containerapp update -n transithike -g rg-transithike --min-replicas 1  # stay warm
-az containerapp update -n transithike -g rg-transithike \
-  --image <registry>.azurecr.io/transithike:<previous-sha>                # roll back
+az webapp log tail -n transithike -g rg-transithike                       # stream logs
+az webapp restart -n transithike -g rg-transithike                        # restart
+az webapp config container set -n transithike -g rg-transithike \
+  --container-image-name <registry>.azurecr.io/transithike:<previous-sha>  # roll back
 az group delete -n rg-transithike                                         # remove everything
 ```
 

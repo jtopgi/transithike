@@ -6,16 +6,20 @@
 # Requires the Azure CLI (run `az login` first) and the GitHub CLI with admin
 # access to the repository. Everything lives in one resource group, so
 # `az group delete --name rg-transithike` removes it all. Optional settings:
-#   AZURE_LOCATION (default eastus), AZURE_RESOURCE_GROUP, AZURE_CONTAINER_APP.
+#   AZURE_LOCATION (default eastus), AZURE_RESOURCE_GROUP, AZURE_WEBAPP (which also
+#   names https://<AZURE_WEBAPP>.azurewebsites.net, so it must be globally unique),
+#   and AZURE_WEBAPP_LOCATION (default AZURE_LOCATION). App Service quotas vary by
+#   region on credit-based subscriptions: if creating the plan fails for lack of
+#   quota, try another region, such as centralus.
 set -euo pipefail
 
 az account show --output none || { echo "Run 'az login' first." >&2; exit 1; }
 
 location="${AZURE_LOCATION:-eastus}"
 group="${AZURE_RESOURCE_GROUP:-rg-transithike}"
-app="${AZURE_CONTAINER_APP:-transithike}"
-environment="cae-$app"
-workspace="log-$app"
+app="${AZURE_WEBAPP:-transithike}"
+plan="asp-$app"
+webapp_location="${AZURE_WEBAPP_LOCATION:-$location}"
 repository="${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
 branch="$(gh repo view "$repository" --json defaultBranchRef --jq .defaultBranchRef.name)"
 subscription="$(az account show --query id --output tsv)"
@@ -42,17 +46,13 @@ assign_role() { # principal-id role scope
 }
 
 step "Registering resource providers (first run can take a few minutes)"
-for namespace in Microsoft.App Microsoft.ContainerRegistry Microsoft.ManagedIdentity Microsoft.OperationalInsights; do
+for namespace in Microsoft.Web Microsoft.ContainerRegistry Microsoft.ManagedIdentity; do
   az provider register --namespace "$namespace" --wait --output none
 done
 
 step "Resource group $group in $location"
 az group create --name "$group" --location "$location" --output none
 group_id="$(az group show --name "$group" --query id --output tsv)"
-
-step "Log Analytics workspace $workspace (30-day retention, 0.1 GB daily cap)"
-az monitor log-analytics workspace create --resource-group "$group" --workspace-name "$workspace" \
-  --location "$location" --retention-time 30 --quota 0.1 --output none
 
 step "Container registry $registry (Basic)"
 if ! az acr show --resource-group "$group" --name "$registry" --output none 2>/dev/null; then
@@ -76,28 +76,33 @@ az identity federated-credential create --resource-group "$group" --identity-nam
   --name github-production --issuer https://token.actions.githubusercontent.com \
   --subject "repo:$repository:environment:production" --audiences api://AzureADTokenExchange --output none
 
-step "Container Apps environment $environment (first creation can take up to 30 minutes)"
-if ! az containerapp env show --resource-group "$group" --name "$environment" --output none 2>/dev/null; then
-  az containerapp env create --resource-group "$group" --name "$environment" --location "$location" \
-    --logs-workspace-id "$(az monitor log-analytics workspace show --resource-group "$group" \
-      --workspace-name "$workspace" --query customerId --output tsv)" \
-    --logs-workspace-key "$(az monitor log-analytics workspace get-shared-keys --resource-group "$group" \
-      --workspace-name "$workspace" --query primarySharedKey --output tsv)" \
-    --output none
+step "App Service plan $plan (Linux B1, always on)"
+if ! az appservice plan show --resource-group "$group" --name "$plan" --output none 2>/dev/null; then
+  az appservice plan create --resource-group "$group" --name "$plan" --location "$webapp_location" \
+    --is-linux --sku B1 --output none
 fi
 
-step "Container app $app (0.5 vCPU, 1 GiB, scales to zero when idle)"
-if ! az containerapp show --resource-group "$group" --name "$app" --output none 2>/dev/null; then
-  # Starts with a public placeholder image; the first GitHub Actions deployment replaces it.
-  az containerapp create --resource-group "$group" --name "$app" --environment "$environment" \
-    --image mcr.microsoft.com/k8se/quickstart:latest --target-port 3000 --ingress external \
-    --user-assigned "$app_identity_id" --registry-server "$registry.azurecr.io" \
-    --registry-identity "$app_identity_id" --cpu 0.5 --memory 1.0Gi --min-replicas 0 --max-replicas 1 \
-    --secrets "secret-key-base=$(openssl rand -hex 64)" --env-vars SECRET_KEY_BASE=secretref:secret-key-base \
-    --output none
+step "Web app $app"
+if ! az webapp show --resource-group "$group" --name "$app" --output none 2>/dev/null; then
+  # Start from the newest image in the registry, or App Service's placeholder until
+  # GitHub Actions deploys one.
+  image=mcr.microsoft.com/appsvc/staticsite:latest
+  tag="$(az acr repository show-tags --name "$registry" --repository transithike --orderby time_desc \
+    --top 1 --output tsv 2>/dev/null || true)"
+  [ -n "$tag" ] && image="$registry.azurecr.io/transithike:$tag"
+  # Leaving out --domain-name-scope keeps the short <app>.azurewebsites.net host name.
+  az webapp create --resource-group "$group" --plan "$plan" --name "$app" --container-image-name "$image" \
+    --assign-identity "$app_identity_id" --acr-use-identity --acr-identity "$app_identity_id" \
+    --https-only true --output none
+  az webapp config appsettings set --resource-group "$group" --name "$app" --output none --settings \
+    WEBSITES_PORT=3000 WEBSITES_ENABLE_APP_SERVICE_STORAGE=false SECRET_KEY_BASE="$(openssl rand -hex 64)"
 fi
-fqdn="$(az containerapp show --resource-group "$group" --name "$app" \
-  --query properties.configuration.ingress.fqdn --output tsv)"
+az webapp config set --resource-group "$group" --name "$app" --always-on true --http20-enabled true \
+  --min-tls-version 1.2 --ftps-state Disabled --generic-configurations '{"healthCheckPath": "/up"}' \
+  --output none
+az webapp log config --resource-group "$group" --name "$app" --docker-container-logging filesystem \
+  --output none
+host="$(az webapp show --resource-group "$group" --name "$app" --query defaultHostName --output tsv)"
 
 step "GitHub environment 'production' in $repository (deploys only from $branch)"
 gh api --method PUT "repos/$repository/environments/production" --silent --input - \
@@ -112,9 +117,9 @@ gh secret set AZURE_CLIENT_ID --repo "$repository" --env production --body "$dep
 gh secret set AZURE_TENANT_ID --repo "$repository" --env production --body "$tenant"
 gh secret set AZURE_SUBSCRIPTION_ID --repo "$repository" --env production --body "$subscription"
 gh variable set AZURE_RESOURCE_GROUP --repo "$repository" --env production --body "$group"
-gh variable set AZURE_CONTAINER_APP --repo "$repository" --env production --body "$app"
+gh variable set AZURE_WEBAPP --repo "$repository" --env production --body "$app"
 gh variable set AZURE_CONTAINER_REGISTRY --repo "$repository" --env production --body "$registry"
 
 step "Done"
-echo "App URL: https://$fqdn"
+echo "App URL: https://$host"
 echo "Pushes to $branch that pass CI now build and deploy the app."
