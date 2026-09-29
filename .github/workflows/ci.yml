@@ -98,9 +98,9 @@ jobs:
           curl --fail "${https[@]}" --output application.css "http://localhost:3000${stylesheet}"
           grep --quiet btn-primary application.css
           status=$(curl "${https[@]}" --header "Cookie: $cookie" --output search.html --write-out '%{http_code}' \
-            "http://localhost:3000/search?origin=&maximum_length=5")
+            "http://localhost:3000/search?origin=")
           test "$status" = 422
-          grep --quiet "Enter an origin" search.html
+          grep --quiet "Enter a starting point" search.html
           grep --quiet "https://transitous.org/sources/" search.html
           # Origins' local times need the container's time zone data.
           docker exec transithike bin/rails runner 'exit ActiveSupport::TimeZone["America/Los_Angeles"].now.zone.start_with?("P")'
@@ -173,10 +173,9 @@ jobs:
       - name: Run a real search
         run: |
           status=$(curl --silent --show-error --max-time 120 --output search.html --write-out '%{http_code}' \
-            --get "$URL/search" --data-urlencode "origin=Seattle, WA" --data-urlencode "maximum_length=10" \
-            --data-urlencode "arrival_time=$(date -u -d tomorrow +%Y-%m-%dT12:00)")
+            --get "$URL/search" --data-urlencode "origin=Seattle, WA")
           case "$status" in
-            200) grep --quiet "Showing routes near" search.html ;;
+            200) grep --quiet "data-trail " search.html ;;
             503) echo "::warning::A search provider was unavailable, but the app handled it." ;;
             *) echo "::error::The search returned HTTP $status."; exit 1 ;;
           esac

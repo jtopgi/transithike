@@ -5,7 +5,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   include SearchTestSupport
 
   setup do
-    travel_to Time.utc(2026, 9, 22, 12)
+    travel_to Time.utc(2026, 9, 22, 22) # 3 PM in Seattle, so trips plan for 8 AM tomorrow.
     @old_adapter = Faraday.default_adapter
     @old_adapter_options = Faraday.default_adapter_options
     @stubs = Faraday::Adapter::Test::Stubs.new
@@ -14,6 +14,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
       define_method(:initialize) { |app| super(app, stubs) }
     end
     Faraday.default_adapter_options = {}
+    @requests = Hash.new { |requests, path| requests[path] = [] }
   end
 
   teardown do
@@ -22,165 +23,166 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     travel_back
   end
 
-  # Arrival is wall-clock time at the origin: 12:30 PDT is 19:30 UTC.
-  def valid_params
-    { origin: "Seattle", arrival_time: "2026-09-23T12:30", maximum_length: "3" }
-  end
-
-  def geocode(matches = [{ type: "PLACE", name: "Seattle", lat: 47, lon: -122, tz: "America/Los_Angeles",
-    areas: [{ name: "Washington", adminLevel: 4 }] }])
-    @stubs.get(URI(TransitousService::GEOCODE_URL).path) do |env|
-      assert_equal SearchHttp::USER_AGENT, env.request_headers["User-Agent"]
-      [200, {}, JSON.generate(matches)]
+  def stub_get(url, body = nil, status: 200, &block)
+    path = URI(url).path
+    @stubs.get(path) do |env|
+      @requests[path] << env
+      block ? block.call(env) : [status, {}, body.is_a?(String) ? body : JSON.generate(body)]
     end
   end
 
-  def plan(itineraries: [], direct: [])
-    @stubs.get(URI(TransitousService::PLAN_URL).path) do |env|
-      assert_equal SearchHttp::USER_AGENT, env.request_headers["User-Agent"]
-      assert_equal "2026-09-23T19:30:00Z", env.params["time"]
-      [200, {}, JSON.generate(itineraries: itineraries, direct: direct)]
-    end
+  def geocode(features = [{ geometry: { coordinates: [-122, 47] },
+    properties: { name: "Seattle", state: "Washington", country: "United States" } }])
+    stub_get(PhotonService::URL, { features: features })
+  end
+
+  def area(time_zone: "America/Los_Angeles")
+    stub_get(TransitousService::REVERSE_GEOCODE_URL, [{ tz: time_zone, areas: [{ name: "Seattle", default: true }] }])
   end
 
   def hiking(elements)
     @stubs.post(URI(OverpassService::URL).path) { [200, {}, JSON.generate(elements: elements)] }
   end
 
-  test "the search form sends exactly the parameters the search reads" do
+  def trips(*durations)
+    stub_get(TransitousService::ONE_TO_MANY_URL, { transit_durations: durations, street_durations: [] })
+  end
+
+  test "the home page asks only for a starting point" do
     get root_path
     assert_response :success
-    assert_equal %w[origin arrival_time maximum_length],
-      css_select("form[action='#{search_path}'] [name]").map { |field| field["name"] }
-    assert_select "input[type=datetime-local][name=arrival_time][required]"
-    assert_select "select[name=maximum_length] option[selected]", text: "5 mi"
+    assert_equal %w[origin lat lon], css_select("form[action='#{search_path}'] [name]").map { |field| field["name"] }
+    assert_select "input[name=origin][role=combobox][aria-controls=origin-suggestions][required]"
+    assert_select "input[name=lat][disabled]"
+    assert_select "button[data-use-location][hidden]"
   end
 
-  test "the search form is refilled from a previous search" do
-    get root_path, params: valid_params.merge(maximum_length: "8", origin: ["ignored"])
-    assert_select "input[name=origin]:not([value])"
-    assert_select "input[name=arrival_time][value='2026-09-23T12:30']"
-    assert_select "select[name=maximum_length] option[selected]", text: "8 mi"
-  end
-
-  test "successful search renders accessible cards with honest geometry source attribution and no photo fallback" do
+  test "a typed place lists routes with previews, trip details, and attribution" do
     geocode
+    area
     hiking([route_element(name: "<script>alert(1)</script>")])
-    plan(itineraries: [{ duration: 601 }])
-    get search_path, params: valid_params.merge(origin: "A & B / 東京")
+    trips([{ duration: 2400, transfers: 1 }])
+    get search_path, params: { origin: "A & B / 東京" }
+
     assert_response :success
-    assert_select "strong", text: "Seattle, Washington"
-    assert_select "strong", text: "Wed, Sep 23 at 12:30 PM PDT"
-    assert_select "a[href=?]", root_path(valid_params.merge(origin: "A & B / 東京")), text: /Change search/
-    assert_select "article.trail-card", count: 1
-    assert_select "article.trail-card dt", count: 2
-    assert_select "article.trail-card dd", text: "11 min"
+    assert_equal "A & B / 東京", @requests["/api/"].first.params["q"]
+    assert_equal "47.0000000;-122.0000000", @requests[URI(TransitousService::ONE_TO_MANY_URL).path].first.params["one"]
+    assert_equal "2026-09-23T15:00:00Z", @requests[URI(TransitousService::ONE_TO_MANY_URL).path].first.params["time"]
+    assert_select "h1", text: "Hikes near Seattle, Washington, United States"
+    assert_includes response.body, "Travel times for leaving tomorrow at 8:00 AM PDT."
+    assert_select "[data-trail][data-duration='2400'][data-length='0.69'][data-distance='0.0']", count: 1
+    assert_select ".trail-map[data-path='[[[47.0,-122.0],[47.01,-122.0]]]'][data-start='[47.0,-122.0]']"
+    assert_select "a[data-photo-url='#{photo_path(lat: 47.0, lon: -122.0)}'][hidden]"
+    assert_select ".trail-card dd", text: /40 min\s+1 transfer/
     assert_select "a[href='https://www.openstreetmap.org/relation/123'][target=_blank]", count: 1
-    assert_select "footer a[href='https://transitous.org/sources/']", text: "data sources"
-    assert_select "footer a[href='https://www.openstreetmap.org/copyright']", count: 1
     assert_select "a[href^='https://www.google.com/maps/dir/?']" do |links|
       query = URI.decode_www_form(URI(links.first["href"]).query).to_h
-      assert_equal "A & B / 東京", query["origin"]
-      assert_equal "47.0,-122.0", query["destination"]
-      assert_equal "transit", query["travelmode"]
+      assert_equal ["Seattle, Washington, United States", "47.0,-122.0", "transit"], query.values_at("origin", "destination", "travelmode")
     end
-    assert_select "img", count: 0
+    assert_select "[data-results-toolbar][hidden] select[data-sort] option", count: 4
+    assert_select "footer a[href='https://transitous.org/sources/']", text: "data sources"
+    assert_select "footer a[href='https://photon.komoot.io']", text: "Photon"
     assert_select "script", text: "alert(1)", count: 0
     assert_includes response.body, "&lt;script&gt;"
     assert_includes response.body, "not a verified trailhead"
-    @stubs.verify_stubbed_calls
   end
 
-  test "no mapped routes render empty state" do
-    geocode
-    hiking([])
-    get search_path, params: valid_params
-    assert_response :success
-    assert_select "[role=status]", text: /No hiking routes/
-    @stubs.verify_stubbed_calls
-  end
-
-  test "unreachable transit route renders empty state" do
-    geocode
+  test "a chosen suggestion searches its coordinates without a lookup" do
+    area
     hiking([route_element])
-    plan
-    get search_path, params: valid_params
+    trips([{ duration: 600, transfers: 0 }])
+    get search_path, params: { origin: "Pike Place Market", lat: "47.0", lon: "-122.0" }
+
+    assert_response :success
+    assert_empty @requests["/api/"]
+    assert_select "h1", text: "Hikes near Pike Place Market"
+    assert_select ".trail-card dd", text: /10 min\s+direct/
+    assert_select "input[name=lat][value='47.0']:not([disabled])"
+  end
+
+  test "the device's location is named after its area and starts directions from it" do
+    area
+    hiking([route_element])
+    stub_get(TransitousService::ONE_TO_MANY_URL, { transit_durations: [[]], street_durations: [{ duration: 900 }] })
+    get search_path, params: { origin: SearchesController::CURRENT_LOCATION, lat: "47.0", lon: "-122.0" }
+
+    assert_response :success
+    assert_select "h1", text: "Hikes near your location in Seattle"
+    assert_select ".trail-card dd", text: /15 min\s+on foot/
+    assert_select "a[href^='https://www.google.com/maps/dir/?']" do |links|
+      refute_includes URI.decode_www_form(URI(links.first["href"]).query).to_h, "origin"
+    end
+  end
+
+  test "invalid coordinates fall back to looking up the typed place" do
+    geocode
+    area
+    hiking([])
+    get search_path, params: { origin: "Seattle", lat: "91", lon: "-122.0" }
+    assert_response :success
+    assert_equal 1, @requests["/api/"].size
+  end
+
+  test "trips fall back to planning each route when the one-request API fails" do
+    geocode
+    area
+    hiking([route_element])
+    stub_get(TransitousService::ONE_TO_MANY_URL, "not json")
+    stub_get(TransitousService::PLAN_URL, { itineraries: [{ duration: 1800, transfers: 2 }], direct: [] })
+    get search_path, params: { origin: "Seattle" }
+    assert_response :success
+    assert_select ".trail-card dd", text: /30 min\s+2 transfers/
+  end
+
+  test "a failed area lookup still searches, in UTC" do
+    geocode
+    stub_get(TransitousService::REVERSE_GEOCODE_URL, "{}", status: 503)
+    hiking([])
+    get search_path, params: { origin: "Seattle" }
+    assert_response :success
+    assert_includes response.body, "Travel times for leaving tomorrow at 8:00 AM UTC."
+  end
+
+  test "no reachable routes render an empty state, and old search parameters are ignored" do
+    geocode
+    area
+    hiking([route_element])
+    trips([])
+    get search_path, params: { origin: "Seattle", arrival_time: "2026-09-23T12:30", maximum_length: "3" }
     assert_response :success
     assert_select "[role=status]", text: /No hiking routes/
-    @stubs.verify_stubbed_calls
+    assert_select "[data-trail]", count: 0
   end
 
-  test "invalid scalar origins and length are rejected before external requests" do
+  test "invalid origins are rejected before external requests" do
     [nil, "", "   ", "a" * 201, ["Seattle"], { city: "Seattle" }].each do |origin|
-      get search_path, params: valid_params.merge(origin: origin)
+      get search_path, params: { origin: origin }
       assert_response :unprocessable_content
-      assert_select "[role=alert]", text: /Enter an origin/
+      assert_select "[role=alert]", text: /Enter a starting point/
     end
-    [nil, "0", "31", "-1", "1.5", "3x", ["3"], { value: "3" }].each do |length|
-      get search_path, params: valid_params.merge(maximum_length: length)
-      assert_response :unprocessable_content
-      assert_select "[role=alert]", text: /maximum length/
-    end
+    assert_empty @requests
   end
 
-  test "missing and malformed arrival times are rejected before external requests" do
-    [
-      nil, "", ["2026-09-23T12:30"], { date: "2026-09-23" }, "2026-02-30T10:00", "2026-13-01T10:00",
-      "2026-09-23T24:00", "2026-09-23T12:60", "202x-09-23T12:30", "2026-09-23 12:30", "2026-09-23"
-    ].each do |arrival_time|
-      get search_path, params: valid_params.merge(arrival_time: arrival_time)
-      assert_response :unprocessable_content
-      assert_select "[role=alert]", text: "Choose a valid arrival date and time."
-    end
-    get search_path
-    assert_response :unprocessable_content
-  end
-
-  test "arrival times with seconds are accepted" do
-    geocode
-    hiking([])
-    get search_path, params: valid_params.merge(arrival_time: "2026-09-23T12:30:00.000")
-    assert_response :success
-  end
-
-  test "past and too distant arrival times are rejected in the origin's time zone" do
-    geocode
-    # It is 05:00 PDT on September 22.
-    %w[2026-09-22T04:59 2026-09-29T05:01].each do |arrival_time|
-      get search_path, params: valid_params.merge(arrival_time: arrival_time)
-      assert_response :unprocessable_content
-      assert_select "[role=alert]", text: /in the future, within the next 7 days.*\(PDT\)/
-    end
-  end
-
-  test "unknown origin renders actionable 422" do
+  test "an unknown place renders an actionable 422" do
     geocode([])
-    get search_path, params: valid_params
+    get search_path, params: { origin: "Nowhere" }
     assert_response :unprocessable_content
-    assert_select "[role=alert]", text: /could not find that origin/
+    assert_select "[role=alert]", text: /could not find that starting point/
   end
 
-  test "upstream errors are safe service unavailable responses" do
-    @stubs.get(URI(TransitousService::GEOCODE_URL).path) { [503, {}, '{"error":"private provider details"}'] }
-    get search_path, params: valid_params
+  test "place search failures are safe service unavailable responses" do
+    stub_get(PhotonService::URL, '{"error":"private provider details"}', status: 503)
+    get search_path, params: { origin: "Seattle" }
     assert_response :service_unavailable
     assert_select "[role=alert]", text: /unavailable/
     refute_includes response.body, "private provider details"
   end
 
-  test "Overpass malformed response is not an empty success" do
+  test "a malformed route response is not an empty success" do
     geocode
+    area
     @stubs.post(URI(OverpassService::URL).path) { [200, {}, "not json"] }
-    get search_path, params: valid_params
+    get search_path, params: { origin: "Seattle" }
     assert_response :service_unavailable
-  end
-
-  test "transit timeout is a service failure" do
-    geocode
-    hiking([route_element])
-    @stubs.get(URI(TransitousService::PLAN_URL).path) { raise Faraday::TimeoutError, "sensitive details" }
-    get search_path, params: valid_params
-    assert_response :service_unavailable
-    refute_includes response.body, "sensitive details"
   end
 end

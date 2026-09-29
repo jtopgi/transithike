@@ -77,6 +77,86 @@ body {
   background: linear-gradient(135deg, var(--th-forest) 0%, var(--th-moss) 100%);
 }
 
+.results-subtitle {
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.place-search-field {
+  position: relative;
+}
+
+.place-suggestions {
+  position: absolute;
+  z-index: 1050;
+  inset: calc(100% + 0.25rem) 0 auto;
+  max-height: 18rem;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0.25rem 0;
+  background: #fff;
+  border: 1px solid var(--bs-border-color);
+  border-radius: 0.6rem;
+  box-shadow: 0 0.75rem 1.5rem rgba(0, 0, 0, 0.15);
+}
+
+.place-suggestion {
+  padding: 0.55rem 0.9rem;
+  color: var(--bs-body-color);
+  cursor: pointer;
+}
+
+.place-suggestion:hover,
+.place-suggestion[aria-selected="true"] {
+  background: #ecfdf3;
+}
+
+.trail-media {
+  display: grid;
+  grid-template-columns: 1fr;
+  height: 190px;
+  overflow: hidden;
+  border-radius: 1rem 1rem 0 0;
+  background: #e9eee7;
+}
+
+.trail-media.has-photo {
+  grid-template-columns: 3fr 2fr;
+}
+
+.trail-map {
+  height: 100%;
+  background: #e9eee7;
+}
+
+.trail-photo {
+  position: relative;
+  display: block;
+  color: #fff;
+}
+
+.trail-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.trail-photo-caption {
+  position: absolute;
+  inset: auto 0 0;
+  padding: 1.5rem 0.6rem 0.45rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.65));
+}
+
+.trail-photo-credit a {
+  color: inherit;
+}
+
+.trail-map .leaflet-control-attribution {
+  font-size: 0.65rem;
+}
+
 .trail-card {
   border-radius: 1rem;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
@@ -89,7 +169,8 @@ body {
 
 .trail-stats {
   display: flex;
-  gap: 2rem;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.75rem;
   margin-bottom: 1rem;
 }
 
@@ -104,6 +185,13 @@ body {
   font-size: 1.35rem;
   font-weight: 700;
   color: var(--th-forest);
+}
+
+.trail-transfers {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--bs-secondary-color);
 }
 
 .trail-summary {

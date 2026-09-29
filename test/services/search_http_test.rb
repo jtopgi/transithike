@@ -5,7 +5,7 @@ class SearchHttpTest < ActiveSupport::TestCase
   include SearchTestSupport
 
   test "connections have bounded timeouts and identify the application" do
-    connection = SearchHttp.connection(TransitousService::GEOCODE_URL)
+    connection = SearchHttp.connection(PhotonService::URL)
     assert_equal 5, connection.options.timeout
     assert_equal 3, connection.options.open_timeout
     assert_equal "https", connection.url_prefix.scheme
