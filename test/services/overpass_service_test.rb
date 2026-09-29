@@ -14,11 +14,19 @@ class OverpassServiceTest < ActiveSupport::TestCase
     OverpassService.candidates(lat: lat, lon: lon, connections: [connection], cache: cache)
   end
 
+  def search_element(radius = "80000")
+    { "type" => "search", "id" => 1, "tags" => { "radius" => radius } }
+  end
+
   # Trails from the full route elements, through the area and details queries.
   def fetch(routes, lat: 47.0, access: nil, paved: [], queries: nil, cache: Rails.cache)
     connection = overpass_connection(routes: routes, paved: paved, queries: queries)
-    OverpassService.trails(candidates(connection, lat: lat, cache: cache), lat: lat, lon: -122.0, access: access,
-      connections: [connection], cache: cache)
+    ids = OverpassService.pick(candidates(connection, lat: lat, cache: cache)[:routes], lat: lat, lon: -122.0, access: access)
+    OverpassService.trails_for(ids, lat: lat, lon: -122.0, access: access, connections: [connection], cache: cache)
+  end
+
+  def trails_for(ids, connection, cache: Rails.cache)
+    OverpassService.trails_for(ids, lat: 47.0, lon: -122.0, connections: [connection], cache: cache)
   end
 
   # A straight route of the given length in miles, starting at the origin.
@@ -38,21 +46,30 @@ class OverpassServiceTest < ActiveSupport::TestCase
     OverpassService.pick(candidates, lat: 47.0, lon: -122.0, access: access)
   end
 
-  test "the area query widens until it finds enough routes, from a point shared nearby" do
+  test "the area query widens until it finds enough routes, from a point shared nearby, and reports how far it went" do
     queries = []
     route = route_element
     route["tags"]["wikidata"] = "Q1"
-    found = candidates(overpass_connection(routes: [route], queries: queries), lat: 47.6038, lon: -122.3301)
+    found = candidates(overpass_connection(routes: [route], queries: queries, radius: 40_000), lat: 47.6038, lon: -122.3301)
 
     query = queries.sole
     assert_includes query, "[timeout:20]"
-    assert_includes query, 'relation(around:10000,47.6,-122.35)["type"="route"]["route"="hiking"]->.routes;'
+    assert_includes query, 'relation(around:10000,47.6,-122.35)["type"="route"]["route"="hiking"]->.routes;' \
+      "make search radius=10000->.searched;"
     assert_includes query, 'if (routes.count(relations) < 250) { relation(around:20000,47.6,-122.35)'
     assert_includes query, 'if (routes.count(relations) < 250) { relation(around:80000,47.6,-122.35)'
-    assert query.end_with?(".routes out tags bb;")
-    assert_equal({ id: 123, name: "Forest Loop", longitude: -122.0, bounds: [47.0, -122.0, 47.01, -122.0], span: 1112,
-      notable: true }, found.sole.except(:latitude))
-    assert_in_delta 47.005, found.sole[:latitude], 1e-9
+    assert query.end_with?(".routes out tags bb;.searched out;")
+    assert_equal 40_000, found[:radius]
+    assert_equal({ id: 123, name: "Forest Loop", longitude: -122.0, bounds: [47.0, -122.0, 47.02, -122.0], span: 2224,
+      notable: true }, found[:routes].sole.except(:latitude))
+    assert_in_delta 47.01, found[:routes].sole[:latitude], 1e-9
+  end
+
+  test "an area query must report one searched radius it asked for" do
+    [[], [search_element("5000")], [search_element("x")], [search_element, search_element],
+      [{ "type" => "search", "id" => 1, "tags" => "80000" }]].each do |searched|
+      assert_raises(SearchErrors::UpstreamError) { candidates(stub_connection(:post, { "elements" => searched })) }
+    end
   end
 
   test "candidates leave out other relations and routes too small or too long for a day hike" do
@@ -63,7 +80,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
     tiny["members"].first["geometry"].last["lat"] = 47.002
     long = route_of(31, id: 4)
     elements = [other, unbounded, tiny, long, route_element(id: 5)].map { |route| route["members"] ? candidate_of(route) : route }
-    assert_equal [5], candidates(stub_connection(:post, { "elements" => elements })).pluck(:id)
+    assert_equal [5], candidates(stub_connection(:post, { "elements" => elements + [search_element] }))[:routes].pluck(:id)
   end
 
   test "malformed responses and provider errors are not empty successes" do
@@ -71,7 +88,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
       assert_raises(SearchErrors::UpstreamError) { candidates(stub_connection(:post, body)) }
     end
     [nil, {}, { "type" => "relation", "id" => "bad", "tags" => {} }, { "type" => "relation", "id" => 1 }].each do |element|
-      assert_raises(SearchErrors::UpstreamError) { candidates(stub_connection(:post, { "elements" => [element] })) }
+      assert_raises(SearchErrors::UpstreamError) { candidates(stub_connection(:post, { "elements" => [element, search_element] })) }
     end
     assert_raises(SearchErrors::UpstreamError) { candidates(stub_connection(:post, {}, status: 429)) }
   end
@@ -82,7 +99,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
     assert_equal OverpassService::URLS, OverpassService.urls(cache)
 
     found = OverpassService.candidates(lat: 47, lon: -122, connections: [busy, overpass_connection], cache: cache)
-    assert_equal [123], found.pluck(:id)
+    assert_equal [123], found[:routes].pluck(:id)
     assert_equal OverpassService::URLS.reverse, OverpassService.urls(cache)
 
     assert_raises(SearchErrors::UpstreamError) do
@@ -169,10 +186,65 @@ class OverpassServiceTest < ActiveSupport::TestCase
     assert_equal [3, 1, 2], pick(routes, access: access)
   end
 
+  # A stop km north of the origin, reached in minutes.
+  def stop(kilometers, minutes, station: false, east: 0)
+    [47.0 + kilometers / 111.195, -122.0 + east, minutes, 1, station]
+  end
+
+  def far_cells(stops, beyond: 80_000)
+    OverpassService.far_cells(stops, 47.0, -122.0, beyond)
+  end
+
+  test "stops beyond the searched area are grouped into cells" do
+    stops = [stop(79, 60), stop(85, 70), stop(85.5, 75), stop(90, 80, station: true)]
+    assert_equal [[47.75, -122.0], [47.8, -122.0]], far_cells(stops)
+    assert_empty far_cells(stops, beyond: 100_000)
+  end
+
+  test "where there are too many cells, those with stations come first, spread over travel times" do
+    stations = (0...30).map { |index| stop(100, 60 + index, station: true, east: index * 0.1) }
+    buses = (0...30).map { |index| stop(100, 30 + index, east: -0.1 - index * 0.1) }
+    cells = far_cells(stations + buses)
+    assert_equal OverpassService::MAX_FAR_CELLS, cells.size
+    assert_equal stations.map { |station| [47.9, (station[1] * 20).round / 20.0] }, cells.first(30)
+    assert_equal [-122.1, -122.4, -122.7, -123.1], cells.drop(30).first(4).map(&:last)
+    assert_equal(-125.0, cells.last.last)
+    assert_equal [1, 5, 9], OverpassService.spread((1..9).to_a, 3)
+    assert_equal [1], OverpassService.spread([1, 2], 1)
+    assert_empty OverpassService.spread([1, 2], 0)
+  end
+
+  test "routes near stops beyond the searched area are found in one query, cached per cell" do
+    travel_to Time.utc(2026, 9, 22, 12) do
+      cache = ActiveSupport::Cache::MemoryStore.new
+      queries = []
+      near_a = route_element(id: 1, latitude: 47.75)
+      near_b = route_element(id: 2, latitude: 47.79, name: "Ridge")
+      elsewhere = route_element(id: 3, latitude: 48.5, name: "Far away")
+      connection = overpass_connection(routes: [], far: [near_a, near_b, elsewhere], queries: queries)
+      arguments = { lat: 47.0, lon: -122.0, beyond: 80_000, connections: [connection], cache: cache }
+
+      found = OverpassService.candidates_near([stop(85, 70), stop(90, 80, station: true)], **arguments)
+      assert_equal [1, 2], found.pluck(:id).sort
+      assert_equal ['relation(around:5500,47.75,-122.0)["type"="route"]["route"="hiking"];',
+        'relation(around:5500,47.8,-122.0)["type"="route"]["route"="hiking"];'], queries.sole.scan(/relation\([^;]*;/)
+      assert queries.sole.end_with?(");out tags bb;")
+
+      OverpassService.candidates_near([stop(90, 80), stop(95, 90)], **arguments)
+      assert_equal ['relation(around:5500,47.85,-122.0)["type"="route"]["route"="hiking"];'], queries.last.scan(/relation\([^;]*;/)
+      assert_empty OverpassService.candidates_near([stop(10, 20)], **arguments)
+      assert_equal 2, queries.size
+
+      travel 1.day + 1.minute
+      OverpassService.candidates_near([stop(90, 80)], **arguments)
+      assert_equal 3, queries.size
+    end
+  end
+
   test "maps geometry to miles, route start, preview and the share on paved ways" do
     route = route_element
     route["members"] << { "type" => "way", "ref" => 456, "role" => "",
-      "geometry" => [{ "lat" => 47.01, "lon" => -122.0 }, { "lat" => 47.03, "lon" => -122.0 }] }
+      "geometry" => [{ "lat" => 47.02, "lon" => -122.0 }, { "lat" => 47.025, "lon" => -122.0 }] }
     route["tags"]["website"] = "javascript:alert(1)"
     queries = []
     trail = fetch([route], paved: [456], queries: queries).sole
@@ -182,14 +254,36 @@ class OverpassServiceTest < ActiveSupport::TestCase
     assert_equal "Forest Loop", trail.name
     assert_equal "A wooded walk", trail.summary
     assert_equal [47.0, -122.0], [trail.latitude, trail.longitude]
-    assert_in_delta 2.073, trail.length, 0.001
-    assert_equal 0.67, trail.paved
+    assert_in_delta 1.727, trail.length, 0.001
+    assert_equal 0.2, trail.paved
     refute trail.notable
+    refute trail.loop
     assert_equal 123, trail.osm_id
-    assert_equal [[[47.0, -122.0], [47.01, -122.0]], [[47.01, -122.0], [47.03, -122.0]]], trail.path
-    assert_equal [47.01, -122.0], trail.midpoint
+    assert_equal [[[47.0, -122.0], [47.02, -122.0]], [[47.02, -122.0], [47.025, -122.0]]], trail.path
+    assert_equal [47.02, -122.0], trail.midpoint
     assert_in_delta 0, trail.distance, 0.001
     assert_nil trail.duration
+  end
+
+  test "routes mostly on paved paths or roads are walks, not day hikes" do
+    route = route_element
+    route["members"] << { "type" => "way", "ref" => 456, "role" => "",
+      "geometry" => [{ "lat" => 47.02, "lon" => -122.0 }, { "lat" => 47.04, "lon" => -122.0 }] }
+    assert_empty fetch([route], paved: [456])
+    assert_equal [123], fetch([route], paved: []).map(&:osm_id)
+  end
+
+  test "routes that end where they start are loops" do
+    closed = route_element(id: 1)
+    closed["members"].first["geometry"] << { "lat" => 47.0, "lon" => -121.99 } << { "lat" => 47.0, "lon" => -122.0 }
+    pieces = route_element(id: 2, name: "Pieces")
+    pieces["members"] << { "type" => "way", "ref" => 7, "role" => "",
+      "geometry" => [{ "lat" => 47.0, "lon" => -122.0 }, { "lat" => 47.01, "lon" => -121.99 }, { "lat" => 47.02, "lon" => -122.0 }] }
+    branch = route_element(id: 3, name: "Branch")
+    branch["members"] << { "type" => "way", "ref" => 8, "role" => "",
+      "geometry" => [{ "lat" => 47.01, "lon" => -122.0 }, { "lat" => 47.01, "lon" => -121.98 }] }
+    assert_equal({ 1 => true, 2 => true, 3 => false, 4 => false },
+      fetch([closed, pieces, branch, route_element(id: 4, name: "Line")]).to_h { |trail| [trail.osm_id, trail.loop] })
   end
 
   test "reports distance from the origin in miles" do
@@ -212,12 +306,12 @@ class OverpassServiceTest < ActiveSupport::TestCase
     route["members"].first["role"] = "backward"
     route["members"] << route["members"].first.dup
     trail = fetch([route]).sole
-    assert_in_delta 0.691, trail.length, 0.001
-    assert_equal 47.01, trail.latitude
+    assert_in_delta 1.382, trail.length, 0.001
+    assert_equal 47.02, trail.latitude
   end
 
-  test "leaves out routes under half a mile or over 30 miles" do
-    assert_equal [2, 3], fetch([route_of(0.49, id: 1), route_of(0.51, id: 2), route_of(29.9, id: 3)]).map(&:osm_id)
+  test "leaves out routes under a mile or over 30 miles" do
+    assert_equal [2, 3], fetch([route_of(0.99, id: 1), route_of(1.01, id: 2), route_of(29.9, id: 3)]).map(&:osm_id)
     assert_equal [], fetch([])
   end
 
@@ -231,13 +325,9 @@ class OverpassServiceTest < ActiveSupport::TestCase
     zero = route_element(id: 4)
     zero["members"].first["geometry"].last["lat"] = 47.0
     routes = [missing, partial, nested, zero]
-    connection = overpass_connection(routes: routes)
-    candidates = (1..4).map { |id| candidate(id, 0) }
-    assert_empty OverpassService.trails(candidates, lat: 47.0, lon: -122.0, connections: [connection], cache: Rails.cache)
+    assert_empty trails_for([1, 2, 3, 4], overpass_connection(routes: routes))
     assert_raises(SearchErrors::UpstreamError) do
-      invalid = route_element.merge("members" => "none")
-      OverpassService.trails([candidate(123, 0)], lat: 47.0, lon: -122.0,
-        connections: [overpass_connection(routes: [invalid])], cache: Rails.cache)
+      trails_for([123], overpass_connection(routes: [route_element.merge("members" => "none")]))
     end
   end
 
@@ -272,15 +362,14 @@ class OverpassServiceTest < ActiveSupport::TestCase
 
       connection = overpass_connection(routes: [route_element(id: 1), nested, route_element(id: 3, latitude: 47.02)],
         queries: queries)
-      trails = OverpassService.trails([1, 2, 3].map { |id| candidate(id, id / 10.0) }, lat: 47.0, lon: -122.0,
-        connections: [connection], cache: cache)
+      trails = trails_for([1, 2, 3], connection, cache: cache)
       assert_equal [1, 3], trails.map(&:osm_id)
       assert_includes queries.last, "relation(id:3)->"
       assert_equal "Forest Loop", trails.first.name
       assert_nil trails.first.duration
 
       travel 7.days + 1.minute
-      OverpassService.trails([candidate(1, 0)], lat: 47.0, lon: -122.0, connections: [connection], cache: cache)
+      trails_for([1], connection, cache: cache)
       assert_includes queries.last, "relation(id:1)->"
     end
   end

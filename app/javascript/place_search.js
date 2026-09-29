@@ -140,8 +140,6 @@ function setBusy(form, busy) {
 
   label.dataset.idleText ??= label.textContent
   label.textContent = busy ? "Searching…" : label.dataset.idleText
-  const status = form.querySelector("[data-search-status]")
-  if (status) status.textContent = busy ? "Checking transit to hikes up to 50 miles away. The first search in an area can take 20 seconds." : ""
   button.disabled = busy
   button.setAttribute("aria-busy", String(busy))
   button.querySelector(".spinner-border")?.classList.toggle("d-none", !busy)

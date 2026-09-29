@@ -5,7 +5,7 @@ class SearchesTest < ApplicationSystemTestCase
   include SearchTestSupport
 
   # Three routes north of the origin, nearest first, with different lengths and trips.
-  ROUTES = [["Short Loop", 47.61, 1, [{ duration: 1800, transfers: 0 }]],
+  ROUTES = [["Short Loop", 47.61, 1.5, [{ duration: 1800, transfers: 0 }]],
     ["Ridge Trail", 47.63, 5, [{ duration: 1200, transfers: 1 }]],
     ["Long Traverse", 47.66, 8, [{ duration: 4800, transfers: 2 }]]].freeze
   # A waterfall on the Short Loop, a viewpoint on the Long Traverse, and a well-known park around the Ridge Trail.
@@ -16,8 +16,9 @@ class SearchesTest < ApplicationSystemTestCase
     @old_adapter = Faraday.default_adapter
     @old_adapter_options = Faraday.default_adapter_options
     stubs = Faraday::Adapter::Test::Stubs.new do |stub|
-      stub.get(URI(PhotonService::URL).path) do
-        [200, {}, JSON.generate(features: [place("Pike Place Market", city: "Seattle"), place("Seattle")])]
+      stub.get(URI(PhotonService::URL).path) do |env|
+        features = env.params["q"] == "Nowhere" ? [] : [place("Pike Place Market", city: "Seattle"), place("Seattle")]
+        [200, {}, JSON.generate(features: features)]
       end
       stub.get(URI(TransitousService::REVERSE_GEOCODE_URL).path) do
         [200, {}, JSON.generate([{ tz: "America/Los_Angeles", areas: [{ name: "Seattle", default: true }] }])]
@@ -33,8 +34,20 @@ class SearchesTest < ApplicationSystemTestCase
         stops = ROUTES.each_with_index.map { |(_, latitude), index| { place: { lat: latitude, lon: -122.0 }, duration: 10 + index * 5, k: 1 } }
         [200, {}, JSON.generate(all: stops)]
       end
-      stub.get(URI(TransitousService::ONE_TO_MANY_URL).path) do
-        [200, {}, JSON.generate(transit_durations: ROUTES.map(&:last), street_durations: [])]
+      # Trips there, and with arriveBy, the last trips back, two hours before the 11 PM deadline.
+      stub.get(URI(TransitousService::ONE_TO_MANY_URL).path) do |env|
+        back = env.params["arriveBy"] == "true"
+        durations = back ? ROUTES.map { [{ duration: 7200, transfers: 0 }] } : ROUTES.map(&:last)
+        [200, {}, JSON.generate(transit_durations: durations, street_durations: [])]
+      end
+      # The trains, buses, and ferries each card shows once the search is done.
+      stub.get(URI(TransitousService::PLAN_URL).path) do |env|
+        leave = Time.iso8601(env.params["time"])
+        leg = env.params["arriveBy"] == "true" ? { mode: "BUS", routeShortName: "11" } : { mode: "SUBURBAN", routeLongName: "Sounder N Line" }
+        start, finish = env.params["arriveBy"] == "true" ? [leave - 3.hours, leave - 2.hours] : [leave + 10.minutes, leave + 1.hour]
+        itinerary = { duration: (finish - start).to_i, transfers: 0, startTime: start.utc.iso8601, endTime: finish.utc.iso8601,
+          legs: [leg.merge(startTime: start.utc.iso8601, endTime: finish.utc.iso8601, agencyName: "Sound Transit")] }
+        [200, {}, JSON.generate(itineraries: [itinerary], direct: [])]
       end
       stub.get(URI(WikipediaService::API_URL).path) do |env|
         pages = if env.params["ggscoord"] == POPULAR_AREA
@@ -84,21 +97,33 @@ class SearchesTest < ApplicationSystemTestCase
     assert_selector "h1", text: "Hikes near Pike Place Market, Seattle, Washington, United States"
     assert_includes current_url, "lat=47.6"
     assert_selector "article.trail-card", count: 3
+    assert_no_selector "[data-skeleton]"
     assert_selector ".trail-map.leaflet-container", minimum: 1
     assert_selector "article.trail-card dd", text: "1 transfer"
+    assert_selector "article.trail-card .trail-return", text: /Last trip back \d+:\d\d [AP]M/, count: 3
+    # Capybara reads non-breaking spaces as spaces.
+    assert_selector "[data-departure]", text: /with a way back by 11 PM/
+    # Each card shows the trains, buses, and ferries there and back once the search is done.
+    assert_selector ".trail-trip", text: /There: 🚆 Sounder N Line · leave \d+:\d\d [AP]M, arrive/, minimum: 1
+    assert_selector ".trail-trip", text: /Back: 🚌 11 · leave \d+:\d\d [AP]M, home by 9:00 PM/, minimum: 1
+    # The planned trip back, three hours before 11 PM, replaces the search's estimate.
+    assert_selector "article.trail-card .trail-return", text: /Last trip back 8:00 PM/, minimum: 1
   end
 
-  test "results are recommended first and can be sorted and filtered by length and trip" do
+  test "hikes stream in, are ranked once highlights and popularity arrive, and can be sorted and filtered" do
     visit search_url(origin: "Seattle")
 
-    assert_text "Showing 3 of 3 routes"
-    assert_equal ["Ridge Trail", "Short Loop", "Long Traverse"], route_names
+    # Popularity arrives with the final ranking.
     assert_selector "article.trail-card", text: /Ridge Trail.*Very popular/m
     assert_selector "article.trail-card", text: /Short Loop.*Little Falls/m
+    assert_no_selector "[data-progress]", visible: true
+    assert_text "Showing 3 of 3 hikes"
+    assert_equal ["Ridge Trail", "Long Traverse", "Short Loop"], route_names
 
     { "Fastest to reach" => ["Ridge Trail", "Short Loop", "Long Traverse"],
+      "Most time there" => ["Ridge Trail", "Short Loop", "Long Traverse"],
       "Most scenic" => ["Short Loop", "Long Traverse", "Ridge Trail"],
-      "Most popular" => ["Ridge Trail", "Short Loop", "Long Traverse"],
+      "Most popular" => ["Ridge Trail", "Long Traverse", "Short Loop"],
       "Longest hike" => ["Long Traverse", "Ridge Trail", "Short Loop"],
       "Closest" => ["Short Loop", "Ridge Trail", "Long Traverse"] }.each do |order, names|
       select order, from: "Sort by"
@@ -106,14 +131,22 @@ class SearchesTest < ApplicationSystemTestCase
     end
 
     select "Up to 1 hour", from: "Trip"
-    assert_text "Showing 2 of 3 routes"
+    assert_text "Showing 2 of 3 hikes"
     assert_equal ["Short Loop", "Ridge Trail"], route_names
     find("label", text: "Under 3 mi").click
-    assert_text "Showing 1 of 3 routes"
+    assert_text "Showing 1 of 3 hikes"
     assert_equal ["Short Loop"], route_names
     find("label", text: "Over 6 mi").click
-    assert_text "No routes match these filters"
+    assert_text "No hikes match these filters"
     select "Any travel time", from: "Trip"
     assert_equal ["Long Traverse"], route_names
+  end
+
+  test "a search that fails says why" do
+    visit search_url(origin: "Nowhere")
+    assert_selector "[data-failure][role=alert]", text: /could not find that starting point/
+    assert_no_selector "[data-progress]", visible: true
+    assert_no_selector "[data-skeleton]"
+    assert_no_selector "[data-results-toolbar]", visible: true
   end
 end

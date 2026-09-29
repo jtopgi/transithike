@@ -13,13 +13,14 @@ module SearchTestSupport
     Faraday.new { |builder| builder.adapter :test, stubs }
   end
 
+  # A straight route about 1.38 miles long, north from latitude.
   def route_element(id: 123, latitude: 47.0, name: "Forest Loop")
     {
       "type" => "relation", "id" => id,
       "tags" => { "type" => "route", "route" => "hiking", "name" => name, "description" => "A wooded walk" },
       "members" => [
         { "type" => "way", "ref" => id, "role" => "",
-          "geometry" => [{ "lat" => latitude, "lon" => -122.0 }, { "lat" => latitude + 0.01, "lon" => -122.0 }] }
+          "geometry" => [{ "lat" => latitude, "lon" => -122.0 }, { "lat" => latitude + 0.02, "lon" => -122.0 }] }
       ]
     }
   end
@@ -29,23 +30,26 @@ module SearchTestSupport
     { "type" => "node", "id" => id, "lat" => latitude, "lon" => longitude, "tags" => { key => value, "name" => name }.compact }
   end
 
-  # The area, route details or highlights response for an Overpass query, built
-  # from full route elements.
-  def overpass_elements(query, routes:, highlights: [], paved: [])
-    if query.include?("out tags bb")
-      routes.map { |route| candidate_of(route) }
+  # The area, farther routes, route details, or highlights response for an
+  # Overpass query, built from full route elements. far routes answer the query
+  # for routes near stops beyond the searched area, which reports radius.
+  def overpass_elements(query, routes:, highlights: [], paved: [], far: [], radius: 80_000)
+    if query.include?(".searched out")
+      routes.map { |route| candidate_of(route) } + [{ "type" => "search", "id" => 1, "tags" => { "radius" => radius.to_s } }]
+    elsif query.include?("out tags bb")
+      far.map { |route| candidate_of(route) }
     elsif query.include?("out geom")
-      routes + paved.map { |id| { "type" => "way", "id" => id } }
+      (routes + far).uniq { |route| route["id"] } + paved.map { |id| { "type" => "way", "id" => id } }
     else
       highlights
     end
   end
 
-  def overpass_connection(routes: [route_element], highlights: [], paved: [], queries: nil)
+  def overpass_connection(routes: [route_element], queries: nil, **elements)
     stub_connection(:post, lambda { |request|
       query = URI.decode_www_form(request.body).to_h.fetch("data")
       queries&.push(query)
-      { "elements" => overpass_elements(query, routes: routes, highlights: highlights, paved: paved) }
+      { "elements" => overpass_elements(query, routes: routes, **elements) }
     })
   end
 

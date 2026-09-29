@@ -1,5 +1,6 @@
-<div class="col" data-trail data-rank="<%= trail_counter %>" data-duration="<%= trail.duration.round %>"
-     data-length="<%= trail.length.round(2) %>" data-distance="<%= trail.distance.round(2) %>"
+<div class="col" data-trail data-osm-id="<%= trail.osm_id %>" data-score="<%= trail.score %>"
+     data-duration="<%= trail.duration.round %>" data-length="<%= trail.length.round(2) %>"
+     data-distance="<%= trail.distance.round(2) %>" data-stay="<%= stay_seconds(trail) %>"
      data-popularity="<%= trail.area&.dig(:monthly_views).to_i %>" data-scenic="<%= TrailsService.scenic(trail) %>">
   <article class="card trail-card h-100 border-0 shadow-sm">
     <div class="trail-media">
@@ -13,20 +14,10 @@
     </div>
     <div class="card-body d-flex flex-column p-4">
       <h2 class="card-title h5 mb-3"><%= trail.name %></h2>
-      <% if (chips = trail_chips(trail)).any? %>
-        <ul class="trail-chips" aria-label="Highlights">
-          <% chips.each do |icon, label, detail| %>
-            <li class="trail-chip" title="<%= detail %>">
-              <span aria-hidden="true"><%= icon %></span>
-              <span class="trail-chip-label"><%= label %></span>
-              <span class="visually-hidden">(<%= detail %>)</span>
-            </li>
-          <% end %>
-        </ul>
-      <% end %>
+      <div data-chips><%= render "searches/chips", trail: trail %></div>
       <dl class="trail-stats">
         <div>
-          <dt><span aria-hidden="true">🚌</span> Travel time</dt>
+          <dt><span aria-hidden="true">🕒</span> Travel time</dt>
           <dd>
             <%= (trail.duration / 60.0).ceil %> min
             <small class="trail-transfers"><%= transfers_label(trail.transfers) %></small>
@@ -41,6 +32,15 @@
           <dd><%= number_with_precision(trail.distance, precision: 1) %> mi</dd>
         </div>
       </dl>
+      <p class="trail-return">
+        <% if trail.last_return %>
+          <span aria-hidden="true">↩️</span> Last trip back <strong><%= clock(trail.last_return, result) %></strong>
+          <span class="text-body-secondary">· up to <%= stay_label(trail) %> there</span>
+        <% else %>
+          <span aria-hidden="true">⚠️</span> We couldn't check the way back. Check it before you go.
+        <% end %>
+      </p>
+      <div class="trail-trip small" data-trip-url="<%= trip_lookup_path(trail, result) %>" aria-live="polite" hidden></div>
       <p class="card-text trail-summary text-body-secondary flex-grow-1"><%= trail.summary %></p>
       <p class="trail-photo-credit small text-body-secondary" hidden></p>
       <div class="d-flex flex-wrap gap-2">

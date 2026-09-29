@@ -1,6 +1,8 @@
 Rails.application.routes.draw do
   # For details on the DSL available within this file, see https://guides.rubyonrails.org/routing.html
   resource :search, only: [:new, :show]
+  get "search/stream" => "search_streams#show", as: :search_stream
+  get "trip" => "trips#show", as: :trip, defaults: { format: :json }
   get "places" => "places#index", as: :places, defaults: { format: :json }
   get "photo" => "photos#show", as: :photo, defaults: { format: :json }
 

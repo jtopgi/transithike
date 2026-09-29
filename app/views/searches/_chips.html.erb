@@ -1,0 +1,11 @@
+<% if (chips = trail_chips(trail)).any? %>
+  <ul class="trail-chips" aria-label="Highlights">
+    <% chips.each do |icon, label, detail| %>
+      <li class="trail-chip" title="<%= detail %>">
+        <span aria-hidden="true"><%= icon %></span>
+        <span class="trail-chip-label"><%= label %></span>
+        <span class="visually-hidden">(<%= detail %>)</span>
+      </li>
+    <% end %>
+  </ul>
+<% end %>

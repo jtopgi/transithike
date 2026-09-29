@@ -170,14 +170,19 @@ jobs:
         env:
           URL: ${{ steps.deploy.outputs.url }}
       # Uses the live providers; an outage there is reported without failing the deployment.
+      # Results stream in as Server-Sent Events; the first one arriving well before
+      # the last shows the platform isn't holding the stream back.
       - name: Run a real search
         run: |
-          status=$(curl --silent --show-error --max-time 120 --output search.html --write-out '%{http_code}' \
-            --get "$URL/search" --data-urlencode "origin=Seattle, WA")
-          case "$status" in
-            200) grep --quiet "data-trail " search.html ;;
-            503) echo "::warning::A search provider was unavailable, but the app handled it." ;;
-            *) echo "::error::The search returned HTTP $status."; exit 1 ;;
-          esac
+          read -r status first total < <(curl --silent --show-error --no-buffer --max-time 150 --output search.txt \
+            --write-out '%{http_code} %{time_starttransfer} %{time_total}' \
+            --get "$URL/search/stream" --data-urlencode "origin=Seattle, WA")
+          echo "HTTP $status: first event after ${first}s, done after ${total}s."
+          if [ "$status" != 200 ]; then echo "::error::The search stream returned HTTP $status."; exit 1; fi
+          if grep --quiet "^event: failure" search.txt; then
+            echo "::warning::A search provider was unavailable, but the app handled it: $(grep -A1 '^event: failure' search.txt | tail -1)"
+          else
+            grep --quiet "^event: trails" search.txt && grep --quiet "^event: done" search.txt
+          fi
         env:
           URL: ${{ steps.deploy.outputs.url }}
