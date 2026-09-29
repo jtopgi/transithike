@@ -196,7 +196,8 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     # Arriving at 9:30 AM with the last trip back at 9 PM leaves 11 hours 30 minutes.
     assert_equal "41400", card["data-stay"]
     assert card.at_css(".trail-map[data-path='[[[47.3,-122.0],[47.32,-122.0]]]'][data-start='[47.3,-122.0]']")
-    assert card.at_css("a[data-photos-url='#{photos_path(lat: 47.32, lon: -122.0)}'][hidden]")
+    # Photos are looked for at the route's middle and a sixth of the way from each end.
+    assert card.at_css("a[data-photos-url='#{photos_path(points: '47.32,-122.0|47.3,-122.0')}'][hidden]")
     assert card.at_css("[data-gallery][hidden]")
     # The climb shows once the search has looked up the route's terrain.
     assert card.at_css("[data-climb-stat][hidden]")

@@ -13,28 +13,33 @@ class WikipediaServiceTest < ActiveSupport::TestCase
     { "Artist" => { "value" => artist }, "LicenseShortName" => { "value" => license } }
   end
 
-  def image_info(**credit)
-    { "query" => { "pages" => [{ "title" => "File:Park.jpg",
-      "imageinfo" => [{ "descriptionurl" => "https://commons.wikimedia.org/wiki/File:Park.jpg", "extmetadata" => metadata(**credit) }] }] } }
+  def image_info(mime: "image/jpeg", categories: ["Forests of Seattle"], **credit)
+    { "query" => { "pages" => [{ "title" => "File:Park.jpg", "categories" => category_list(categories),
+      "imageinfo" => [{ "mime" => mime, "descriptionurl" => "https://commons.wikimedia.org/wiki/File:Park.jpg",
+        "extmetadata" => metadata(**credit) }] }] } }
   end
 
-  # A photo on Wikimedia Commons, taken lat degrees north of 47.66, -122.4.
-  def commons_file(title, lat: 0.001, mime: "image/jpeg", width: 1600, height: 1200, **credit)
+  def category_list(names)
+    names.map { |name| { "ns" => 14, "title" => "Category:#{name}" } }
+  end
+
+  # A photo on Wikimedia Commons in the categories, taken lat degrees north of 47.66, -122.4.
+  def commons_file(title, lat: 0.001, mime: "image/jpeg", width: 1600, height: 1200, categories: [], **credit)
     name = title.tr(" ", "_")
-    { "title" => "File:#{title}", "coordinates" => [{ "lat" => 47.66 + lat, "lon" => -122.4 }],
+    { "title" => "File:#{title}", "coordinates" => [{ "lat" => 47.66 + lat, "lon" => -122.4 }], "categories" => category_list(categories),
       "imageinfo" => [{ "mime" => mime, "width" => width, "height" => height,
         "thumburl" => "https://upload.wikimedia.org/wikipedia/commons/thumb/1/12/#{name}/500px-#{name}",
         "descriptionurl" => "https://commons.wikimedia.org/wiki/File:#{name}", "extmetadata" => metadata(**credit) }] }
   end
 
   # Answers the nearby-article search and the image details request, or with
-  # commons, the search for files taken nearby.
+  # commons, the search for files taken nearby: files, or those for the point asked about.
   def connection(pages = [], info = image_info, files: nil, &assert_request)
     stubs = Faraday::Adapter::Test::Stubs.new do |stub|
       stub.get("/") do |request|
         assert_request&.call(request)
         body = if request.params["ggsnamespace"] == "6"
-          { "query" => { "pages" => files } }
+          { "query" => { "pages" => files.is_a?(Hash) ? files.fetch(request.params["ggscoord"], []) : files } }
         elsif request.params["generator"] == "geosearch"
           { "query" => { "pages" => pages } }
         else
@@ -46,8 +51,8 @@ class WikipediaServiceTest < ActiveSupport::TestCase
     Faraday.new { |builder| builder.adapter :test, stubs }
   end
 
-  def photos(pages, info = image_info, files: [], cache: ActiveSupport::Cache::MemoryStore.new, &block)
-    WikipediaService.photos_near(47.66, -122.4, connection: connection(pages, info, &block),
+  def photos(pages, info = image_info, files: [], points: [[47.66, -122.4]], cache: ActiveSupport::Cache::MemoryStore.new, &block)
+    WikipediaService.photos_near(points, connection: connection(pages, info, &block),
       commons: connection(files: files, &block), cache: cache)
   end
 
@@ -78,6 +83,8 @@ class WikipediaServiceTest < ActiveSupport::TestCase
     island = page("Iona Island", lat: 47.661, description: "Island of the Hudson River in the town of Stony Point, New York")
     assert_equal "Iona Island", area([fort, island])[:title]
     assert_nil area([fort, page("Doodletown", lat: 47.661, description: "Isolated settlement in the Hudson Highlands")])
+    assert_nil area([page("Hudson River Chains", lat: 47.66, description: "Series of chains across the Hudson River"),
+      page("Long Island Veterinary Specialists", lat: 47.661)])
     # "Of" is often part of the kind, but places people live aren't natural areas.
     assert_equal "Malvern Hills", area([page("Malvern Hills", lat: 47.66, description: "Range of hills in central England")])[:title]
     assert_equal "Wallkill River", area([page("Wallkill River", lat: 47.66, description: "Tributary of the Hudson River")])[:title]
@@ -100,16 +107,17 @@ class WikipediaServiceTest < ActiveSupport::TestCase
           caption: "Discovery Park bluff view" }
       ] }, result)
     commons = requests.find { |params| params["ggsnamespace"] == "6" }
-    assert_equal ["47.66|-122.4", "2000", "500"], commons.values_at("ggscoord", "ggsradius", "iiurlwidth")
-    assert_equal "File:Park.jpg", requests.find { |params| params["titles"] }["titles"]
+    assert_equal ["47.66|-122.4", "2000", "500", "!hidden"], commons.values_at("ggscoord", "ggsradius", "iiurlwidth", "clshow")
+    assert_includes commons["prop"].split("|"), "categories"
+    assert_equal ["File:Park.jpg", "!hidden"], requests.find { |params| params["titles"] }.values_at("titles", "clshow")
   end
 
-  test "photos taken nearby show the scenery first, then the nearest, and leave out what isn't scenery" do
+  test "photos taken nearby show views and waterfalls first, then the nearest, and only nature" do
     files = [
-      commons_file("Old barn.jpg", lat: 0.0001), commons_file("Ridge trail in autumn.jpg", lat: 0.01),
+      commons_file("Old barn by the lake.jpg", lat: 0.0001), commons_file("Ridge trail in autumn.jpg", lat: 0.01),
       commons_file("Lake at sunset.jpg", lat: 0.005), commons_file("Summit_view_from_the_top.JPEG", lat: 0.002),
       # Maps, signs, buildings, species close-ups, drawings, small or very wide images, and other files.
-      commons_file("Park map.jpg"), commons_file("Trailhead signpost.jpg"), commons_file("New office bldg.jpg"),
+      commons_file("Lake map.jpg"), commons_file("Trailhead signpost.jpg"), commons_file("New office bldg by the river.jpg"),
       commons_file("Clavaria zollingeri 302990109.jpg"), commons_file("Lake painting.jpg"), commons_file("Bear Mountain Inn NY1.jpg"),
       commons_file("Philipstown, NY, town hall.jpg"), commons_file("2015 Ford Explorer XLT 4WD in Oxford White, rear right.jpg"),
       commons_file("Tiny lake.jpg", width: 640), commons_file("Wide lake panorama.jpg", width: 24_000, height: 3_800),
@@ -118,10 +126,67 @@ class WikipediaServiceTest < ActiveSupport::TestCase
     ]
     result = photos([], files: files)
     assert_nil result[:title]
-    assert_equal ["Summit view from the top", "Lake at sunset", "Ridge trail in autumn", "Old barn"],
-      result[:photos].pluck(:caption)
+    assert_equal ["Summit view from the top", "Lake at sunset", "Ridge trail in autumn"], result[:photos].pluck(:caption)
     assert_equal WikipediaService::MAX_PHOTOS,
-      photos([], files: (1..12).map { |index| commons_file("Lake #{index}.jpg", lat: index * 0.001) })[:photos].size
+      photos([], files: (1..12).map { |index| commons_file("Lake #{index} in the fog.jpg", lat: index * 0.001) })[:photos].size
+    assert_equal "sugarloaf mountain in summer", WikipediaService.series("Sugarloaf Mountain in summer 2")
+    assert_equal "massapequa preserve", WikipediaService.series("Massapequa preserve - panoramio (3)")
+    assert_equal "inn in samedan", WikipediaService.series("Inn in Samedan 2022-09-26 01")
+    assert_equal "20180218-121753", WikipediaService.series("20180218-121753")
+    assert_equal "grimm forest", WikipediaService.series("Grimm Forest II - Letterboxing")
+    assert_equal "breakneck ridge", WikipediaService.series("Breakneck Ridge II (4784280225)")
+  end
+
+  test "a photo is of nature when its title or a category names a natural feature, and none names anything else" do
+    kept = {
+      "IMG 1234" => ["Breakneck Ridge", "Views from mountains in New York (state)"],
+      "Harriman (6020446359)" => ["Harriman State Park", "Photographs by Jeffrey Pang", "Trees in flower"],
+      "Grimm Forest I" => ["Bethpage State Park", "Forests"],
+      "Wallkill Valley Rail Trail in autumn" => [], "Old Croton Aqueduct Trail" => [],
+      # Kinds in parentheses count, and places don't.
+      "Inn in Samedan" => ["Inn (river)"], "Massapequa preserve - panoramio (3)" => ["Massapequa Park, New York"]
+    }
+    left_out = {
+      # Nothing names a natural feature, or only a place named like one.
+      "IMG 5678" => [], "Coldspring" => ["Cold Spring, New York"], "Belmont Hills, Pennsylvania" => [],
+      "Greenwoods" => ["Greenwood Gardens (Short Hills, New Jersey)"], "Massapequa 1" => ["Long Island"],
+      # Roads, train lines, people, wildlife, and views from space.
+      "NY 9D approaching Breakneck Ridge" => ["Breakneck Ridge", "Road tunnels in New York (state)"],
+      "Hudson view" => ["Hudson Line", "Hudson River"], "Croton Aqueduct high bridge" => [],
+      "Finn Andersen 2021 in New Jersey" => ["Men in forests"], "Brooks Koepka" => ["2019 PGA Championship", "Bethpage State Park"],
+      "Blue Jay (210140531)" => ["Cyanocitta cristata"], "Black-throated Green Warbler" => ["Parulidae of New Jersey"],
+      "Pokeweed of Massapequa Preserve" => ["Phytolacca americana"], "ISS043-E-243761 - View of Earth" => [],
+      "Pokeweed in the preserve" => ["Phytolacca americana in July"], "Blue Jay at the reservation" => ["Cyanocitta cristata bromia"],
+      # Artworks, films, and words run into numbers.
+      "GreatFalls20240707 125616" => ["Alexander Hamilton by Franklin Simmons", "Great Falls (Passaic River)"],
+      "Grimm Forest II - Letterboxing" => ["Forests", "Letterboxing (film)"], "Bethpage-golf1" => ["Bethpage State Park"]
+    }
+    files = kept.merge(left_out).each_with_index.map do |(title, categories), index|
+      commons_file("#{title}.jpg", lat: index * 0.0001, categories: categories)
+    end
+    assert_equal kept.keys.sort, photos([], files: files)[:photos].pluck(:caption).sort
+  end
+
+  test "photos are looked for along the route, and a series shows at most two" do
+    requests = []
+    points = [[47.66, -122.4], [47.71, -122.4], [47.61, -122.4]]
+    files = {
+      "47.66|-122.4" => [commons_file("Lake 1.jpg"), commons_file("Lake 2.jpg"), commons_file("Lake 3.jpg")],
+      "47.71|-122.4" => [commons_file("Waterfall at the north end.jpg", lat: 0.05), commons_file("Lake 1.jpg")],
+      "47.61|-122.4" => [commons_file("Southern woods.jpg", lat: -0.05)]
+    }
+    result = photos([], files: files, points: points) { |request| requests << request.params["ggscoord"] if request.params["ggsnamespace"] }
+    # The waterfall leads, then the nearest to any point: three lakes in a series show two, once each.
+    assert_equal ["Waterfall at the north end", "Southern woods", "Lake 1", "Lake 2"], result[:photos].pluck(:caption)
+    assert_equal points.map { |point| point.join("|") }, requests
+  end
+
+  test "the lead image is left out when it isn't a photo of nature" do
+    park = [page("Discovery Park", lat: 47.66)]
+    assert_nil photos(park, image_info(categories: ["Bluffs of Seattle", "West Point Lighthouse (Seattle)"]))
+    assert_nil photos(park, image_info(categories: ["Discovery Park (Seattle)"]))
+    assert_nil photos(park, image_info(mime: "image/png"))
+    assert_equal ["Near Discovery Park"], photos(park, image_info(categories: ["Bluffs of Seattle"]))[:photos].pluck(:caption)
   end
 
   test "without a free lead image or photos taken nearby, there are no photos" do
@@ -144,7 +209,7 @@ class WikipediaServiceTest < ActiveSupport::TestCase
 
   test "the river Inn isn't taken for an inn" do
     files = ["Inn in Samedan 2022-09-26 01.jpg", "Inn - Madulain, Switzerland.jpg", "Blick auf den Inn.jpg", "Bear Mountain Inn NY1.jpg",
-      "The Holiday Inn Express.jpg"].each_with_index.map { |title, index| commons_file(title, lat: index * 0.001) }
+      "The Holiday Inn Express.jpg"].each_with_index.map { |title, index| commons_file(title, lat: index * 0.001, categories: ["Inn (river)"]) }
     assert_equal ["Inn in Samedan 2022-09-26 01", "Inn - Madulain, Switzerland", "Blick auf den Inn"],
       photos([], files: files)[:photos].pluck(:caption)
   end
@@ -164,14 +229,14 @@ class WikipediaServiceTest < ActiveSupport::TestCase
     cache = ActiveSupport::Cache::MemoryStore.new
     requests = []
     stubbed = connection([page("Discovery Park", lat: 47.66)], files: [commons_file("Lake view.jpg")]) { |request| requests << request.params }
-    2.times { WikipediaService.photos_near(47.6601, -122.3951, connection: stubbed, commons: stubbed, cache: cache) }
-    WikipediaService.photos_near(47.6649, -122.4011, connection: stubbed, commons: stubbed, cache: cache)
+    2.times { WikipediaService.photos_near([[47.6601, -122.3951]], connection: stubbed, commons: stubbed, cache: cache) }
+    WikipediaService.photos_near([[47.6649, -122.4011]], connection: stubbed, commons: stubbed, cache: cache)
     assert_equal ["47.66|-122.4", "File:Park.jpg", "47.66|-122.4"],
       requests.map { |params| params["ggscoord"] || params["titles"] }
 
     failing = Faraday.new do |builder|
       builder.adapter :test, Faraday::Adapter::Test::Stubs.new { |stub| stub.get("/") { [503, {}, "{}"] } }
     end
-    assert_raises(SearchErrors::UpstreamError) { WikipediaService.photos_near(47.66, -122.4, connection: failing, commons: failing) }
+    assert_raises(SearchErrors::UpstreamError) { WikipediaService.photos_near([[47.66, -122.4]], connection: failing, commons: failing) }
   end
 end

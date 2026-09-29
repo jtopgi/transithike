@@ -9,6 +9,14 @@ module SearchesHelper
   }.freeze
   FEET_PER_METER = 3.28084
 
+  # The route's middle, then points a sixth of the way from each end, as
+  # "latitude,longitude|..." to about 1 km, where photos taken along it are looked for.
+  def photo_points(trail)
+    points = Array(trail.path).flatten(1)
+    along = [1.0 / 6, 5.0 / 6].map { |share| points[(share * (points.size - 1)).round] } if points.size > 1
+    [trail.midpoint, *along].map { |latitude, longitude| "#{latitude.round(2)},#{longitude.round(2)}" }.uniq.join("|")
+  end
+
   # [icon, label, detail] chips for a route's views and the highlights on the way.
   def trail_chips(trail)
     chips = []
