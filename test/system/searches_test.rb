@@ -4,13 +4,13 @@ require_relative "../services/search_test_support"
 class SearchesTest < ApplicationSystemTestCase
   include SearchTestSupport
 
-  # Three routes north of the origin, nearest first, with different lengths and trips.
-  ROUTES = [["Short Loop", 47.61, 1.5, [{ duration: 1800, transfers: 0 }]],
-    ["Ridge Trail", 47.63, 5, [{ duration: 1200, transfers: 1 }]],
-    ["Long Traverse", 47.66, 8, [{ duration: 4800, transfers: 2 }]]].freeze
+  # Three routes by stations 23 to 29 km north of the origin, nearest first, with different lengths and trips.
+  ROUTES = [["Short Loop", 47.81, 1.5, [{ duration: 4800, transfers: 0 }]],
+    ["Ridge Trail", 47.83, 5, [{ duration: 4200, transfers: 1 }]],
+    ["Long Traverse", 47.86, 8, [{ duration: 6000, transfers: 2 }]]].freeze
   # A waterfall on the Short Loop, a viewpoint on the Long Traverse, and a well-known park around the Ridge Trail.
-  HIGHLIGHTS = [["waterfall", 47.615, "Little Falls"], ["viewpoint", 47.75, nil]].freeze
-  POPULAR_AREA = "47.7|-122.0"
+  HIGHLIGHTS = [["waterfall", 47.815, "Little Falls"], ["viewpoint", 47.95, nil]].freeze
+  POPULAR_AREA = "47.9|-122.0"
 
   setup do
     @old_adapter = Faraday.default_adapter
@@ -29,18 +29,25 @@ class SearchesTest < ApplicationSystemTestCase
         highlights = HIGHLIGHTS.map { |kind, latitude, name| highlight_node(kind, latitude, -122.0, name: name) }
         [200, {}, JSON.generate(elements: overpass_elements(query, routes: routes, highlights: highlights))]
       end
-      # A stop at each route's start, reached sooner for nearer routes.
-      stub.get(URI(TransitousService::ONE_TO_ALL_URL).path) do
-        stops = ROUTES.each_with_index.map { |(_, latitude), index| { place: { lat: latitude, lon: -122.0 }, duration: 10 + index * 5, k: 1 } }
+      # A station downtown, and trains from there to a station at each route's start, sooner for nearer routes.
+      stub.get(URI(TransitousService::ONE_TO_ALL_URL).path) do |env|
+        stops = if env.params["transitModes"]
+          ROUTES.each_with_index.map { |(_, latitude), index| reached_stop(latitude, -122.0, 10 + index * 5) }
+        else
+          [reached_stop(47.605, -122.0, 5, id: "downtown")]
+        end
         [200, {}, JSON.generate(all: stops)]
       end
-      # Trips there, and with arriveBy, the last trips back, two hours before the 11 PM deadline.
+      # Trips there; with arriveBy, the last trips back, two hours before the 11 PM deadline; and none by subway.
       stub.get(URI(TransitousService::ONE_TO_MANY_URL).path) do |env|
-        back = env.params["arriveBy"] == "true"
-        durations = back ? ROUTES.map { [{ duration: 7200, transfers: 0 }] } : ROUTES.map(&:last)
+        durations = if env.params["arriveBy"] == "true"
+          ROUTES.map { [{ duration: 7200, transfers: 0 }] }
+        else
+          env.params["transitModes"] ? ROUTES.map { [] } : ROUTES.map(&:last)
+        end
         [200, {}, JSON.generate(transit_durations: durations, street_durations: [])]
       end
-      # The trains, buses, and ferries each card shows once the search is done.
+      # The trains and buses each card shows once the search is done.
       stub.get(URI(TransitousService::PLAN_URL).path) do |env|
         leave = Time.iso8601(env.params["time"])
         leg = env.params["arriveBy"] == "true" ? { mode: "BUS", routeShortName: "11" } : { mode: "SUBURBAN", routeLongName: "Sounder N Line" }
@@ -83,19 +90,26 @@ class SearchesTest < ApplicationSystemTestCase
     all("article.trail-card h2").map(&:text)
   end
 
-  test "suggests starting points as you type and searches the one you choose" do
+  test "suggests starting points as you type and searches the one you choose, for the day you choose" do
     visit root_url
-    assert_selector "h1", text: "Find hikes you can reach by public transit"
+    assert_selector "h1", text: "Weekend hikes you can reach by train"
     assert_button "Use my location"
     assert_equal "rgb(25, 135, 84)", page.evaluate_script(
       "getComputedStyle(document.querySelector('button[type=submit]')).backgroundColor"
     )
+    assert_equal page.evaluate_script("Intl.DateTimeFormat().resolvedOptions().timeZone"),
+      find("input[name=tz]", visible: false).value
 
+    find("label", text: "Sunday").click
     fill_in "Starting point", with: "Pike"
     find("[role=option]", text: "Pike Place Market, Seattle, Washington, United States").click
 
-    assert_selector "h1", text: "Hikes near Pike Place Market, Seattle, Washington, United States"
+    assert_selector "h1", text: "Day hikes by train from Pike Place Market, Seattle, Washington, United States"
     assert_includes current_url, "lat=47.6"
+    assert_includes current_url, "day=sunday"
+    # On Sunday morning, the trip is that day.
+    assert_selector "[data-departure]", text: /\A(Sunday, \w+ \d+|Today), leaving (at 8:00 AM|now)/
+    assert_selector "input[name=day][value=sunday]:checked", visible: false
     assert_selector "article.trail-card", count: 3
     assert_no_selector "[data-skeleton]"
     assert_selector ".trail-map.leaflet-container", minimum: 1
@@ -103,10 +117,11 @@ class SearchesTest < ApplicationSystemTestCase
     assert_selector "article.trail-card .trail-return", text: /Last trip back \d+:\d\d [AP]M/, count: 3
     # Capybara reads non-breaking spaces as spaces.
     assert_selector "[data-departure]", text: /with a way back by 11 PM/
-    # Each card shows the trains, buses, and ferries there and back once the search is done.
+    # Each card shows the trains and other transit there and back once the search is done.
     assert_selector ".trail-trip", text: /There: 🚆 Sounder N Line · leave \d+:\d\d [AP]M, arrive/, minimum: 1
     assert_selector ".trail-trip", text: /Back: 🚌 11 · leave \d+:\d\d [AP]M, home by 9:00 PM/, minimum: 1
-    # The planned trip back, three hours before 11 PM, replaces the search's estimate.
+    # The planned trips replace the search's estimates: a 50-minute ride, and the last trip back three hours before 11 PM.
+    assert_selector "article.trail-card [data-travel-time]", text: "50 min", minimum: 1
     assert_selector "article.trail-card .trail-return", text: /Last trip back 8:00 PM/, minimum: 1
   end
 
@@ -130,7 +145,7 @@ class SearchesTest < ApplicationSystemTestCase
       assert_equal names, route_names, order
     end
 
-    select "Up to 1 hour", from: "Trip"
+    select "Up to 1½ hours", from: "Trip"
     assert_text "Showing 2 of 3 hikes"
     assert_equal ["Short Loop", "Ridge Trail"], route_names
     find("label", text: "Under 3 mi").click

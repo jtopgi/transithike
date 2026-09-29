@@ -13,19 +13,35 @@ module TransitousService
   SOURCES_URL = "https://transitous.org/sources/"
   # Route starts are often farther than the default 15-minute walk from a stop.
   MAX_POST_TRANSIT_SECONDS = 30 * 60
-  MAX_TRAVEL_MINUTES = 3 * 60
-  # Stops reached by then leave time to walk to a route within MAX_TRAVEL_MINUTES.
-  REACHABLE_STOP_MINUTES = MAX_TRAVEL_MINUTES - 30
-  # Trains, subways, trams, and ferries, which still show where transit reaches
-  # where every stop is too many to list.
-  RAIL_MODES = %w[RAIL HIGHSPEED_RAIL LONG_DISTANCE NIGHT_RAIL REGIONAL_FAST_RAIL REGIONAL_RAIL SUBURBAN SUBWAY
-    METRO TRAM FERRY FUNICULAR AERIAL_LIFT CABLE_CAR].freeze
-  # Each list is shorter than the one before: every reachable stop, then those
-  # reached by rail and ferries, then those reached so within 90 minutes.
-  STOP_LISTS = [{ minutes: REACHABLE_STOP_MINUTES }, { minutes: REACHABLE_STOP_MINUTES, modes: RAIL_MODES },
-    { minutes: 90, modes: RAIL_MODES }].freeze
+  # Day trips by train take up to three and a half hours from setting out,
+  # waiting for the train included.
+  MAX_TRAVEL_MINUTES = 210
+  # Stations reached by then leave time to walk to a route within MAX_TRAVEL_MINUTES.
+  STATION_MINUTES = MAX_TRAVEL_MINUTES - 30
+  # Commuter, regional, and intercity trains, which take city dwellers out for
+  # the day. Transitous's RAIL also means the subway, and its METRO suburban
+  # trains, so neither is named.
+  TRAIN_MODES = %w[HIGHSPEED_RAIL LONG_DISTANCE NIGHT_RAIL REGIONAL_FAST_RAIL REGIONAL_RAIL SUBURBAN].freeze
+  # City rapid transit, the subway and light rail: city dwellers already know the hikes it reaches.
+  CITY_MODES = %w[SUBWAY TRAM].freeze
+  # Trains are boarded at the busiest stations transit reaches within the first
+  # of these many minutes whose list isn't too long; where every stop within an
+  # hour is too many to list, stations within 40 or 25 minutes are.
+  HUB_LIST_MINUTES = [60, 40, 25].freeze
   # Searches remember for a day which list fits for an area.
-  STOP_LIST_CACHE_TTL = 1.day
+  HUB_LIST_CACHE_TTL = 1.day
+  # At most this many stations are boarded at, each at least HUB_SPACING_METERS
+  # from the others, and none that trains from an earlier one reach within
+  # HUB_SLACK_MINUTES of getting there directly.
+  MAX_HUBS = 3
+  HUB_SPACING_METERS = 1_000
+  HUB_SLACK_MINUTES = 10
+  # Where a hub's trains reach too many stations to list in the time left, as
+  # across Switzerland, stations within 120 or 80 minutes of boarding are
+  # listed instead, and searches remember for a day which limit fits an area.
+  RIDE_LIMITS = [nil, 120, 80].freeze
+  # Weekend timetables rarely change, so a day's stations are shared for hours.
+  RAIL_CACHE_TTL = 6.hours
   # Legs in these modes are on foot or by private vehicle, not on transit.
   STREET_MODES = %w[WALK BIKE RENTAL CAR HGV CAR_PARKING CAR_DROPOFF ODM RIDE_SHARING FLEX].freeze
   TRIP_CACHE_TTL = 15.minutes
@@ -47,27 +63,83 @@ module TransitousService
     end
   end
 
-  # Stops reachable from the origin, as [latitude, longitude, minutes, rides,
-  # station], where station is true for stops served by rail or ferries; or nil
-  # where transit is too dense to list them.
-  def self.reachable_stops(origin:, departure_time:, connection: nil, cache: Rails.cache)
-    list_key = "transitous:stop-list:v1:#{origin.latitude.round(1)}:#{origin.longitude.round(1)}"
-    first = cache.read(list_key).to_i
+  # The train stations reachable from the origin by riding a train, as
+  # [latitude, longitude, minutes], quickest first. Trains are boarded at up to
+  # MAX_HUBS of the busiest stations reached by subway, bus, or on foot, so the
+  # trip there may start on any transit. Raises when transit can't be looked up.
+  def self.rail_stations(origin:, departure_time:, connection: nil, cache: Rails.cache)
+    key = "transitous:rail:v2:#{origin.latitude.round(3)}:#{origin.longitude.round(3)}:#{departure_time.utc.iso8601}"
+    cached = cache.read(key)
+    return cached if cached
+
     connection ||= SearchHttp.connection(ONE_TO_ALL_URL, timeout: 15)
-    STOP_LISTS.each_with_index.drop(first).each do |list, index|
-      stops = fetch_stops(origin, departure_time, list, connection)
-      cache.write(list_key, index, expires_in: STOP_LIST_CACHE_TTL) if index > first
+    stations, reached, boarded, error = {}, {}, [], nil
+    hubs(origin, departure_time, connection, cache).each do |hub|
+      break if boarded.size == MAX_HUBS
+      next if reached.fetch(hub[:key], Float::INFINITY) <= hub[:minutes] + HUB_SLACK_MINUTES ||
+        boarded.any? { |other| OverpassService.distance(other[:latitude], other[:longitude], hub[:latitude], hub[:longitude]) < HUB_SPACING_METERS }
+
+      boarded << hub
+      begin
+        ridden = rides(origin, hub, departure_time, connection, cache)
+      rescue SearchErrors::UpstreamError => failure
+        error ||= failure
+        next
+      end
+      ridden.select { |stop| stop[:train] }.each do |stop|
+        minutes = hub[:minutes] + stop[:minutes]
+        reached[stop[:key]] = [reached.fetch(stop[:key], minutes), minutes].min
+        # Stations the hub itself stands for are walked to, not reached by train.
+        next if stop[:rides].zero? || stations[stop[:key]]&.last&.<=(minutes)
+
+        stations[stop[:key]] = [stop[:latitude], stop[:longitude], minutes]
+      end
+    end
+    raise error if error && stations.empty?
+
+    stations = stations.values.sort_by(&:last)
+    # A list missing some hub's trains is not shared.
+    cache.write(key, stations, expires_in: RAIL_CACHE_TTL) unless error
+    stations
+  end
+
+  # The stops trains reach from the hub within the first RIDE_LIMITS limit
+  # whose list isn't too long.
+  def self.rides(origin, hub, departure_time, connection, cache)
+    list_key = "transitous:ride-list:v1:#{origin.latitude.round(1)}:#{origin.longitude.round(1)}"
+    first = cache.read(list_key).to_i
+    params = { one: hub[:id] || format("%.7f,%.7f", hub[:latitude], hub[:longitude]),
+      time: (departure_time + hub[:minutes].minutes).utc.iso8601, transitModes: TRAIN_MODES.join(",") }
+    RIDE_LIMITS.each_with_index.drop(first).each do |limit, index|
+      stops = reachable(connection, params.merge(maxTravelTime: [STATION_MINUTES - hub[:minutes], limit].compact.min))
+      cache.write(list_key, index, expires_in: HUB_LIST_CACHE_TTL) if index > first
       return stops
+    rescue SearchErrors::ResponseTooLarge
+      raise if index == RIDE_LIMITS.size - 1
+    end
+  end
+
+  # The train stations reached from the origin by any transit within the first
+  # HUB_LIST_MINUTES list that isn't too long, busiest first. Where even the
+  # last is too long, there are none for a day.
+  def self.hubs(origin, departure_time, connection, cache)
+    list_key = "transitous:hub-list:v1:#{origin.latitude.round(1)}:#{origin.longitude.round(1)}"
+    first = cache.read(list_key).to_i
+    HUB_LIST_MINUTES.each_with_index.drop(first).each do |minutes, index|
+      stops = reachable(connection, one: place(origin), time: departure_time.utc.iso8601, maxTravelTime: minutes)
+      cache.write(list_key, index, expires_in: HUB_LIST_CACHE_TTL) if index > first
+      return stops.select { |stop| stop[:train] }.sort_by { |stop| [-stop[:importance], stop[:minutes]] }
     rescue SearchErrors::ResponseTooLarge
       next
     end
-    cache.write(list_key, STOP_LISTS.size, expires_in: STOP_LIST_CACHE_TTL)
-    nil
+    cache.write(list_key, HUB_LIST_MINUTES.size, expires_in: HUB_LIST_CACHE_TTL)
+    []
   end
 
-  def self.fetch_stops(origin, departure_time, list, connection)
-    params = { one: place(origin), time: departure_time.utc.iso8601, maxTravelTime: list[:minutes] }
-    params[:transitModes] = list[:modes].join(",") if list[:modes]
+  # Every stop transit reaches, as { key:, id:, latitude:, longitude:, minutes:,
+  # rides:, importance:, train: }, skipping malformed entries. key is the stop's
+  # id, or its coordinates when it has none; importance ranks how busy it is.
+  def self.reachable(connection, params)
     data = SearchHttp.json { connection.get { |request| request.params = params } }
     raise SearchErrors::UpstreamError, INVALID_RESPONSE unless data["all"].is_a?(Array)
 
@@ -76,7 +148,11 @@ module TransitousService
       next unless point.is_a?(Hash) && SearchHttp.coordinates?(point["lat"], point["lon"]) &&
         valid_trip?(reachable) && reachable["k"].is_a?(Integer) && !reachable["k"].negative?
 
-      [point["lat"], point["lon"], reachable["duration"], reachable["k"], Array(point["modes"]).intersect?(RAIL_MODES)]
+      id = point["stopId"] if point["stopId"].is_a?(String) && point["stopId"].length.between?(1, 200)
+      importance = point["importance"].is_a?(Numeric) && point["importance"].finite? ? point["importance"] : 0
+      { key: id || [point["lat"], point["lon"]], id: id, latitude: point["lat"], longitude: point["lon"],
+        minutes: reachable["duration"], rides: reachable["k"], importance: importance,
+        train: Array(point["modes"]).intersect?(TRAIN_MODES) }
     end
   end
 
@@ -122,7 +198,7 @@ module TransitousService
     }
     # Coming back starts with the walk from the route to a stop.
     params[:maxPreTransitTime] = MAX_POST_TRANSIT_SECONDS if arrive_by
-    cache_key = "transitous:journey:v1:#{params.values_at(:fromPlace, :toPlace, :time, :arriveBy).join(':')}"
+    cache_key = "transitous:journey:v2:#{params.values_at(:fromPlace, :toPlace, :time, :arriveBy).join(':')}"
     cache.fetch(cache_key, expires_in: TRIP_CACHE_TTL) do
       connection ||= SearchHttp.connection(PLAN_URL, timeout: 10)
       data = SearchHttp.json { connection.get { |request| request.params = params } }
@@ -147,7 +223,10 @@ module TransitousService
     legs = journey["legs"].select { |leg| leg["mode"].is_a?(String) && leg["mode"].match?(/\A[A-Z_]{1,30}\z/) }
       .reject { |leg| STREET_MODES.include?(leg["mode"]) }
     { departure: departure.utc.iso8601, arrival: arrival.utc.iso8601, legs: legs.map do |leg|
-      { mode: leg["mode"], name: text(leg["routeShortName"]) || text(leg["routeLongName"]) || text(leg["displayName"]),
+      # Trains are known by their lines, such as "Port Jervis Line", rather than codes like "MNBNP".
+      names = leg.values_at("routeShortName", "routeLongName")
+      names.reverse! if TRAIN_MODES.include?(leg["mode"])
+      { mode: leg["mode"], name: text(names.first) || text(names.last) || text(leg["displayName"]),
         agency: text(leg["agencyName"]), headsign: text(leg["headsign"]) }
     end }
   end
@@ -164,13 +243,15 @@ module TransitousService
 
   # The fastest trip to each destination, in one request: { duration: seconds,
   # transfers: count, or nil for walking the whole way }, or nil when unreachable.
-  def self.trips(origin:, destinations:, departure_time:, connection: nil, cache: Rails.cache)
+  # modes limits the transit taken, such as to CITY_MODES.
+  def self.trips(origin:, destinations:, departure_time:, modes: nil, connection: nil, cache: Rails.cache)
     return [] if destinations.empty?
 
     params = {
       one: place(origin, ";"), many: destinations.map { |destination| place(destination, ";") }.join(","),
       time: departure_time.utc.iso8601, maxTravelTime: MAX_TRAVEL_MINUTES, maxPostTransitTime: MAX_POST_TRANSIT_SECONDS
     }
+    params[:transitModes] = modes.join(",") if modes
     cache.fetch("transitous:trips:v1:#{Digest::SHA256.hexdigest(params.to_json)}", expires_in: TRIP_CACHE_TTL) do
       connection ||= SearchHttp.connection(ONE_TO_MANY_URL, timeout: 20)
       data = SearchHttp.json { connection.get { |request| request.params = params } }

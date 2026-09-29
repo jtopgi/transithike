@@ -1,14 +1,21 @@
-# Day hikes reachable by public transit, with a way back the same day.
+# Weekend day hikes by train from the city, with a train back the same evening.
 module TrailsService
   # return_by is when everyone should be back at the origin, returns_checked is
   # false when the way back could not be looked up, and complete is false when
   # some routes could not be checked.
   Result = Struct.new(:place, :area, :departure_time, :return_by, :trails, :returns_checked, :complete,
     keyword_init: true)
-  # Day trips set out in the morning: early searches leave now, later ones the next morning.
-  LEAVE_NOW_HOURS = 5..9
+  # Day trips are on Saturday or Sunday, whichever comes first unless one is
+  # chosen, and set out at 8 AM, or now once the day has begun. From 10 AM on,
+  # it's too late to set out that day, so the trip is a week later.
+  WEEKEND_DAYS = { "saturday" => 6, "sunday" => 0 }.freeze
   MORNING_HOUR = 8
+  LATEST_START_HOUR = 10
   RETURN_BY_HOUR = 23
+  # Stations closer than this are in or next to the city, so hikes near them aren't day trips.
+  MIN_DISTANCE_METERS = 20_000
+  # Routes in the tiles with the quickest stations are checked first, while the rest are found.
+  FIRST_TILES = OverpassService::TILES_PER_QUERY
   # Routes are checked in batches, most promising first, so results show as they are found.
   BATCH_SIZE = 40
   # Hiking at 2 mph with breaks. Routes that don't loop are hiked out and back,
@@ -29,40 +36,47 @@ module TrailsService
   # them once every batch is checked. Slower lookups finish in the background
   # and are cached for later searches.
   HIGHLIGHT_WAIT_SECONDS = 5
-  # Searches give up on the area's routes after this long, waiting for a query slot included.
+  # Searches give up on the first tiles' routes after this long, waiting for a query slot included.
   OVERPASS_WAIT_SECONDS = 90
 
-  # origin is text to look up, or a Place chosen from suggestions or the device's
-  # location. The block, if any, is called as the search goes: with :place and
-  # the result once the departure time is known, with :checking and how many
-  # routes a batch checks, with :trails and each batch's routes that have a trip
-  # there and back, with :ranking and how many routes were found once every
-  # batch is checked, and with :update and every route once highlights and
-  # popularity rank them. Returns the result.
-  def self.search(origin:, places: PhotonService, transit: TransitousService, hiking: OverpassService,
-    wiki: WikipediaService, &on_found)
-    place = origin.is_a?(String) ? places.geocode(origin) : origin
+  # origin is text to look up, near a rough [latitude, longitude] if given, or
+  # a Place chosen from suggestions or the device's location; day is a
+  # WEEKEND_DAYS key. The block, if any, is called as the search goes: with
+  # :place and the result once the departure time is known, with :checking and
+  # how many routes a batch checks, with :trails and each batch's routes that
+  # have a trip there and back, with :ranking and how many routes were found
+  # once every batch is checked, and with :update and every route once
+  # highlights and popularity rank them. Returns the result.
+  def self.search(origin:, day: nil, near: nil, places: PhotonService, transit: TransitousService,
+    hiking: OverpassService, wiki: WikipediaService, &on_found)
+    place = origin.is_a?(String) ? places.geocode(origin, near: near) : origin
     unless place
       raise SearchErrors::InvalidInput, "We could not find that starting point. Try a city, neighborhood, or address."
     end
 
     lat, lon = place.latitude, place.longitude
-    nearby = start(overpass_pool) { hiking.candidates(lat: lat, lon: lon) }
-    area, departure_time, stops = plan(place, transit)
+    # The area only refines the search, which goes ahead without it.
+    area = optional { transit.area(lat, lon) } || {}
+    departure_time = departure_time(place.time_zone || area[:time_zone], day: day)
     result = Result.new(place: place, area: area[:area], departure_time: departure_time,
       return_by: departure_time.change(hour: RETURN_BY_HOUR), trails: [], returns_checked: true, complete: true)
     on_found&.call(:place, result)
 
-    nearby = finished(nearby).value!
-    access = TransitAccess.new(lat, lon, stops) if stops
-    # Routes near stops beyond the searched area are found while the first batch is checked.
-    farther = start(overpass_pool) { hiking.candidates_near(stops, lat: lat, lon: lon, beyond: nearby[:radius]) } if stops
+    stations = transit.rail_stations(origin: place, departure_time: departure_time).select do |station|
+      OverpassService.distance(lat, lon, station[0], station[1]) >= MIN_DISTANCE_METERS
+    end
+    return result if stations.empty?
+
+    access = TransitAccess.new(lat, lon, stations)
+    tiles = hiking.tiles(stations)
+    nearby = start(overpass_pool) { hiking.routes_in(tiles.first(FIRST_TILES)) }
+    # Routes in the other tiles only add to the search, so it goes ahead without them.
+    farther = start(overpass_pool) { hiking.routes_in(tiles.drop(FIRST_TILES)) } if tiles.size > FIRST_TILES
     search = Search.new(place, access, result, transit, hiking, on_found)
-    search.check(hiking.pick(nearby[:routes], lat: lat, lon: lon, access: access).first(BATCH_SIZE))
-    routes = nearby[:routes]
-    # Farther routes only add to the search, so it goes ahead without them.
+    routes = finished(nearby).value!
+    search.check(hiking.pick(routes, access: access).first(BATCH_SIZE))
     routes = (routes + optional { finished(farther).value }.to_a).uniq { |route| route[:id] } if farther
-    search.check(hiking.pick(routes, lat: lat, lon: lon, access: access))
+    search.check(hiking.pick(routes, access: access))
     raise search.error if result.trails.empty? && search.error
     return result if result.trails.empty?
 
@@ -106,23 +120,15 @@ module TrailsService
     end
   end
 
-  # The origin's area, the departure time in its time zone, and the transit stops
-  # reachable from it. The area and stops only refine the search, which goes ahead without them.
-  def self.plan(place, transit)
-    area = optional { transit.area(place.latitude, place.longitude) } || {}
-    departure_time = departure_time(place.time_zone || area[:time_zone])
-    [area, departure_time, optional { transit.reachable_stops(origin: place, departure_time: departure_time) }]
-  end
-
   def self.optional
     yield
   rescue StandardError
     nil
   end
 
-  # The trails transit reaches, with a way back to the origin the same day that
-  # leaves time to hike them. When the way back can't be looked up, every trail
-  # transit reaches is kept and the result says so.
+  # The trails a train reaches, and the subway doesn't, with a way back to the
+  # origin the same day that leaves time to hike them. When the way back can't
+  # be looked up, every trail reached is kept and the result says so.
   def self.round_trips(place, trails, result, transit, budget)
     reached = trails.zip(trips(place, trails, result.departure_time, transit, budget)).filter_map do |trail, trip|
       next unless trip
@@ -132,6 +138,7 @@ module TrailsService
       trail.origin = place.name
       trail
     end
+    reached = beyond_city_transit(place, reached, result.departure_time, transit)
     return reached if reached.empty?
 
     latest = begin
@@ -145,6 +152,18 @@ module TrailsService
       trail.last_return = time
       trail if time && time - trail.arrival >= required_hours(trail).hours
     end
+  end
+
+  # City dwellers already know the hikes the subway or light rail reaches, so
+  # those are left out. When that can't be checked, every trail is kept.
+  def self.beyond_city_transit(place, trails, departure_time, transit)
+    return trails if trails.empty?
+
+    city = transit.trips(origin: place, destinations: trails, departure_time: departure_time,
+      modes: TransitousService::CITY_MODES)
+    trails.zip(city).filter_map { |trail, trip| trail unless trip }
+  rescue SearchErrors::UpstreamError
+    trails
   end
 
   def self.trips(place, trails, departure_time, transit, budget)
@@ -208,8 +227,9 @@ module TrailsService
     end
     views = trail.area&.dig(:monthly_views).to_i
     popularity = [Math.log10(views + 1) - 2, 0].max * 0.75
+    # Day trips by train often take an hour or two each way; longer ones count against a hike.
     hours = trail.duration / 3600.0
-    travel = [hours - 1, 0].max * 0.5 + [hours - 2, 0].max
+    travel = [hours - 1.5, 0].max * 0.5 + [hours - 3, 0].max
     rushed = trail.last_return && trail.last_return - trail.arrival < hike_hours(trail).hours ? 0.5 : 0
     length + [scenic(trail), 4].min * 0.5 + popularity + (trail.notable ? 0.5 : 0) - trail.paved.to_f * 2.5 -
       (OverpassService.generic_name?(trail.name) ? 1 : 0) - travel - trail.transfers.to_i * 0.1 - rushed
@@ -222,17 +242,25 @@ module TrailsService
     end
   end
 
-  # Leave now early in the day; otherwise at 8 AM the next morning, in the origin's time zone.
-  def self.departure_time(time_zone, now: Time.current)
+  # 8 AM on the day of the trip in the origin's time zone, or now, rounded up to
+  # the quarter hour, once that morning has begun.
+  def self.departure_time(time_zone, day: nil, now: Time.current)
     zone = (ActiveSupport::TimeZone[time_zone] if time_zone) || Time.zone
     local = now.in_time_zone(zone)
-    if LEAVE_NOW_HOURS.cover?(local.hour)
-      # Rounding up to the quarter hour lets searches share cached routes.
-      local.change(sec: 0) + ((15 - local.min % 15) % 15).minutes
-    else
-      day = local.hour < LEAVE_NOW_HOURS.first ? local.to_date : local.to_date.tomorrow
-      zone.local(day.year, day.month, day.day, MORNING_HOUR)
-    end
+    date = trip_date(local, day)
+    start = zone.local(date.year, date.month, date.day, MORNING_HOUR)
+    return start unless local > start
+
+    # Rounding lets searches share cached trips.
+    local.change(sec: 0) + ((15 - local.min % 15) % 15).minutes
+  end
+
+  # The date of the next Saturday or Sunday, or of the day given, that isn't too late to set out.
+  def self.trip_date(local, day = nil)
+    WEEKEND_DAYS.values_at(*(day ? [day] : WEEKEND_DAYS.keys)).map do |weekday|
+      date = local.to_date + (weekday - local.wday) % 7
+      date == local.to_date && local.hour >= LATEST_START_HOUR ? date + 7 : date
+    end.min
   end
 
   # Runs each block on the shared provider pool and returns the settled futures.

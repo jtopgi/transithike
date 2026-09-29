@@ -46,4 +46,7 @@ Rails.application.configure do
 
   # Raises error for missing translations.
   # config.action_view.raise_on_missing_translations = true
+
+  # Stubbed providers answer at once, so failing tests needn't wait to retry.
+  config.x.overpass_retry_pause_seconds = 0
 end

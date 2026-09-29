@@ -4,13 +4,24 @@
   <%= f.label :origin, "Starting point", class: "form-label fw-semibold" %>
   <div class="place-search-field">
     <%= f.text_field :origin, value: origin, class: "form-control form-control-lg", required: true, maxlength: 200,
-          autocomplete: "off", spellcheck: false, placeholder: "City, neighborhood, station, or address",
+          autocomplete: "off", spellcheck: false, placeholder: "Neighborhood, ZIP code, or address",
           role: "combobox", aria: { autocomplete: "list", expanded: false, controls: "origin-suggestions" } %>
     <ul id="origin-suggestions" class="place-suggestions list-unstyled" role="listbox" aria-label="Suggested places" hidden></ul>
   </div>
   <%# Filled in when a suggestion or the device's location is chosen. %>
   <%= hidden_field_tag :lat, coordinates&.first, id: nil, disabled: coordinates.nil? %>
   <%= hidden_field_tag :lon, coordinates&.last, id: nil, disabled: coordinates.nil? %>
+  <%# The device's time zone, filled in by the page, ranks typed places near the visitor first. %>
+  <%= hidden_field_tag :tz, requested_time_zone, id: nil %>
+  <fieldset class="mt-3">
+    <legend class="form-label fw-semibold fs-6 mb-2">Day</legend>
+    <div class="btn-group w-100 day-choice" data-day-choice>
+      <% { "saturday" => "Saturday", "sunday" => "Sunday" }.each do |value, text| %>
+        <%= radio_button_tag :day, value, value == trip_day, class: "btn-check", id: "day-#{value}" %>
+        <%= label_tag "day-#{value}", text, class: "btn btn-outline-success" %>
+      <% end %>
+    </div>
+  </fieldset>
   <div class="d-flex flex-wrap gap-2 mt-3">
     <button type="submit" class="btn btn-success btn-lg flex-grow-1" data-search-submit>
       <span class="spinner-border spinner-border-sm me-2 d-none" aria-hidden="true"></span>

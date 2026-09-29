@@ -8,19 +8,22 @@ class TrailsServiceTest < ActiveSupport::TestCase
       @place, @queries = place, []
     end
 
-    def geocode(query)
-      @queries << query
+    def geocode(query, near: nil)
+      @queries << [query, near]
       @place
     end
   end
 
-  # Trips there and latest returns by route name; a name missing from returns has no way back.
+  # Trips there, trips by city transit, and latest returns by route name; a
+  # name missing from returns has no way back.
   class FakeTransit
-    attr_reader :departures, :planned, :stop_requests, :return_requests
+    attr_reader :departures, :planned, :station_requests, :return_requests, :city_requests
 
-    def initialize(trips: {}, returns: nil, area: { time_zone: "America/Los_Angeles", area: "Seattle, Washington" }, stops: nil)
-      @trips, @returns, @area, @stops = trips, returns, area, stops
-      @departures, @planned, @stop_requests, @return_requests = [], [], [], []
+    # By default, one station 55 km north of the origin, and no trips by city transit.
+    def initialize(trips: {}, city: {}, returns: nil, area: { time_zone: "America/Los_Angeles", area: "Seattle, Washington" },
+      stations: [[47.5, -122.0, 60]])
+      @trips, @city, @returns, @area, @stations = trips, city, returns, area, stations
+      @departures, @planned, @station_requests, @return_requests, @city_requests = [], [], [], [], []
     end
 
     def area(latitude, longitude)
@@ -29,14 +32,20 @@ class TrailsServiceTest < ActiveSupport::TestCase
       @area
     end
 
-    def reachable_stops(origin:, departure_time:)
-      @stop_requests << departure_time
-      raise @stops if @stops.is_a?(Exception)
+    def rail_stations(origin:, departure_time:)
+      @station_requests << departure_time
+      raise @stations if @stations.is_a?(Exception)
 
-      @stops
+      @stations
     end
 
-    def trips(origin:, destinations:, departure_time:)
+    def trips(origin:, destinations:, departure_time:, modes: nil)
+      if modes
+        @city_requests << modes
+        raise @city if @city.is_a?(Exception)
+
+        return destinations.map { |destination| @city[destination.name] }
+      end
       @departures << departure_time
       raise @trips if @trips.is_a?(Exception)
 
@@ -57,32 +66,35 @@ class TrailsServiceTest < ActiveSupport::TestCase
     end
   end
 
-  # Routes by id, found nearby or near stops farther away. A batch holding a
-  # failing route's id fails, and with a release event, highlights wait for it.
+  # Routes by id, in the first tiles or the others. A batch holding a failing
+  # route's id fails, and with a release event, stuck lookups wait for it.
   class FakeHiking
-    attr_reader :arguments, :access, :batches, :beyond, :threads
+    FIRST_TILE = [47.5, -122.5].freeze
 
-    # stuck names the lookups that wait for release.
+    attr_reader :access, :batches, :stations, :tile_requests, :threads
+
+    # stuck names the lookups that wait for release: :first_tiles, :other_tiles, :trails_for, or :highlights.
     def initialize(trails, far: [], highlights: {}, failing: [], release: nil, stuck: [:highlights])
       @trails, @far, @highlights, @failing, @release, @stuck = trails, far, highlights, failing, release, stuck
-      @batches, @threads = [], []
+      @batches, @threads, @tile_requests = [], [], Concurrent::Array.new
     end
 
-    def candidates(**arguments)
-      @release&.wait(5) if @stuck.include?(:candidates)
-      @arguments = arguments
-      raise @trails if @trails.is_a?(Exception)
-
-      { radius: 40_000, routes: @trails.map { |trail| { id: trail.osm_id } } }
+    # One tile, or five when there are routes in the others.
+    def tiles(stations)
+      @stations = stations
+      (0...(@far.empty? ? 1 : 5)).map { |index| [47.5, -122.5 + index * 0.5] }
     end
 
-    def candidates_near(stops, lat:, lon:, beyond:)
-      @release&.wait(5) if @stuck.include?(:candidates_near)
-      @beyond = beyond
-      @far.map { |trail| { id: trail.osm_id } }
+    def routes_in(tiles)
+      first = tiles.include?(FIRST_TILE)
+      @release&.wait(5) if @stuck.include?(first ? :first_tiles : :other_tiles)
+      @tile_requests << tiles
+      raise @trails if first && @trails.is_a?(Exception)
+
+      (first ? @trails : @far).map { |trail| { id: trail.osm_id } }
     end
 
-    def pick(routes, lat:, lon:, access:)
+    def pick(routes, access:)
       @access = access
       routes.pluck(:id)
     end
@@ -123,39 +135,42 @@ class TrailsServiceTest < ActiveSupport::TestCase
     end
   end
 
-  # It is 7:02 PDT on September 22.
+  # It is 7:02 AM PDT on Tuesday, September 22, so trips are for Saturday the 26th.
   setup { travel_to Time.utc(2026, 9, 22, 14, 2) }
   teardown { travel_back }
 
+  SATURDAY = Time.utc(2026, 9, 26, 15)
+
   # A 3-mile loop, about 1.5 hours to hike. Its midpoint's latitude is its name,
   # so fake lookups can tell trails apart.
-  def trail(name, length: 3.0, distance: 3.0, loop: true, **attributes)
-    OverpassService::Trail.new(name: name, latitude: 47.1, longitude: -122.1, length: length, distance: distance,
+  def trail(name, length: 3.0, distance: 30.0, loop: true, **attributes)
+    OverpassService::Trail.new(name: name, latitude: 47.5, longitude: -122.1, length: length, distance: distance,
       osm_id: name.hash, path: [[[name, -122.1]]], loop: loop, paved: 0, **attributes)
   end
 
-  def search(origin: "Seattle", places: FakePlaces.new, transit: FakeTransit.new, hiking: FakeHiking.new([]), wiki: FakeWiki.new, &block)
-    TrailsService.search(origin: origin, places: places, transit: transit, hiking: hiking, wiki: wiki, &block)
+  def search(origin: "Seattle", day: nil, near: nil, places: FakePlaces.new, transit: FakeTransit.new,
+    hiking: FakeHiking.new([]), wiki: FakeWiki.new, &block)
+    TrailsService.search(origin: origin, day: day, near: near, places: places, transit: transit, hiking: hiking,
+      wiki: wiki, &block)
   end
 
   def minutes(count)
     { duration: count * 60, transfers: 0 }
   end
 
-  test "looks up a typed place and lists the routes with a trip there and back, best first" do
+  test "looks up a typed place near the visitor and lists the routes with a trip there and back, best first" do
     places = FakePlaces.new
     transit = FakeTransit.new(trips: { "slow" => { duration: 3000, transfers: 1 }, "fast" => { duration: 1200, transfers: nil },
       "far" => nil })
     hiking = FakeHiking.new([trail("slow"), trail("far"), trail("fast")])
-    result = search(origin: "A & B / 東京", places: places, transit: transit, hiking: hiking)
+    result = search(origin: "A & B / 東京", near: [40.7, -74.0], places: places, transit: transit, hiking: hiking)
 
-    assert_equal ["A & B / 東京"], places.queries
-    assert_equal({ lat: 47, lon: -122 }, hiking.arguments)
+    assert_equal [["A & B / 東京", [40.7, -74.0]]], places.queries
     assert_equal %w[fast slow], result.trails.map(&:name)
     fast = result.trails.first
     assert_equal [1200, nil, "Seattle, Washington"], [fast.duration, fast.transfers, fast.origin]
-    assert_equal Time.utc(2026, 9, 22, 14, 35), fast.arrival
-    assert_equal Time.utc(2026, 9, 23, 4), fast.last_return
+    assert_equal SATURDAY + 20.minutes, fast.arrival
+    assert_equal Time.utc(2026, 9, 27, 4), fast.last_return
     assert_equal "Seattle, Washington", result.area
     assert result.returns_checked
     assert result.complete
@@ -172,7 +187,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal [:place, :checking, :trails, :checking, :trails, :checking, :trails, :ranking, :update], events.map(&:first)
     assert_equal 5, events[-2].last
     place = events.first.last
-    assert_equal [Time.utc(2026, 9, 22, 14, 15), Time.utc(2026, 9, 23, 6)], [place.departure_time, place.return_by]
+    assert_equal [SATURDAY, Time.utc(2026, 9, 27, 6)], [place.departure_time, place.return_by]
     assert_equal [2, 2, 1], events.select { |event, _| event == :checking }.map(&:last)
     assert_equal [["route 1", "route 2"], ["route 3", "route 4"], ["route 5"]],
       events.select { |event, _| event == :trails }.map { |_, found| found.map(&:name) }
@@ -180,44 +195,63 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert events.select { |event, _| event == :trails }.flat_map(&:last).all?(&:score)
   end
 
-  test "the first batch is from the searched area, and routes near stops beyond it follow" do
+  test "the first batch is from the tiles with the quickest stations, and routes in the others follow" do
     nearby = (1..3).map { |index| trail("near #{index}") }
     farther = [trail("far 1")]
-    transit = FakeTransit.new(trips: (nearby + farther).to_h { |trail| [trail.name, minutes(40)] },
-      stops: [[47.1, -122.1, 30, 1, true]])
+    transit = FakeTransit.new(trips: (nearby + farther).to_h { |trail| [trail.name, minutes(40)] })
     hiking = FakeHiking.new(nearby, far: farther)
     result = stub_const(TrailsService, :BATCH_SIZE, 2) { search(transit: transit, hiking: hiking) }
 
-    assert_equal 40_000, hiking.beyond
     assert_instance_of TransitAccess, hiking.access
+    assert_equal [[47.5, -122.0, 60]], hiking.stations
+    assert_equal [1, 4], hiking.tile_requests.map(&:size).sort
     assert_equal [nearby.first(2), [nearby.last, farther.first]].map { |batch| batch.map(&:osm_id) }, hiking.batches
     assert_equal ["near 1", "near 2", "near 3", "far 1"].sort, result.trails.map(&:name).sort
   end
 
-  test "without transit stops, nothing beyond the searched area is looked for" do
-    [nil, SearchErrors::UpstreamError.new("down"), SearchErrors::ResponseTooLarge.new("dense")].each do |stops|
-      hiking = FakeHiking.new([trail("a")], far: [trail("b")])
-      result = search(transit: FakeTransit.new(trips: { "a" => minutes(30) }, stops: stops), hiking: hiking)
-      assert_nil hiking.access
-      assert_nil hiking.beyond
-      assert_equal ["a"], result.trails.map(&:name)
-    end
+  test "stations in or next to the city don't count, and without others no routes are looked for" do
+    # 10 and 30 km north of the origin.
+    transit = FakeTransit.new(trips: { "a" => minutes(30) }, stations: [[47.09, -122.0, 20], [47.27, -122.0, 50]])
+    hiking = FakeHiking.new([trail("a")])
+    assert_equal ["a"], search(transit: transit, hiking: hiking).trails.map(&:name)
+    assert_equal [[47.27, -122.0, 50]], hiking.stations
+
+    hiking = FakeHiking.new([trail("a")])
+    events = []
+    result = search(transit: FakeTransit.new(stations: [[47.09, -122.0, 20]]), hiking: hiking) { |event, _| events << event }
+    assert_empty result.trails
+    assert_equal [:place], events
+    assert_nil hiking.stations
+    assert_empty hiking.tile_requests
+  end
+
+  test "hikes the subway or light rail reaches are left out, unless that can't be checked" do
+    trails = [trail("by train"), trail("by subway")]
+    trips = trails.to_h { |trail| [trail.name, minutes(60)] }
+    transit = FakeTransit.new(trips: trips, city: { "by subway" => minutes(95) })
+    assert_equal ["by train"], search(transit: transit, hiking: FakeHiking.new(trails)).trails.map(&:name)
+    assert_equal [TransitousService::CITY_MODES], transit.city_requests
+    # Transitous's METRO means suburban trains, which take city dwellers out for the day.
+    assert_equal %w[SUBWAY TRAM], TransitousService::CITY_MODES
+
+    transit = FakeTransit.new(trips: trips, city: SearchErrors::UpstreamError.new("down"))
+    assert_equal ["by subway", "by train"], search(transit: transit, hiking: FakeHiking.new(trails)).trails.map(&:name).sort
   end
 
   test "routes without a way back the same day, or without time to hike before it, are left out" do
     trails = [trail("roomy"), trail("stranded"), trail("rushed"), trail("long", length: 10, loop: false)]
     transit = FakeTransit.new(trips: trails.to_h { |trail| [trail.name, minutes(60)] }, returns: {
-      "roomy" => Time.utc(2026, 9, 23, 2), "stranded" => nil,
-      # Arriving at 15:15 UTC, there is 1 hour 29 minutes before the last trip back.
-      "rushed" => Time.utc(2026, 9, 22, 16, 44),
+      "roomy" => Time.utc(2026, 9, 27, 2), "stranded" => nil,
+      # Arriving at 16:00 UTC, there is 1 hour 29 minutes before the last trip back.
+      "rushed" => Time.utc(2026, 9, 26, 17, 29),
       # A 20-mile round trip needs the most time required, 4 hours, which is just what's left.
-      "long" => Time.utc(2026, 9, 22, 19, 15)
+      "long" => Time.utc(2026, 9, 26, 20)
     })
     result = search(transit: transit, hiking: FakeHiking.new(trails))
 
     assert_equal %w[roomy long], result.trails.map(&:name)
     deadline, earliest = transit.return_requests.sole
-    assert_equal [Time.utc(2026, 9, 23, 6), Time.utc(2026, 9, 22, 15, 45)], [deadline, earliest]
+    assert_equal [Time.utc(2026, 9, 27, 6), SATURDAY + 90.minutes], [deadline, earliest]
     assert_equal 1.5, TrailsService.hike_hours(trail("short", length: 1.2))
     assert_equal 7, TrailsService.hike_hours(trail("epic", length: 30))
     assert_equal 5, TrailsService.hike_hours(trail("there and back", length: 5, loop: false))
@@ -256,25 +290,37 @@ class TrailsServiceTest < ActiveSupport::TestCase
 
   test "an unknown place is actionable before any route search" do
     hiking = FakeHiking.new([])
-    assert_raises(SearchErrors::InvalidInput) { search(places: FakePlaces.new(nil), hiking: hiking) }
-    assert_nil hiking.arguments
+    transit = FakeTransit.new
+    assert_raises(SearchErrors::InvalidInput) { search(places: FakePlaces.new(nil), transit: transit, hiking: hiking) }
+    assert_empty transit.station_requests
+    assert_empty hiking.tile_requests
   end
 
-  test "departs now early in the day, in the origin's time zone" do
+  test "trips set out at 8 AM on the next weekend day, or the one chosen, in the origin's time zone" do
     transit = FakeTransit.new(trips: { "loop" => minutes(10) })
     result = search(transit: transit, hiking: FakeHiking.new([trail("loop")]))
-    assert_equal Time.utc(2026, 9, 22, 14, 15), result.departure_time
+    assert_equal SATURDAY, result.departure_time
     assert_equal "PDT", result.departure_time.zone
-    assert_equal [result.departure_time], transit.departures
-    assert_equal [result.departure_time], transit.stop_requests
+    assert_equal [SATURDAY], transit.departures
+    assert_equal [SATURDAY], transit.station_requests
+
+    sunday = search(day: "sunday", transit: FakeTransit.new(trips: { "loop" => minutes(10) }), hiking: FakeHiking.new([trail("loop")]))
+    assert_equal SATURDAY + 1.day, sunday.departure_time
   end
 
-  test "day trips plan for the next morning from mid-morning on" do
-    zone = "America/Los_Angeles"
-    assert_equal Time.utc(2026, 9, 22, 16, 45), TrailsService.departure_time(zone, now: Time.utc(2026, 9, 22, 16, 31))
-    assert_equal Time.utc(2026, 9, 23, 15), TrailsService.departure_time(zone, now: Time.utc(2026, 9, 22, 17, 0))
-    assert_equal Time.utc(2026, 9, 23, 15), TrailsService.departure_time(zone, now: Time.utc(2026, 9, 23, 11, 0))
-    assert_equal Time.utc(2026, 9, 22, 12, 0), TrailsService.departure_time(zone, now: Time.utc(2026, 9, 22, 12, 0, 30))
+  test "on the morning of the trip it sets out now, and from 10 AM, the trip is a week later" do
+    departs = ->(now, day = nil) { TrailsService.departure_time("America/Los_Angeles", day: day, now: now) }
+    # Saturday at 7 AM, 8:31 AM, 9:59:30 AM, and 10 AM.
+    assert_equal SATURDAY, departs.(Time.utc(2026, 9, 26, 14))
+    assert_equal SATURDAY + 45.minutes, departs.(Time.utc(2026, 9, 26, 15, 31))
+    assert_equal SATURDAY + 2.hours, departs.(Time.utc(2026, 9, 26, 16, 59, 30))
+    assert_equal SATURDAY + 1.day, departs.(Time.utc(2026, 9, 26, 17))
+    assert_equal SATURDAY + 7.days, departs.(Time.utc(2026, 9, 26, 17), "saturday")
+    # Sunday at 11 AM, and Friday just before midnight.
+    assert_equal SATURDAY + 7.days, departs.(Time.utc(2026, 9, 27, 18))
+    assert_equal SATURDAY + 8.days, departs.(Time.utc(2026, 9, 27, 18), "sunday")
+    assert_equal SATURDAY, departs.(Time.utc(2026, 9, 26, 6, 59))
+    assert_equal Date.new(2026, 9, 27), TrailsService.trip_date(Time.utc(2026, 9, 22).in_time_zone("UTC"), "sunday")
   end
 
   test "an unknown time zone falls back to UTC" do
@@ -299,15 +345,18 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal 15, result.trails.size
   end
 
-  test "route provider failures fail the search" do
+  test "rail station and route provider failures fail the search" do
+    assert_raises(SearchErrors::UpstreamError) do
+      search(transit: FakeTransit.new(stations: SearchErrors::UpstreamError.new("Transitous is down")))
+    end
     assert_raises(SearchErrors::UpstreamError) do
       search(hiking: FakeHiking.new(SearchErrors::UpstreamError.new("Overpass is down")))
     end
   end
 
   test "highlights, popularity, day-hike lengths and time there rank routes up; paving, generic names and long trips down" do
-    base = trail("base", length: 5, duration: 3600, transfers: 0, arrival: Time.utc(2026, 9, 22, 16),
-      last_return: Time.utc(2026, 9, 23, 2))
+    base = trail("base", length: 5, duration: 3600, transfers: 0, arrival: SATURDAY + 1.hour,
+      last_return: Time.utc(2026, 9, 27, 2))
     score = ->(**changes) { TrailsService.score(base.dup.tap { |copy| changes.each { |key, value| copy[key] = value } }) }
     assert_equal 1.5, score.call
 
@@ -320,10 +369,13 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal 0.25, score.call(length: 1.5)
     assert_equal 0.25, score.call(paved: 0.5)
     assert_equal 0.5, score.call(name: "Trail 2")
-    assert_in_delta 1.5 - 0.5, score.call(duration: 7200), 0.001
-    assert_in_delta 1.5 - 1 - 1, score.call(duration: 10_800), 0.001
+    # An hour and a half by train costs nothing, three hours a little, and more much more.
+    assert_equal 1.5, score.call(duration: 5400)
+    assert_in_delta 1.5 - 0.25, score.call(duration: 7200), 0.001
+    assert_in_delta 1.5 - 0.75, score.call(duration: 10_800), 0.001
+    assert_in_delta 1.5 - 1 - 0.5, score.call(duration: 12_600), 0.001
     assert_in_delta 1.3, score.call(transfers: 2), 0.001
-    assert_equal 1, score.call(last_return: Time.utc(2026, 9, 22, 18))
+    assert_equal 1, score.call(last_return: SATURDAY + 2.hours)
   end
 
   test "ranks the routes once highlights and their areas' popularity are known, varied across areas" do
@@ -382,7 +434,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
       search(transit: FakeTransit.new(trips: { "a" => minutes(30), "b" => minutes(30) }), hiking: hiking)
     end
     assert_equal %w[a b], result.trails.map(&:name).sort
-    # The area's routes, and each batch's highlights.
+    # The first tiles' routes, and each batch's highlights.
     assert_equal 3, pool.posted
     assert_equal [Thread.current] * 2, hiking.threads
   ensure
@@ -390,12 +442,12 @@ class TrailsServiceTest < ActiveSupport::TestCase
     pool&.shutdown
   end
 
-  test "a search gives up on the area's routes when they take too long, but not on farther routes" do
+  test "a search gives up on the first tiles' routes when they take too long, but not on the other tiles'" do
     release = Concurrent::Event.new
-    transit = FakeTransit.new(trips: { "a" => minutes(30) }, stops: [[47.1, -122.1, 30, 1, true]])
+    transit = FakeTransit.new(trips: { "a" => minutes(30) })
     error = assert_raises(SearchErrors::ProviderBusy) do
       stub_const(TrailsService, :OVERPASS_WAIT_SECONDS, 0.1) do
-        search(transit: transit, hiking: FakeHiking.new([trail("a")], release: release, stuck: [:candidates]))
+        search(transit: transit, hiking: FakeHiking.new([trail("a")], release: release, stuck: [:first_tiles]))
       end
     end
     assert_equal OverpassService::BUSY, error.message
@@ -403,7 +455,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
 
     slow = Concurrent::Event.new
     result = stub_const(TrailsService, :OVERPASS_WAIT_SECONDS, 0.1) do
-      search(transit: transit, hiking: FakeHiking.new([trail("a")], far: [trail("b")], release: slow, stuck: [:candidates_near]))
+      search(transit: transit, hiking: FakeHiking.new([trail("a")], far: [trail("b")], release: slow, stuck: [:other_tiles]))
     end
     assert_equal ["a"], result.trails.map(&:name)
   ensure

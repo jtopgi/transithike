@@ -19,7 +19,8 @@
         <div>
           <dt><span aria-hidden="true">🕒</span> Travel time</dt>
           <dd>
-            <%= (trail.duration / 60.0).ceil %> min
+            <%# From setting out, waiting for the train included, until the planned trip shows the ride itself. %>
+            <span data-travel-time><%= (trail.duration / 60.0).ceil %> min</span>
             <small class="trail-transfers"><%= transfers_label(trail.transfers) %></small>
           </dd>
         </div>

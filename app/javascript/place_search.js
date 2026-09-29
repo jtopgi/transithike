@@ -14,6 +14,14 @@ class PlaceSearch {
     this.places = []
     this.active = -1
     this.timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    // Typed places near the visitor come first.
+    const zone = form.querySelector('input[name="tz"]')
+    if (zone) zone.value = this.timeZone
+    // Unless a day was asked for, offer whichever weekend day comes next here.
+    if (!new URLSearchParams(window.location.search).has("day")) {
+      const day = form.querySelector(`input[name="day"][value="${upcomingDay(new Date())}"]`)
+      if (day) day.checked = true
+    }
 
     this.input.addEventListener("input", () => this.onInput())
     this.input.addEventListener("keydown", (event) => this.onKeydown(event))
@@ -131,6 +139,15 @@ class PlaceSearch {
   close() {
     this.setOpen(false)
   }
+}
+
+// Like the search, Saturday or Sunday, whichever comes first; from 10 AM on, it's too late to set out that day.
+function upcomingDay(now) {
+  const weekday = now.getDay()
+  const late = now.getHours() >= 10
+  if (weekday === 6) return late ? "sunday" : "saturday"
+  if (weekday === 0 && !late) return "sunday"
+  return "saturday"
 }
 
 function setBusy(form, busy) {

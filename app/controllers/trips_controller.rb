@@ -1,4 +1,4 @@
-# The trains, buses, and ferries to a route and back, and when they leave.
+# The trains and other transit to a route and back, and when they leave.
 class TripsController < ApplicationController
   rate_limit to: 60, within: 1.minute, with: -> { head :too_many_requests }
 

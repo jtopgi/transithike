@@ -7,23 +7,21 @@ module OverpassService
     # A public mirror, for when the main instance is too busy.
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
   ].freeze
-  # The search area widens until it holds enough routes, so dense regions stay
-  # local and sparse ones reach hikes farther away.
-  SEARCH_RADII_METERS = [10_000, 20_000, 40_000, 80_000].freeze
-  ENOUGH_ROUTES = 250
+  # Routes are found in tiles this many degrees across that hold routes within
+  # a walk of the stations, checking at most MAX_TILES of those with the
+  # quickest stations. Each tile's routes are shared by every search for days.
+  TILE_DEGREES = 0.5
+  MAX_TILES = 16
+  # Where hiking routes are plentiful, as in the Alps, a tile lists a
+  # megabyte of them, so a query lists at most this many tiles.
+  TILES_PER_QUERY = 4
+  TILE_CACHE_TTL = 3.days
+  # Regions' routes and routes' geometry take a while to find, especially on the mirror.
+  LONG_QUERY_SECONDS = 45
   # Transitous plans at most 128 destinations in one request.
   MAX_TRANSIT_ROUTES = 120
-  # Each distance ring's upper bound in km and its share of the transit checks,
-  # so farther hikes are checked even where nearby routes are plentiful.
-  RINGS = [[15, 40], [35, 50], [Float::INFINITY, 30]].freeze
   # Routes this close together with the same name are sections of one trail.
   DUPLICATE_METERS = 5_000
-  # Stops beyond the searched area are grouped into cells this many degrees
-  # across, and routes are found within a cell's half diagonal and a half-hour
-  # walk of its center, for at most MAX_FAR_CELLS cells.
-  FAR_CELL_DEGREES = 0.05
-  FAR_CELL_METERS = 5_500
-  MAX_FAR_CELLS = 40
   # Routes spanning less are rarely hikes worth a trip.
   MIN_SPAN_METERS = 300
   # Shorter routes, and routes mostly on paved paths or roads, are walks rather than day hikes.
@@ -32,15 +30,17 @@ module OverpassService
   # Longer routes are multi-day trails rather than hikes from a nearby start.
   MAX_LENGTH_MILES = 30
   METERS_PER_MILE = 1609.344
-  # Mapped routes rarely change, so an area's routes are shared for a day and
-  # each route's details for a week.
-  AREA_CACHE_TTL = 1.day
+  # Mapped routes rarely change, so each route's details are shared for a week.
   ROUTE_CACHE_TTL = 7.days
   # After an instance fails, searches start with the other one for a while.
   FAILOVER_KEY = "overpass:failover:v1"
   FAILOVER_TTL = 5.minutes
   # Queries wait this long for one of the process's Overpass slots.
   SLOT_WAIT_SECONDS = 30
+  # When both instances turn a query away quickly, as they do when briefly
+  # overloaded, the preferred one is asked once more after a pause
+  # (config.x.overpass_retry_pause_seconds).
+  QUICK_FAILURE_SECONDS = 15
   # Highlights only refine a search: they are looked up when a slot is free, and briefly.
   HIGHLIGHT_TIMEOUT_SECONDS = 15
   BUSY = "The hiking route provider is busy. Please try again later.".freeze
@@ -76,78 +76,63 @@ module OverpassService
     end
   end
 
-  # The routes in the search area and its radius in meters, as { radius:, routes: }
-  # with each route as { id:, name:, latitude:, longitude:, bounds:, span:, notable: }:
-  # the center of its [south, west, north, east] bounding box, and its diagonal in meters.
-  def self.candidates(lat:, lon:, connections: nil, cache: Rails.cache)
-    unless SearchHttp.coordinates?(lat, lon)
-      raise SearchErrors::InvalidInput, "The origin does not have valid coordinates."
+  # The [south, west] corners of tiles holding routes within a walk of the
+  # stations, [latitude, longitude, minutes] from the origin: those with the
+  # quickest stations first, and at most MAX_TILES.
+  def self.tiles(stations)
+    reach = TransitAccess::WALK_METERS / 110_574.0
+    quickest = {}
+    stations.each do |latitude, longitude, minutes|
+      reach_east = reach / [Math.cos(latitude * Math::PI / 180), 0.01].max
+      rows = tile_index(latitude - reach)..tile_index(latitude + reach)
+      columns = tile_index(longitude - reach_east)..tile_index(longitude + reach_east)
+      rows.to_a.product(columns.to_a).each do |tile|
+        quickest[tile] = [quickest.fetch(tile, minutes), minutes].min
+      end
     end
-
-    # Rounding to about 5 km lets nearby searches share one query.
-    center = [lat, lon].map { |value| (value.to_f * 20).round / 20.0 }
-    cache.fetch("overpass:area:v2:#{center.join(':')}", expires_in: AREA_CACHE_TTL) do
-      steps = SEARCH_RADII_METERS.map do |radius|
-        %(relation(around:#{radius},#{center.join(',')})["type"="route"]["route"="hiking"]->.routes;) +
-          "make search radius=#{radius}->.searched;"
-      end
-      widen = steps.drop(1).map { |step| "if (routes.count(relations) < #{ENOUGH_ROUTES}) { #{step} }" }
-      query = "[out:json][timeout:20];#{steps.first}#{widen.join}.routes out tags bb;.searched out;"
-      searched, routes = elements(query, connections, cache).partition do |element|
-        element.is_a?(Hash) && element["type"] == "search"
-      end
-      tags = searched.first["tags"] if searched.one?
-      radius = Integer(tags["radius"], exception: false) if tags.is_a?(Hash) && tags["radius"].is_a?(String)
-      unless SEARCH_RADII_METERS.include?(radius)
-        raise SearchErrors::UpstreamError, "The hiking route provider returned an incomplete response."
-      end
-
-      { radius: radius, routes: routes.filter_map { |element| candidate(element) } }
-    end
+    quickest.sort_by { |tile, minutes| [minutes, tile] }.first(MAX_TILES)
+      .map { |(row, column), _| [row * TILE_DEGREES, column * TILE_DEGREES] }
   end
 
-  # Routes near the reachable stops farther than beyond meters from the origin,
-  # where trains, buses, and ferries go past the searched area. Each cell's
-  # routes are cached, and only uncached cells are queried.
-  def self.candidates_near(stops, lat:, lon:, beyond:, connections: nil, cache: Rails.cache)
-    cells = far_cells(stops, lat, lon, beyond)
-    keys = cells.to_h { |cell| [cell, "overpass:cell:v1:#{cell.join(':')}"] }
+  def self.tile_index(degrees)
+    (degrees / TILE_DEGREES).floor
+  end
+
+  # The routes in the tiles, as { id:, name:, latitude:, longitude:, bounds:,
+  # span:, notable: } with each route's [south, west, north, east] bounding box,
+  # its center, and its diagonal in meters. Each tile's routes are cached, and
+  # uncached tiles are queried TILES_PER_QUERY neighbors at a time, each query
+  # finding the routes of the region around its tiles once, then keeping those
+  # in the tiles. The routes of tiles whose query fails are left out, unless
+  # every tile's do.
+  def self.routes_in(tiles, connections: nil, cache: Rails.cache)
+    keys = tiles.to_h { |tile| [tile, "overpass:tile:v1:#{tile.join(':')}"] }
     found = keys.empty? ? {} : cache.read_multi(*keys.values)
-    missing = cells.reject { |cell| found.key?(keys[cell]) }
-    if missing.any?
-      clauses = missing.map do |latitude, longitude|
-        %(relation(around:#{FAR_CELL_METERS},#{latitude},#{longitude})["type"="route"]["route"="hiking"];)
-      end
-      routes = elements("[out:json][timeout:20];(#{clauses.join});out tags bb;", connections, cache)
+    error = nil
+    tiles.reject { |tile| found.key?(keys[tile]) }.sort.each_slice(TILES_PER_QUERY) do |group|
+      routes = elements(tiles_query(group), connections, cache, timeout: LONG_QUERY_SECONDS)
         .filter_map { |element| candidate(element) }
-      missing.each do |cell|
-        found[keys[cell]] = routes.select { |route| distance_to_box(*cell, route[:bounds]) <= FAR_CELL_METERS }
-        cache.write(keys[cell], found[keys[cell]], expires_in: AREA_CACHE_TTL)
+      group.each do |south, west|
+        found[keys[[south, west]]] = routes.select do |route|
+          route[:bounds][0] < south + TILE_DEGREES && route[:bounds][2] >= south &&
+            route[:bounds][1] < west + TILE_DEGREES && route[:bounds][3] >= west
+        end
+        cache.write(keys[[south, west]], found[keys[[south, west]]], expires_in: TILE_CACHE_TTL)
       end
+    rescue SearchErrors::UpstreamError => failure
+      error ||= failure
     end
-    keys.values.flat_map { |key| found[key] }.uniq { |route| route[:id] }
+    raise error if error && keys.values.none? { |key| found.key?(key) }
+
+    keys.values.filter_map { |key| found[key] }.flatten(1).uniq { |route| route[:id] }
   end
 
-  # Cells [latitude, longitude] around the stops farther than beyond meters from
-  # the origin. Where there are too many, cells with stations come first, and
-  # each group is spread over travel times.
-  def self.far_cells(stops, lat, lon, beyond)
-    cells = stops.select { |stop| distance(lat, lon, stop[0], stop[1]) > beyond }.group_by do |stop|
-      stop.first(2).map { |value| ((value / FAR_CELL_DEGREES).round * FAR_CELL_DEGREES).round(2) }
-    end
-    return cells.keys if cells.size <= MAX_FAR_CELLS
-
-    stations, others = cells.sort_by { |_, grouped| grouped.map { |stop| stop[2] }.min }
-      .partition { |_, grouped| grouped.any? { |stop| stop[4] } }.map { |group| group.map(&:first) }
-    picked = spread(stations, MAX_FAR_CELLS)
-    picked + spread(others, MAX_FAR_CELLS - picked.size)
-  end
-
-  # Up to count items, evenly spaced through the list.
-  def self.spread(list, count)
-    return list.first([count, 0].max) if list.size <= count || count <= 1
-
-    (0...count).map { |index| list[(index * (list.size - 1).fdiv(count - 1)).round] }
+  def self.tiles_query(tiles)
+    region = [tiles.map(&:first).min, tiles.map(&:last).min,
+      tiles.map(&:first).max + TILE_DEGREES, tiles.map(&:last).max + TILE_DEGREES]
+    clauses = tiles.map { |south, west| "relation.region(#{south},#{west},#{south + TILE_DEGREES},#{west + TILE_DEGREES});" }
+    %([out:json][timeout:40];relation["type"="route"]["route"="hiking"](#{region.join(',')})->.region;) +
+      "(#{clauses.join});out tags bb;"
   end
 
   # The routes with these ids, measured, leaving out those too short, too long,
@@ -180,26 +165,12 @@ module OverpassService
       longitude: (corners[1] + corners[3]) / 2.0, bounds: corners, span: span.round, notable: notable?(tags) }
   end
 
-  # Up to MAX_TRANSIT_ROUTES route ids, leaving out sections of one trail. With
-  # access, the most promising routes transit may reach, keeping each trail's
-  # quickest section; otherwise each distance ring's most promising routes, then
-  # the nearest of the rest, keeping each trail's nearest section.
-  def self.pick(candidates, lat:, lon:, access: nil)
-    routes = candidates.map { |route| route.merge(meters: distance(lat, lon, route[:latitude], route[:longitude])) }
-    if access
-      reachable = routes.filter_map { |route| (minutes = access.reach(route[:bounds])) && route.merge(minutes: minutes) }
-      return distinct(reachable.sort_by { |route| route[:minutes] })
-        .sort_by { |route| [-promise(route), route[:minutes]] }.first(MAX_TRANSIT_ROUTES).pluck(:id)
-    end
-
-    unique = distinct(routes.sort_by { |route| route[:meters] })
-    picked = RINGS.each_with_index.flat_map do |(limit, quota), index|
-      floor = index.zero? ? 0 : RINGS[index - 1].first
-      unique.select { |route| route[:meters] >= floor * 1000 && route[:meters] < limit * 1000 }
-        .sort_by { |route| [-promise(route), route[:meters]] }.first(quota)
-    end
-    ids = picked.map { |route| route[:id] }
-    (ids + (unique.map { |route| route[:id] } - ids)).first(MAX_TRANSIT_ROUTES)
+  # Up to MAX_TRANSIT_ROUTES ids of the routes transit may reach, most promising
+  # and quickest first, keeping each trail's quickest section.
+  def self.pick(candidates, access:)
+    reachable = candidates.filter_map { |route| (minutes = access.reach(route[:bounds])) && route.merge(minutes: minutes) }
+    distinct(reachable.sort_by { |route| route[:minutes] })
+      .sort_by { |route| [-promise(route), route[:minutes]] }.first(MAX_TRANSIT_ROUTES).pluck(:id)
   end
 
   # The routes, leaving out any named like an earlier one within DUPLICATE_METERS.
@@ -246,9 +217,10 @@ module OverpassService
   # Plain route attributes by id, never transit results, using the ids of each route's paved ways.
   def self.fetch_routes(ids, connections, cache)
     paved = PAVED_WAYS.map { |filter| "way.ways#{filter};" }
-    query = "[out:json][timeout:20];relation(id:#{ids.join(',')})->.routes;.routes out geom;" \
+    query = "[out:json][timeout:40];relation(id:#{ids.join(',')})->.routes;.routes out geom;" \
       "way(r.routes)->.ways;(#{paved.join});out ids;"
-    elements = elements(query, connections, cache).group_by { |element| element["type"] if element.is_a?(Hash) }
+    elements = elements(query, connections, cache, timeout: LONG_QUERY_SECONDS)
+      .group_by { |element| element["type"] if element.is_a?(Hash) }
     paved = elements.fetch("way", []).pluck("id").to_set
     elements.except("way").values.flatten(1).each_with_object({}) do |element, routes|
       route = route_attributes(element, paved)
@@ -377,17 +349,28 @@ module OverpassService
 
   # The response's elements, from the preferred instance or else the other one,
   # once one of the process's query slots is free, waiting at most wait seconds.
-  def self.elements(query, connections, cache, wait: SLOT_WAIT_SECONDS)
+  # Lookups that don't wait for a slot aren't retried either.
+  def self.elements(query, connections, cache, wait: SLOT_WAIT_SECONDS, timeout: 25)
     slots = Rails.configuration.x.overpass_slots
     raise SearchErrors::ProviderBusy, BUSY unless slots.try_acquire(1, wait)
 
     begin
-      connections ||= urls(cache).map { |url| SearchHttp.connection(url, timeout: 25) }
-      connections.each_with_index do |connection, index|
-        return request(connection, query)
+      connections ||= urls(cache).map { |url| SearchHttp.connection(url, timeout: timeout) }
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      begin
+        connections.each_with_index do |connection, index|
+          return request(connection, query)
+        rescue SearchErrors::UpstreamError
+          cache.write(FAILOVER_KEY, !cache.read(FAILOVER_KEY), expires_in: FAILOVER_TTL) if index.zero?
+          raise if index == connections.size - 1
+        end
+      rescue SearchErrors::ResponseTooLarge
+        raise
       rescue SearchErrors::UpstreamError
-        cache.write(FAILOVER_KEY, !cache.read(FAILOVER_KEY), expires_in: FAILOVER_TTL) if index.zero?
-        raise if index == connections.size - 1
+        raise if wait.zero? || Process.clock_gettime(Process::CLOCK_MONOTONIC) - started > QUICK_FAILURE_SECONDS
+
+        sleep Rails.configuration.x.overpass_retry_pause_seconds
+        request(connections.first, query)
       end
     ensure
       slots.release
@@ -426,10 +409,6 @@ module OverpassService
     geometry.is_a?(Array) && geometry.length >= 2 && geometry.all? do |point|
       point.is_a?(Hash) && SearchHttp.coordinates?(point["lat"], point["lon"])
     end
-  end
-
-  def self.distance_to_box(latitude, longitude, (south, west, north, east))
-    distance(latitude, longitude, latitude.clamp(south, north), longitude.clamp(west, east))
   end
 
   def self.distance(lat1, lon1, lat2, lon2)

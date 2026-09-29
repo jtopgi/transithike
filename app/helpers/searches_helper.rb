@@ -31,10 +31,10 @@ module SearchesHelper
     chips
   end
 
-  # For example "Travel times for leaving tomorrow at 8:00 AM PDT, with a way back by 11 PM.",
+  # For example "Saturday, October 3, leaving at 8:00 AM EDT, with a way back by 11 PM.",
   # with times kept on one line.
   def trip_times(result)
-    "Travel times for #{departure_phrase(result.departure_time)}, with a way back by #{result.return_by.strftime('%-I %p')}."
+    "#{departure_phrase(result.departure_time).upcase_first}, with a way back by #{result.return_by.strftime('%-I %p')}."
       .gsub(/(\d) (AM|PM)\b( [A-Z]{2,5}\b)?/) { "#{$1}\u00a0#{$2}#{$3&.sub(' ', "\u00a0")}" }
   end
 
@@ -53,20 +53,29 @@ module SearchesHelper
     trail.last_return ? [(trail.last_return - trail.arrival).floor, 0].max : 0
   end
 
-  # Where the page looks up the trains, buses, and ferries to take there and back.
+  # Where the page looks up the trains there and back, and when they leave.
   def trip_lookup_path(trail, result)
     place = result.place
     trip_path(from: "#{place.latitude.to_f},#{place.longitude.to_f}", to: "#{trail.latitude.to_f},#{trail.longitude.to_f}",
       leave: result.departure_time.utc.iso8601, back_by: result.return_by.utc.iso8601)
   end
 
-  # For example "leaving now" or "leaving tomorrow at 8:00 AM PDT".
+  # For example "today, leaving now" or "Saturday, October 3, leaving at 8:00 AM EDT".
   def departure_phrase(departure_time)
     now = Time.current.in_time_zone(departure_time.time_zone)
-    return "leaving now" if departure_time <= now + 15.minutes
+    day = departure_time.to_date == now.to_date ? "today" : departure_time.strftime("%A, %B %-d")
+    return "#{day}, leaving now" if departure_time <= now + 15.minutes
 
-    day = departure_time.to_date == now.to_date ? "today" : "tomorrow"
-    "leaving #{day} at #{departure_time.strftime('%-I:%M %p %Z')}"
+    "#{day}, leaving at #{departure_time.strftime('%-I:%M %p %Z')}"
+  end
+
+  # The weekend day the search box offers: the one asked for, or else whichever
+  # comes next where the visitor is. The page corrects it from the device's clock.
+  def trip_day
+    return requested_day if requested_day
+
+    zone = ActiveSupport::TimeZone[requested_time_zone] if requested_time_zone
+    TrailsService.trip_date(Time.current.in_time_zone(zone || Time.zone)).saturday? ? "saturday" : "sunday"
   end
 
   def place_label(result)

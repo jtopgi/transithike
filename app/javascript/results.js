@@ -18,10 +18,11 @@ const ORDERS = {
   "length-desc": descending("length")
 }
 const MODE_ICONS = {
-  BUS: "🚌", COACH: "🚍", TRAM: "🚊", SUBWAY: "🚇", METRO: "🚇", FERRY: "⛴️",
+  BUS: "🚌", COACH: "🚍", TRAM: "🚊", SUBWAY: "🚇", FERRY: "⛴️",
   FUNICULAR: "🚞", AERIAL_LIFT: "🚡", AREAL_LIFT: "🚡", CABLE_CAR: "🚡"
 }
-const modeIcon = (mode) => MODE_ICONS[mode] || (/RAIL|SUBURBAN|LONG_DISTANCE/.test(mode) ? "🚆" : "🚏")
+// Transitous's METRO is an old name for suburban trains.
+const modeIcon = (mode) => MODE_ICONS[mode] || (/RAIL|SUBURBAN|LONG_DISTANCE|METRO/.test(mode) ? "🚆" : "🚏")
 
 class Results {
   constructor(page) {
@@ -46,7 +47,7 @@ class Results {
     on("place", (place) => this.place(place))
     on("checking", ({ count }) => this.status(this.found
       ? `Found ${this.found} so far. Checking ${count} more hikes…`
-      : `Checking trains, buses, and ferries to ${count} hikes and back…`))
+      : `Checking trains to ${count} hikes and back…`))
     on("trails", ({ html }) => this.add(html))
     on("ranking", () => this.status("Adding highlights and popularity…"))
     on("update", ({ trails }) => this.refresh(trails))
@@ -163,7 +164,12 @@ class Results {
     if (!response.ok) return
 
     const { there, back } = await response.json()
-    // The planned trip back is exact to the minute, unlike the search's estimate.
+    // The planned trips are exact to the minute, unlike the search's estimates,
+    // whose travel times include waiting for the train.
+    if (there) {
+      const minutes = Math.ceil((new Date(there.arrival) - new Date(there.departure)) / 60000)
+      card.querySelector("[data-travel-time]")?.replaceChildren(`${minutes} min`)
+    }
     if (back) card.querySelector(".trail-return strong")?.replaceChildren(this.clock(back.departure))
     const lines = [["There", there, "arrive"], ["Back", back, "home by"]]
       .filter(([, trip]) => trip)

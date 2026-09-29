@@ -1,15 +1,15 @@
 <% label = coordinates && @origin == SearchesController::CURRENT_LOCATION ? "your location" : @origin %>
-<% content_for :title, @error ? "Hiking routes" : "Hikes near #{label}" %>
+<% content_for :title, @error ? "Day hikes by train" : "Day hikes by train from #{label}" %>
 <section class="results-hero text-white">
   <div class="container py-4">
     <div class="row g-4 align-items-center">
       <div class="col-lg-6">
         <% if @error %>
-          <h1 class="h2 fw-bold mb-0">Hiking routes</h1>
+          <h1 class="h2 fw-bold mb-0">Day hikes by train</h1>
         <% else %>
-          <h1 class="h2 fw-bold mb-1" data-heading>Hikes near <%= label %></h1>
+          <h1 class="h2 fw-bold mb-1" data-heading>Day hikes by train from <%= label %></h1>
           <p class="mb-0 results-subtitle" data-departure>
-            Day trips by train, bus, and ferry, with a way back the same day.
+            Weekend day trips by train, with a way back the same evening.
           </p>
         <% end %>
       </div>
@@ -24,7 +24,10 @@
   </div>
 </section>
 
-<% stream_url = search_stream_path({ origin: @origin, lat: coordinates&.first, lon: coordinates&.last }.compact) unless @error %>
+<% unless @error
+     stream_url = search_stream_path({ origin: @origin, lat: coordinates&.first, lon: coordinates&.last,
+       day: requested_day, tz: requested_time_zone }.compact)
+   end %>
 <%= tag.div class: "container py-4", data: { stream_url: stream_url } do %>
   <% if @error %>
     <div class="alert alert-danger" role="alert"><%= @error %></div>
@@ -33,7 +36,7 @@
     <div class="alert alert-danger" role="alert" data-failure hidden></div>
     <div class="search-progress mb-4" data-progress role="status" aria-live="polite">
       <span class="spinner-border spinner-border-sm text-success" aria-hidden="true"></span>
-      <span data-progress-text>Finding hikes and the trains, buses, and ferries that reach them…</span>
+      <span data-progress-text>Finding the stations trains reach and the hikes near them…</span>
     </div>
     <div class="results-toolbar d-flex flex-wrap align-items-center gap-3 mb-4" data-results-toolbar hidden>
       <div class="d-flex align-items-center gap-2">
@@ -53,9 +56,10 @@
         <label for="trip" class="form-label small fw-semibold mb-0">Trip</label>
         <select id="trip" class="form-select form-select-sm w-auto" data-max-trip>
           <option value="">Any travel time</option>
-          <option value="60">Up to 1 hour</option>
           <option value="90">Up to 1½ hours</option>
           <option value="120">Up to 2 hours</option>
+          <option value="150">Up to 2½ hours</option>
+          <option value="180">Up to 3 hours</option>
         </select>
       </div>
       <div class="btn-group btn-group-sm" role="group" aria-label="Hike length" data-length-filter>
@@ -83,24 +87,26 @@
     <p class="text-center text-body-secondary py-5" data-no-matches hidden>No hikes match these filters. Try another length or a longer trip.</p>
     <div class="empty-state text-center py-5" data-empty hidden>
       <div class="display-6 mb-3" aria-hidden="true">🧭</div>
-      <p class="lead mb-2">No day hikes with a way back the same day were found for this search.</p>
-      <p class="text-body-secondary mb-0">Try a different starting point, such as a nearby town or a transit station.</p>
+      <p class="lead mb-2">No day hikes by train with a way back the same evening were found for this search.</p>
+      <p class="text-body-secondary mb-0">Try the other weekend day, or start from a station or a nearby neighborhood.</p>
     </div>
     <div class="alert alert-warning mt-4 mb-0" role="status" data-notices hidden></div>
+    <% min_km = TrailsService::MIN_DISTANCE_METERS / 1000 %>
+    <% min_miles = (TrailsService::MIN_DISTANCE_METERS / OverpassService::METERS_PER_MILE).round %>
     <p class="small text-body-secondary mt-4 mb-0">
-      Trips go by bus, light rail, commuter rail, Amtrak, and ferry, from the timetables Transitous has for the region,
-      leaving in the morning. Every hike shown has a way back by 11 PM that leaves time to hike it. Recommended hikes
-      are unpaved and of day-hike length, pass waterfalls, summits, or viewpoints, are in well-known parks, and aren't
-      too far to go. Popularity comes from Wikipedia page views of the nearest park or natural area, not of the route
-      itself. Lengths are approximate, calculated from OpenStreetMap geometry. Directions lead to where transit reaches
-      each route soonest, not to a verified trailhead or public access point. Photos show a nearby park or natural area,
-      not necessarily the route.
+      Trips leave at 8 AM on the day you choose, from the timetables Transitous has for the region: the subway or bus
+      to the station if you need them, then commuter rail, Amtrak, or other trains. Hikes are near stations
+      at least <%= min_km %> km (<%= min_miles %> miles) away, and hikes the subway or light rail reaches are left out,
+      since you likely know them already. Every hike shown has a way back by 11 PM that leaves time to hike it. Recommended hikes are unpaved and of day-hike length,
+      pass waterfalls, summits, or viewpoints, are in well-known parks, and aren't too far to go. Popularity comes from
+      Wikipedia page views of the nearest park or natural area, not of the route itself. Lengths are approximate,
+      calculated from OpenStreetMap geometry. Directions lead to where the train reaches each route soonest, not to a
+      verified trailhead or public access point. Photos show a nearby park or natural area, not necessarily the route.
     </p>
   <% end %>
   <p class="small text-body-secondary mt-2 mb-0">
-    Each search looks for mapped hiking routes up to <%= OverpassService::SEARCH_RADII_METERS.last / 1000 %> km
-    (<%= (OverpassService::SEARCH_RADII_METERS.last / OverpassService::METERS_PER_MILE).round %> miles) away, or less
-    where routes are plentiful, and near stations and stops farther out, then checks transit for up to
+    Each search looks for mapped hiking routes within a <%= TransitAccess::MAX_WALK_MINUTES %>-minute walk of the
+    stations trains reach within <%= TransitousService::STATION_MINUTES / 60 %> hours, then checks trips for up to
     <%= OverpassService::MAX_TRANSIT_ROUTES %> hikes of <%= OverpassService::MIN_LENGTH_MILES.round %> to
     <%= OverpassService::MAX_LENGTH_MILES %> miles that aren't mostly paved.
   </p>

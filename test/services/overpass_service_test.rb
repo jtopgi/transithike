@@ -10,18 +10,17 @@ class OverpassServiceTest < ActiveSupport::TestCase
     def access_point(path) = points[path]
   end
 
-  def candidates(connection, lat: 47.0, lon: -122.0, cache: Rails.cache)
-    OverpassService.candidates(lat: lat, lon: lon, connections: [connection], cache: cache)
+  TILE = [47.0, -122.0].freeze
+
+  def routes_in(connection, tiles: [TILE], cache: Rails.cache)
+    OverpassService.routes_in(tiles, connections: [connection], cache: cache)
   end
 
-  def search_element(radius = "80000")
-    { "type" => "search", "id" => 1, "tags" => { "radius" => radius } }
-  end
-
-  # Trails from the full route elements, through the area and details queries.
+  # Trails from the full route elements, through the tiles and details queries.
   def fetch(routes, lat: 47.0, access: nil, paved: [], queries: nil, cache: Rails.cache)
     connection = overpass_connection(routes: routes, paved: paved, queries: queries)
-    ids = OverpassService.pick(candidates(connection, lat: lat, cache: cache)[:routes], lat: lat, lon: -122.0, access: access)
+    candidates = routes_in(connection, cache: cache)
+    ids = access ? OverpassService.pick(candidates, access: access) : candidates.pluck(:id)
     OverpassService.trails_for(ids, lat: lat, lon: -122.0, access: access, connections: [connection], cache: cache)
   end
 
@@ -42,55 +41,151 @@ class OverpassServiceTest < ActiveSupport::TestCase
       span: span, notable: notable }
   end
 
-  def pick(candidates, access: nil)
-    OverpassService.pick(candidates, lat: 47.0, lon: -122.0, access: access)
+  # Transit reaches every route in 60 minutes unless told otherwise.
+  def pick(candidates, access: FakeAccess.new(Hash.new(60)))
+    OverpassService.pick(candidates, access: access)
   end
 
-  test "the area query widens until it finds enough routes, from a point shared nearby, and reports how far it went" do
-    queries = []
-    route = route_element
-    route["tags"]["wikidata"] = "Q1"
-    found = candidates(overpass_connection(routes: [route], queries: queries, radius: 40_000), lat: 47.6038, lon: -122.3301)
-
-    query = queries.sole
-    assert_includes query, "[timeout:20]"
-    assert_includes query, 'relation(around:10000,47.6,-122.35)["type"="route"]["route"="hiking"]->.routes;' \
-      "make search radius=10000->.searched;"
-    assert_includes query, 'if (routes.count(relations) < 250) { relation(around:20000,47.6,-122.35)'
-    assert_includes query, 'if (routes.count(relations) < 250) { relation(around:80000,47.6,-122.35)'
-    assert query.end_with?(".routes out tags bb;.searched out;")
-    assert_equal 40_000, found[:radius]
-    assert_equal({ id: 123, name: "Forest Loop", longitude: -122.0, bounds: [47.0, -122.0, 47.02, -122.0], span: 2224,
-      notable: true }, found[:routes].sole.except(:latitude))
-    assert_in_delta 47.01, found[:routes].sole[:latitude], 1e-9
+  # A station km north and east of 47, -122, reached in minutes.
+  def station(north, east, minutes)
+    [47.0 + north / 111.195, -122.0 + east / (111.32 * Math.cos(47 * Math::PI / 180)), minutes]
   end
 
-  test "an area query must report one searched radius it asked for" do
-    [[], [search_element("5000")], [search_element("x")], [search_element, search_element],
-      [{ "type" => "search", "id" => 1, "tags" => "80000" }]].each do |searched|
-      assert_raises(SearchErrors::UpstreamError) { candidates(stub_connection(:post, { "elements" => searched })) }
+  test "tiles hold the routes within a walk of the stations, those with the quickest stations first" do
+    # Two inside one tile, one within a walk of four tiles' corner, and one in another tile.
+    stations = [station(20, 20, 90), station(1, 1, 60), station(60, 60, 120), station(21, 21, 45)]
+    assert_equal [[47.0, -122.0], [46.5, -122.5], [46.5, -122.0], [47.0, -122.5], [47.5, -121.5]],
+      OverpassService.tiles(stations)
+    many = (0...20).map { |index| station(100, 40 * index, 60 + index) }
+    tiles = OverpassService.tiles(many)
+    assert_equal OverpassService::MAX_TILES, tiles.size
+    assert_equal [[47.5, -122.5], [47.5, -122.0]], tiles.first(2)
+    assert_empty OverpassService.tiles([])
+  end
+
+  test "routes in tiles are found by querying the region around them, and each tile's routes are shared for days" do
+    travel_to Time.utc(2026, 9, 22, 12) do
+      cache = ActiveSupport::Cache::MemoryStore.new
+      queries = []
+      inside = route_element(id: 1, latitude: 47.2)
+      across = route_element(id: 2, latitude: 47.49, name: "Ridge")
+      elsewhere = route_element(id: 3, latitude: 48.1, name: "Far away")
+      connection = overpass_connection(routes: [inside, across, elsewhere], queries: queries)
+      found = routes_in(connection, tiles: [[47.0, -122.0], [47.5, -122.0], [48.5, -122.5]], cache: cache)
+
+      assert_equal [1, 2], found.pluck(:id).sort
+      assert_equal '[out:json][timeout:40];relation["type"="route"]["route"="hiking"](47.0,-122.5,49.0,-121.5)->.region;' \
+        "(relation.region(47.0,-122.0,47.5,-121.5);relation.region(47.5,-122.0,48.0,-121.5);" \
+        "relation.region(48.5,-122.5,49.0,-122.0););out tags bb;", queries.sole
+      # The route across two tiles is in both.
+      assert_equal [2], routes_in(connection, tiles: [[47.5, -122.0]], cache: cache).pluck(:id)
+      assert_equal [1, 2], routes_in(connection, tiles: [[47.5, -122.0], [47.0, -122.0]], cache: cache).pluck(:id).sort
+      assert_equal 1, queries.size
+      assert_empty OverpassService.routes_in([], connections: [connection], cache: cache)
+
+      routes_in(connection, tiles: [[47.5, -122.0], [50.0, -122.0]], cache: cache)
+      assert_includes queries.last, "(50.0,-122.0,50.5,-121.5)->.region;"
+      travel 3.days + 1.minute
+      routes_in(connection, tiles: [[47.5, -122.0]], cache: cache)
+      assert_equal 3, queries.size
     end
   end
 
-  test "candidates leave out other relations and routes too small or too long for a day hike" do
+  test "neighboring tiles are queried a few at a time, and the routes of tiles whose query fails are left out" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    queries = []
+    tiles = [[48.0, -121.0], [47.0, -122.0], [47.0, -121.5], [47.5, -122.0], [47.5, -121.5], [48.0, -122.0]]
+    connection = stub_connection(:post, lambda { |request|
+      query = URI.decode_www_form(request.body).to_h.fetch("data")
+      queries << query
+      raise Faraday::ConnectionFailed, "busy" if query.include?("(48.0,-122.0,48.5,-121.5)")
+
+      { "elements" => [candidate_of(route_element(id: 1, latitude: 47.1)), candidate_of(route_element(id: 2, latitude: 48.1))] }
+    })
+    assert_equal [1], routes_in(connection, tiles: tiles, cache: cache).pluck(:id)
+    # The first four tiles from south to west, and then the other two, asked twice when that query fails quickly.
+    assert_equal ["(47.0,-122.0,48.0,-121.0)->.region;", "(48.0,-122.0,48.5,-120.5)->.region;",
+      "(48.0,-122.0,48.5,-120.5)->.region;"], queries.map { |query| query[/\([^()]*\)->\.region;/] }
+    # Tiles whose query worked are cached; the others are asked again.
+    routes_in(connection, tiles: tiles, cache: cache)
+    assert_equal 5, queries.size
+    assert_raises(SearchErrors::UpstreamError) { routes_in(connection, tiles: [[48.0, -122.0]], cache: cache) }
+  end
+
+  test "failed tile queries are asked once more when they fail quickly, and are never cached" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    [[200, "not json"], [200, { "elements" => nil }], [200, { "elements" => [], "remark" => "timed out" }],
+      [429, { "elements" => [] }], [504, "<html>Gateway Timeout</html>"]].each do |status, body|
+      calls = 0
+      connection = stub_connection(:post, body, status: status) { calls += 1 }
+      2.times { assert_raises(SearchErrors::UpstreamError) { routes_in(connection, cache: cache) } }
+      assert_equal 4, calls
+    end
+
+    calls = 0
+    connection = stub_connection(:post, {}) do
+      calls += 1
+      raise Faraday::TimeoutError
+    end
+    2.times { assert_raises(SearchErrors::UpstreamError) { routes_in(connection, cache: cache) } }
+    assert_equal 4, calls
+  end
+
+  test "a query that fails slowly, or is too large, is not asked again" do
+    calls = 0
+    slow = stub_connection(:post, {}, status: 504) { calls += 1 }
+    stub_const(OverpassService, :QUICK_FAILURE_SECONDS, -1) do
+      assert_raises(SearchErrors::UpstreamError) { routes_in(slow, cache: ActiveSupport::Cache::MemoryStore.new) }
+    end
+    assert_equal 1, calls
+
+    calls = 0
+    huge = stub_connection(:post, {}) do
+      calls += 1
+      raise SearchErrors::ResponseTooLarge
+    end
+    assert_raises(SearchErrors::ResponseTooLarge) { routes_in(huge, cache: ActiveSupport::Cache::MemoryStore.new) }
+    assert_equal 1, calls
+  end
+
+  test "a query that fails quickly on both instances succeeds on the preferred one's second try" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    attempts = 0
+    flaky = stub_connection(:post, lambda { |_|
+      attempts += 1
+      raise Faraday::ConnectionFailed, "busy" if attempts == 1
+
+      { "elements" => [candidate_of(route_element)] }
+    })
+    busy = stub_connection(:post, {}, status: 504)
+    assert_equal [123], OverpassService.routes_in([TILE], connections: [flaky, busy], cache: cache).pluck(:id)
+    assert_equal 2, attempts
+  end
+
+  test "routes in tiles leave out other relations and routes too small or too long for a day hike" do
     other = route_element(id: 1)
     other["tags"]["route"] = "bicycle"
     unbounded = route_element(id: 2).slice("type", "id", "tags")
     tiny = route_element(id: 3)
     tiny["members"].first["geometry"].last["lat"] = 47.002
     long = route_of(31, id: 4)
-    elements = [other, unbounded, tiny, long, route_element(id: 5)].map { |route| route["members"] ? candidate_of(route) : route }
-    assert_equal [5], candidates(stub_connection(:post, { "elements" => elements + [search_element] }))[:routes].pluck(:id)
+    notable = route_element(id: 5)
+    notable["tags"]["wikidata"] = "Q1"
+    elements = [other, unbounded, tiny, long, notable].map { |route| route["members"] ? candidate_of(route) : route }
+    found = routes_in(stub_connection(:post, { "elements" => elements })).sole
+    assert_equal({ id: 5, name: "Forest Loop", longitude: -122.0, bounds: [47.0, -122.0, 47.02, -122.0], span: 2224,
+      notable: true }, found.except(:latitude))
+    assert_in_delta 47.01, found[:latitude], 1e-9
   end
 
   test "malformed responses and provider errors are not empty successes" do
     [[], {}, { "elements" => nil }, { "elements" => [], "remark" => "runtime error: timed out" }, "not json"].each do |body|
-      assert_raises(SearchErrors::UpstreamError) { candidates(stub_connection(:post, body)) }
+      assert_raises(SearchErrors::UpstreamError) { routes_in(stub_connection(:post, body)) }
     end
     [nil, {}, { "type" => "relation", "id" => "bad", "tags" => {} }, { "type" => "relation", "id" => 1 }].each do |element|
-      assert_raises(SearchErrors::UpstreamError) { candidates(stub_connection(:post, { "elements" => [element, search_element] })) }
+      assert_raises(SearchErrors::UpstreamError) { routes_in(stub_connection(:post, { "elements" => [element] })) }
     end
-    assert_raises(SearchErrors::UpstreamError) { candidates(stub_connection(:post, {}, status: 429)) }
+    assert_raises(SearchErrors::UpstreamError) { routes_in(stub_connection(:post, {}, status: 429)) }
   end
 
   test "a failing instance falls back to the other, which searches then prefer for a while" do
@@ -98,12 +193,12 @@ class OverpassServiceTest < ActiveSupport::TestCase
     busy = stub_connection(:post, {}, status: 504)
     assert_equal OverpassService::URLS, OverpassService.urls(cache)
 
-    found = OverpassService.candidates(lat: 47, lon: -122, connections: [busy, overpass_connection], cache: cache)
-    assert_equal [123], found[:routes].pluck(:id)
+    found = OverpassService.routes_in([TILE], connections: [busy, overpass_connection], cache: cache)
+    assert_equal [123], found.pluck(:id)
     assert_equal OverpassService::URLS.reverse, OverpassService.urls(cache)
 
     assert_raises(SearchErrors::UpstreamError) do
-      OverpassService.candidates(lat: 48, lon: -122, connections: [busy, busy], cache: cache)
+      OverpassService.routes_in([[48.0, -122.0]], connections: [busy, busy], cache: cache)
     end
     assert_equal OverpassService::URLS, OverpassService.urls(cache)
   end
@@ -114,13 +209,13 @@ class OverpassServiceTest < ActiveSupport::TestCase
     calls = 0
     connection = overpass_connection
     counted = stub_connection(:post, { "elements" => [] }) { calls += 1 }
-    cached = candidates(connection, cache: cache)
+    cached = routes_in(connection, cache: cache)
     trails = [OverpassService::Trail.new(osm_id: 1, path: [[[47.0, -122.0], [47.02, -122.0]]])]
     assert slots.try_acquire(2, 1)
 
-    assert_equal cached, candidates(counted, cache: cache)
+    assert_equal cached, routes_in(counted, cache: cache)
     error = stub_const(OverpassService, :SLOT_WAIT_SECONDS, 0.05) do
-      assert_raises(SearchErrors::ProviderBusy) { candidates(counted, lat: 48.0, cache: cache) }
+      assert_raises(SearchErrors::ProviderBusy) { routes_in(counted, tiles: [[48.0, -122.0]], cache: cache) }
     end
     assert_equal OverpassService::BUSY, error.message
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -132,56 +227,15 @@ class OverpassServiceTest < ActiveSupport::TestCase
     slots.release(2)
   end
 
-  test "invalid origin cannot be interpolated into the query" do
-    assert_raises(SearchErrors::InvalidInput) { OverpassService.candidates(lat: "0);node;out;", lon: 0) }
+  test "only routes transit may reach are checked, most promising and quickest first" do
+    routes = [candidate(1, 30), candidate(2, 1), candidate(3, 50, notable: true), candidate(4, 2)]
+    access = FakeAccess.new({ routes[0][:bounds] => 60, routes[1][:bounds] => 90, routes[2][:bounds] => 120 })
+    assert_equal [3, 1, 2], pick(routes, access: access)
+    many = (1..130).map { |id| candidate(id, id) }
+    assert_equal (1..OverpassService::MAX_TRANSIT_ROUTES).to_a, pick(many, access: FakeAccess.new(Hash.new { |_, box| box[0] }))
   end
 
-  test "an area's routes are cached for a day and shared by origins within about 5 km" do
-    travel_to Time.utc(2026, 9, 22, 12) do
-      cache = ActiveSupport::Cache::MemoryStore.new
-      queries = []
-      connection = overpass_connection(queries: queries)
-      [[47.0, -122.0], [47.02, -122.02], [47.03, -122.0]].each do |lat, lon|
-        OverpassService.candidates(lat: lat, lon: lon, connections: [connection], cache: cache)
-      end
-      assert_equal ["47.0,-122.0", "47.05,-122.0"], queries.map { |query| query[/around:10000,([^)]*)/, 1] }
-
-      travel 1.day + 1.minute
-      OverpassService.candidates(lat: 47.0, lon: -122.0, connections: [connection], cache: cache)
-      assert_equal 3, queries.size
-    end
-  end
-
-  test "failed area queries are never cached" do
-    [[200, "not json"], [200, { "elements" => nil }], [200, { "elements" => [], "remark" => "timed out" }],
-      [429, { "elements" => [] }]].each do |status, body|
-      cache = ActiveSupport::Cache::MemoryStore.new
-      calls = 0
-      connection = stub_connection(:post, body, status: status) { calls += 1 }
-      2.times { assert_raises(SearchErrors::UpstreamError) { candidates(connection, cache: cache) } }
-      assert_equal 2, calls
-    end
-
-    calls = 0
-    connection = stub_connection(:post, {}) do
-      calls += 1
-      raise Faraday::TimeoutError
-    end
-    cache = ActiveSupport::Cache::MemoryStore.new
-    2.times { assert_raises(SearchErrors::UpstreamError) { candidates(connection, cache: cache) } }
-    assert_equal 2, calls
-  end
-
-  test "without transit stops, each distance ring gets its share of checks, then the nearest of the rest" do
-    rings = [[1, 50, 5], [101, 60, 25], [201, 40, 50]]
-    all = rings.flat_map { |first, count, km| (0...count).map { |step| candidate(first + step, km + step * 0.01) } }
-    assert_equal [*1..40, *101..150, *201..230], pick(all.shuffle)
-
-    few = all.reject { |route| route[:id].between?(11, 50) }
-    assert_equal [*1..10, *101..150, *201..230, *151..160, *231..240], pick(few)
-  end
-
-  test "promising routes are checked first within a ring" do
+  test "promising routes are checked first" do
     routes = [candidate(1, 2, name: "Trail 1"), candidate(2, 3, span: 500), candidate(3, 4, notable: true, span: 500),
       candidate(4, 5)]
     assert_equal [3, 4, 2, 1], pick(routes)
@@ -191,78 +245,14 @@ class OverpassServiceTest < ActiveSupport::TestCase
     refute OverpassService.generic_name?("Loop Trail to Twin Falls")
   end
 
-  test "sections of one trail are checked once, but namesakes farther away are kept" do
-    routes = [candidate(1, 1, name: "Twin Falls Trail"), candidate(2, 3, name: "twin-falls trail"),
-      candidate(3, 20, name: "Twin Falls Trail"), candidate(4, 2, name: nil), candidate(5, 4, name: nil)]
-    assert_equal [1, 4, 5, 3], pick(routes)
-  end
-
-  test "with transit stops, the section of a trail that transit reaches soonest is kept" do
-    near, far = candidate(1, 13, name: "Foo Trail"), candidate(2, 16, name: "Foo Trail")
+  test "sections of one trail are checked once, where transit reaches soonest, but namesakes farther away are kept" do
+    near, far = candidate(1, 13, name: "Foo Trail"), candidate(2, 16, name: "foo-trail")
     assert_equal [2], pick([near, far], access: FakeAccess.new({ far[:bounds] => 30 }))
     assert_equal [2], pick([near, far], access: FakeAccess.new({ near[:bounds] => 90, far[:bounds] => 30 }))
     assert_equal [1], pick([near, far], access: FakeAccess.new({ near[:bounds] => 30, far[:bounds] => 90 }))
-  end
-
-  test "with transit stops, only routes transit may reach are checked, most promising and quickest first" do
-    routes = [candidate(1, 30), candidate(2, 1), candidate(3, 50, notable: true), candidate(4, 2)]
-    access = FakeAccess.new({ routes[0][:bounds] => 60, routes[1][:bounds] => 90, routes[2][:bounds] => 120 })
-    assert_equal [3, 1, 2], pick(routes, access: access)
-  end
-
-  # A stop km north of the origin, reached in minutes.
-  def stop(kilometers, minutes, station: false, east: 0)
-    [47.0 + kilometers / 111.195, -122.0 + east, minutes, 1, station]
-  end
-
-  def far_cells(stops, beyond: 80_000)
-    OverpassService.far_cells(stops, 47.0, -122.0, beyond)
-  end
-
-  test "stops beyond the searched area are grouped into cells" do
-    stops = [stop(79, 60), stop(85, 70), stop(85.5, 75), stop(90, 80, station: true)]
-    assert_equal [[47.75, -122.0], [47.8, -122.0]], far_cells(stops)
-    assert_empty far_cells(stops, beyond: 100_000)
-  end
-
-  test "where there are too many cells, those with stations come first, spread over travel times" do
-    stations = (0...30).map { |index| stop(100, 60 + index, station: true, east: index * 0.1) }
-    buses = (0...30).map { |index| stop(100, 30 + index, east: -0.1 - index * 0.1) }
-    cells = far_cells(stations + buses)
-    assert_equal OverpassService::MAX_FAR_CELLS, cells.size
-    assert_equal stations.map { |station| [47.9, (station[1] * 20).round / 20.0] }, cells.first(30)
-    assert_equal [-122.1, -122.4, -122.7, -123.1], cells.drop(30).first(4).map(&:last)
-    assert_equal(-125.0, cells.last.last)
-    assert_equal [1, 5, 9], OverpassService.spread((1..9).to_a, 3)
-    assert_equal [1], OverpassService.spread([1, 2], 1)
-    assert_empty OverpassService.spread([1, 2], 0)
-  end
-
-  test "routes near stops beyond the searched area are found in one query, cached per cell" do
-    travel_to Time.utc(2026, 9, 22, 12) do
-      cache = ActiveSupport::Cache::MemoryStore.new
-      queries = []
-      near_a = route_element(id: 1, latitude: 47.75)
-      near_b = route_element(id: 2, latitude: 47.79, name: "Ridge")
-      elsewhere = route_element(id: 3, latitude: 48.5, name: "Far away")
-      connection = overpass_connection(routes: [], far: [near_a, near_b, elsewhere], queries: queries)
-      arguments = { lat: 47.0, lon: -122.0, beyond: 80_000, connections: [connection], cache: cache }
-
-      found = OverpassService.candidates_near([stop(85, 70), stop(90, 80, station: true)], **arguments)
-      assert_equal [1, 2], found.pluck(:id).sort
-      assert_equal ['relation(around:5500,47.75,-122.0)["type"="route"]["route"="hiking"];',
-        'relation(around:5500,47.8,-122.0)["type"="route"]["route"="hiking"];'], queries.sole.scan(/relation\([^;]*;/)
-      assert queries.sole.end_with?(");out tags bb;")
-
-      OverpassService.candidates_near([stop(90, 80), stop(95, 90)], **arguments)
-      assert_equal ['relation(around:5500,47.85,-122.0)["type"="route"]["route"="hiking"];'], queries.last.scan(/relation\([^;]*;/)
-      assert_empty OverpassService.candidates_near([stop(10, 20)], **arguments)
-      assert_equal 2, queries.size
-
-      travel 1.day + 1.minute
-      OverpassService.candidates_near([stop(90, 80)], **arguments)
-      assert_equal 3, queries.size
-    end
+    namesake = candidate(3, 20, name: "Foo Trail")
+    assert_equal [1, 3], pick([near, far, namesake], access: FakeAccess.new({ near[:bounds] => 30, far[:bounds] => 90,
+      namesake[:bounds] => 60 }))
   end
 
   test "maps geometry to miles, route start, preview and the share on paved ways" do
@@ -400,7 +390,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
 
   test "highlights near each route, waterfalls first and named before unnamed" do
     near = route_element(id: 1)
-    far = route_element(id: 2, latitude: 47.5)
+    far = route_element(id: 2, latitude: 47.4)
     trails = fetch([near, far])
     nodes = [highlight_node("viewpoint", 47.005, -122.001, name: "Lookout"), highlight_node("viewpoint", 47.008, -122.0),
       highlight_node("waterfall", 47.002, -121.999), highlight_node("peak", 47.01, -122.0, name: "Knob"),
