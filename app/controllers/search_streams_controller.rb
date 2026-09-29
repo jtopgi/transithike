@@ -42,10 +42,10 @@ class SearchStreamsController < ApplicationController
     end
   end
 
-  # What changes once highlights and popularity rank a route.
+  # What changes once highlights and terrain rank a route.
   def trail_update(trail)
-    { id: trail.osm_id, score: trail.score, popularity: trail.area&.dig(:monthly_views).to_i,
-      scenic: TrailsService.scenic(trail), chips: render_to_string(partial: "searches/chips", locals: { trail: trail }) }
+    { id: trail.osm_id, score: trail.score, scenic: TrailsService.scenic(trail), climb: helpers.climb_label(trail),
+      chips: render_to_string(partial: "searches/chips", locals: { trail: trail }) }
   end
 
   def notices(result)

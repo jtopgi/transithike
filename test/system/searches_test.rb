@@ -8,9 +8,11 @@ class SearchesTest < ApplicationSystemTestCase
   ROUTES = [["Short Loop", 47.81, 1.5, [{ duration: 4800, transfers: 0 }]],
     ["Ridge Trail", 47.83, 5, [{ duration: 4200, transfers: 1 }]],
     ["Long Traverse", 47.86, 8, [{ duration: 6000, transfers: 2 }]]].freeze
-  # A waterfall on the Short Loop, a viewpoint on the Long Traverse, and a well-known park around the Ridge Trail.
+  # A waterfall on the Short Loop and a viewpoint on the Long Traverse; the Ridge Trail climbs to a summit.
   HIGHLIGHTS = [["waterfall", 47.815, "Little Falls"], ["viewpoint", 47.95, nil]].freeze
-  POPULAR_AREA = "47.9|-122.0"
+  SUMMIT = 47.9024
+  # Photos taken near every route.
+  PHOTOS = ["Ridge view.jpg", "Lake at dawn.jpg", "Autumn woods.jpg"].freeze
 
   setup do
     @old_adapter = Faraday.default_adapter
@@ -60,18 +62,27 @@ class SearchesTest < ApplicationSystemTestCase
         itinerary = { duration: ride, transfers: 0, **times, legs: [leg.merge(times, agencyName: "Sound Transit")] }
         [200, {}, JSON.generate(itineraries: [itinerary], direct: [])]
       end
+      # The land rises 480 m to a summit at the end of the Ridge Trail, and is flat elsewhere.
+      stub.get(/\A#{Regexp.escape(URI(ElevationService::TILE_URL).path)}/) do |env|
+        [200, {}, terrain_tile(env.url.path) { |latitude| 480 - (latitude - SUMMIT).abs * 40_000 }]
+      end
+      # No park nearby on Wikipedia, and photos on Wikimedia Commons, which answers at the same path.
       stub.get(URI(WikipediaService::API_URL).path) do |env|
-        pages = if env.params["ggscoord"] == POPULAR_AREA
-          [{ title: "Ridge Park", fullurl: "https://en.wikipedia.org/wiki/Ridge_Park", coordinates: [{ lat: 47.7, lon: -122.0 }],
-            pageviews: { "2026-09-01" => 5_000 } }]
+        files = PHOTOS.map do |title|
+          name = title.tr(" ", "_")
+          { title: "File:#{title}", coordinates: [{ lat: Float(env.params["ggscoord"].split("|").first), lon: -122.0 }],
+            imageinfo: [{ mime: "image/jpeg", width: 1600, height: 1200, thumburl: "https://upload.wikimedia.org/thumb/#{name}/500px-#{name}",
+              descriptionurl: "https://commons.wikimedia.org/wiki/File:#{name}",
+              extmetadata: { Artist: { value: "Ann" }, LicenseShortName: { value: "CC BY 4.0" } } }] }
         end
-        [200, {}, JSON.generate(pages ? { query: { pages: pages } } : {})]
+        [200, {}, JSON.generate(env.params["ggsnamespace"] == "6" ? { query: { pages: files } } : {})]
       end
     end
     Faraday.default_adapter = Class.new(Faraday::Adapter::Test) do
       define_method(:initialize) { |app| super(app, stubs) }
     end
     Faraday.default_adapter_options = {}
+    ElevationService::TILES.clear
   end
 
   teardown do
@@ -131,37 +142,77 @@ class SearchesTest < ApplicationSystemTestCase
     end
   end
 
-  test "hikes stream in, are ranked once highlights and popularity arrive, and can be sorted and filtered" do
+  # Moves a slider to a value, as dragging it does.
+  def slide(selector, value)
+    page.execute_script(<<~JS, selector, value.to_s)
+      const input = document.querySelector(arguments[0])
+      input.value = arguments[1]
+      input.dispatchEvent(new Event("input", { bubbles: true }))
+    JS
+  end
+
+  test "hikes stream in, are ranked most scenic first once highlights and terrain arrive, and can be sorted and filtered" do
     visit search_url(origin: "Seattle")
 
-    # Popularity arrives with the final ranking.
-    assert_selector "article.trail-card", text: /Ridge Trail.*Very popular/m
+    # Views and highlights arrive with the final ranking.
+    assert_selector "article.trail-card", text: /Ridge Trail.*Big views/m
     assert_selector "article.trail-card", text: /Short Loop.*Little Falls/m
     assert_no_selector "[data-progress]", visible: true
     assert_text "Showing 3 of 3 hikes"
-    assert_equal ["Ridge Trail", "Long Traverse", "Short Loop"], route_names
+    # The Ridge Trail's grand view beats the Short Loop's waterfall, and both beat one small viewpoint.
+    assert_equal ["Ridge Trail", "Short Loop", "Long Traverse"], route_names
+    assert_selector "article.trail-card", text: /Ridge Trail.*Climb\s+≈ 1,550 ft/m
+    assert_no_text "Distance"
 
     # Planned trips there and back keep these orders.
-    { "Least travel" => ["Ridge Trail", "Short Loop", "Long Traverse"],
+    { "Recommended" => ["Ridge Trail", "Long Traverse", "Short Loop"],
+      "Least travel" => ["Ridge Trail", "Short Loop", "Long Traverse"],
       "Most time there" => ["Ridge Trail", "Short Loop", "Long Traverse"],
-      "Most scenic" => ["Short Loop", "Long Traverse", "Ridge Trail"],
-      "Most popular" => ["Ridge Trail", "Long Traverse", "Short Loop"],
+      "Shortest hike" => ["Short Loop", "Ridge Trail", "Long Traverse"],
       "Longest hike" => ["Long Traverse", "Ridge Trail", "Short Loop"],
-      "Closest" => ["Short Loop", "Ridge Trail", "Long Traverse"] }.each do |order, names|
+      "Most scenic" => ["Ridge Trail", "Short Loop", "Long Traverse"] }.each do |order, names|
       select order, from: "Sort by"
       assert_equal names, route_names, order
     end
 
-    select "Up to 3 hours", from: "Round trip"
+    slide "[data-max-trip]", 180
+    assert_text "Round trip: up to 3 h"
     assert_text "Showing 2 of 3 hikes"
-    assert_equal ["Short Loop", "Ridge Trail"], route_names
-    find("label", text: "Under 3 mi").click
+    assert_equal ["Ridge Trail", "Short Loop"], route_names
+    slide "[data-length-min]", 3
+    assert_text "Length: 3 mi or more"
+    assert_equal ["Ridge Trail"], route_names
+    slide "[data-length-max]", 6
+    assert_text "Length: 3–6 mi"
     assert_text "Showing 1 of 3 hikes"
-    assert_equal ["Short Loop"], route_names
-    find("label", text: "Over 6 mi").click
+    # The handles can't pass each other.
+    slide "[data-length-min]", 7
+    assert_text "Length: 7–7 mi"
     assert_text "No hikes match these filters"
-    select "Any travel time", from: "Round trip"
+    slide "[data-length-max]", 20
+    slide "[data-max-trip]", 480
+    assert_text "Round trip: any"
     assert_equal ["Long Traverse"], route_names
+    slide "[data-length-min]", 1
+    assert_text "Length: any"
+    assert_text "Showing 3 of 3 hikes"
+  end
+
+  test "each card shows photos taken nearby, and its thumbnails switch between them" do
+    # Photos load from Wikimedia, which the test browser isn't allowed to reach.
+    page.driver.browser.execute_cdp("Network.enable")
+    page.driver.browser.execute_cdp("Network.setBlockedURLs", urls: ["*wikimedia.org*"])
+    visit search_url(origin: "Seattle")
+
+    within find("article.trail-card", text: "Short Loop") do
+      assert_selector ".trail-thumb", count: 3
+      thumbs = all(".trail-thumb")
+      assert_equal ["Photo 1 of 3: Ridge view", "true"], [thumbs.first["aria-label"], thumbs.first["aria-pressed"]]
+      thumbs.last.click
+      assert_selector ".trail-thumb[aria-pressed='true']", count: 1
+      assert_equal "true", thumbs.last["aria-pressed"]
+      assert_match %r{/120px-Autumn_woods\.jpg\z}, thumbs.last.find("img", visible: :all)["src"]
+    end
   end
 
   test "a search that fails says why" do

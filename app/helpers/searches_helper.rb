@@ -1,20 +1,22 @@
 module SearchesHelper
-  # Monthly page views of a route's park or natural area, and how they read.
-  POPULARITY_LEVELS = [[2_000, "🔥", "Very popular"], [300, "👥", "Popular"]].freeze
+  # How far a route's high point stands above the land around it, or how far
+  # it climbs, in meters, for its views to read as big or as views at all.
+  VIEW_LEVELS = [[300, "Big views"], [150, "Views"]].freeze
   HIGHLIGHT_LABELS = {
     "waterfall" => ["💧", "Waterfall", "Waterfalls"],
     "peak" => ["⛰️", "Summit", "Summits"],
     "viewpoint" => ["🔭", "Viewpoint", "Viewpoints"]
   }.freeze
+  FEET_PER_METER = 3.28084
 
-  # [icon, label, detail] chips for how well known a route's area is and the highlights on the way.
+  # [icon, label, detail] chips for a route's views and the highlights on the way.
   def trail_chips(trail)
-    views = trail.area&.dig(:monthly_views).to_i
-    level = POPULARITY_LEVELS.find { |minimum, *| views >= minimum }
     chips = []
+    relief, climb = trail.terrain&.values_at(:relief, :climb)
+    level = VIEW_LEVELS.find { |minimum, _| [relief.to_i, climb.to_i].max >= minimum }
     if level
-      chips << [level[1], level[2],
-        "#{number_with_delimiter(views)} Wikipedia page views of #{trail.area[:title]} in the last 30 days"]
+      chips << ["🌄", level.last, "Its high point stands about #{feet(relief)} above the land within about a mile, " \
+        "and it climbs about #{feet(climb)}"]
     end
     grouped = Array(trail.highlights).group_by { |highlight| highlight[:kind] }
     HIGHLIGHT_LABELS.each do |kind, (icon, one, many)|
@@ -26,9 +28,28 @@ module SearchesHelper
       else
         highlights.one? ? one : "#{highlights.size} #{many.downcase}"
       end
-      chips << [icon, label, "#{highlights.one? ? one : many}#{": #{names.join(', ')}" if names.any?}"]
+      details = highlights.filter_map { |highlight| highlight_detail(highlight) }
+      chips << [icon, label, "#{highlights.one? ? one : many}#{": #{details.join(', ')}" if details.any?}"]
     end
     chips
+  end
+
+  # For example "Kaaterskill Falls (80 m tall, on Wikipedia)", or nil for an unnamed highlight with nothing to add.
+  def highlight_detail(highlight)
+    notes = [("#{highlight[:height].round} m tall" if highlight[:height]), ("on Wikipedia" if highlight[:notable])].compact
+    return highlight[:name] if notes.empty?
+
+    "#{highlight[:name] || 'unnamed'} (#{notes.join(', ')})"
+  end
+
+  # For example "≈ 1,150 ft", how far a route climbs, or nil before its terrain is known.
+  def climb_label(trail)
+    "≈ #{feet(trail.terrain[:climb])}" if trail.terrain
+  end
+
+  # Meters as feet, to the nearest 50, such as "1,150 ft".
+  def feet(meters)
+    "#{number_with_delimiter((meters.to_f * FEET_PER_METER / 50).round * 50)} ft"
   end
 
   # For example "Saturday, October 3, leaving at 8:00 AM EDT, with a way back by 11 PM.",

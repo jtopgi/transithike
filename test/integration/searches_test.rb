@@ -16,6 +16,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     end
     Faraday.default_adapter_options = {}
     @requests = Hash.new { |requests, path| requests[path] = [] }
+    ElevationService::TILES.clear
   end
 
   teardown do
@@ -83,8 +84,13 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     end
   end
 
-  def wikipedia(pages = [])
-    stub_get(WikipediaService::API_URL, { query: { pages: pages } })
+  # Elevation tiles with heights by latitude, by default flat land 50 m up.
+  def elevation(height = ->(_latitude) { 50 })
+    path = URI(ElevationService::TILE_URL).path
+    @stubs.get(/\A#{Regexp.escape(path)}/) do |env|
+      @requests[path] << env
+      [200, {}, terrain_tile(env.url.path) { |latitude| height.(latitude) }]
+    end
   end
 
   def search_all(params)
@@ -132,10 +138,16 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_select "input[name=day][value=sunday][checked]"
     assert_select "[data-progress][role=status]", text: /Finding the stations trains reach/
     assert_select "[data-skeleton]", count: 2
-    assert_select "[data-results-toolbar][hidden] select[data-sort] option", count: 8
-    assert_select "select[data-sort] option:first-child[value=recommended]"
+    assert_select "[data-results-toolbar][hidden] select[data-sort] option", count: 6
+    assert_select "select[data-sort] option:first-child[value=scenic]", text: "Most scenic"
     assert_select "select[data-sort] option[value=stay]", text: "Most time there"
-    assert_select "[data-results-toolbar] select[data-max-trip] option", count: 5
+    assert_select "select[data-sort] option[value=distance]", count: 0
+    assert_select "select[data-sort] option[value=popular]", count: 0
+    # Sliders at their ends filter nothing: a round trip of 2 to 8 hours, and lengths from 1 to 20 miles.
+    assert_select "[data-results-toolbar] input[type=range][data-max-trip][min='120'][max='480'][value='480']"
+    assert_select "[data-length-range] input[type=range][data-length-min][min='1'][max='20'][value='1']"
+    assert_select "[data-length-range] input[type=range][data-length-max][min='1'][max='20'][value='20']"
+    assert_select "footer a[href='#{ElevationService::ATTRIBUTION_URL}']", text: "Terrain Tiles"
     assert_select "noscript", text: /needs JavaScript/
     assert_select "footer a[href='https://transitous.org/sources/']", text: "data sources"
     assert_includes response.body, "a way back by 11 PM"
@@ -153,7 +165,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     rail
     hiking([route_element(latitude: 47.3, name: "<script>alert(1)</script>")])
     transit([[{ duration: 5400, transfers: 1 }]])
-    wikipedia
+    elevation
     search_all(origin: "A & B / 東京", tz: "America/Los_Angeles")
 
     assert_equal %w[place checking trails ranking update done], events.map(&:first)
@@ -178,13 +190,17 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_equal [{ "count" => 1 }], data_for("checking")
 
     # Coming back the same way takes as long as going until the card's trips are planned.
-    card = cards.at_css("[data-trail][data-osm-id='123'][data-travel='10800'][data-length='1.38'][data-distance='20.73']" \
-      "[data-popularity='0'][data-scenic='0'][data-required='5400']")
+    card = cards.at_css("[data-trail][data-osm-id='123'][data-travel='10800'][data-length='1.38'][data-scenic='0.0']" \
+      "[data-required='5400']")
     assert card
     # Arriving at 9:30 AM with the last trip back at 9 PM leaves 11 hours 30 minutes.
     assert_equal "41400", card["data-stay"]
     assert card.at_css(".trail-map[data-path='[[[47.3,-122.0],[47.32,-122.0]]]'][data-start='[47.3,-122.0]']")
-    assert card.at_css("a[data-photo-url='#{photo_path(lat: 47.32, lon: -122.0)}'][hidden]")
+    assert card.at_css("a[data-photos-url='#{photos_path(lat: 47.32, lon: -122.0)}'][hidden]")
+    assert card.at_css("[data-gallery][hidden]")
+    # The climb shows once the search has looked up the route's terrain.
+    assert card.at_css("[data-climb-stat][hidden]")
+    assert_nil card.at_css("[data-distance]")
     assert_match(/Round trip\s+≈ 3 h\s+≈ 1 h 30 min each way · 1 transfer/, card.at_css(".trail-stats").text.squish)
     assert_match(/Last trip back 9:00 PM\s+· up to 11 h there/, card.at_css(".trail-return").text.squish)
     trip_url = card.at_css("[data-trip-url]")["data-trip-url"]
@@ -198,7 +214,9 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_includes card.to_html, "&lt;script&gt;"
 
     update = data_for("update").sole["trails"].sole
-    assert_equal [123, 0, 0], update.values_at("id", "popularity", "scenic")
+    # Flat land has no views, and nothing to climb.
+    assert_equal [123, 0.0, "≈ 0 ft"], update.values_at("id", "scenic", "climb")
+    assert_nil update["popularity"]
     assert_kind_of Numeric, update["score"]
     assert_equal({ "count" => 1, "notices" => [] }, data_for("done").sole)
   end
@@ -214,14 +232,14 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_equal "2026-09-27T15:00:00Z", @requests[URI(TransitousService::ONE_TO_ALL_URL).path].first.params["time"]
   end
 
-  test "hikes are joined where the train reaches them soonest, then ranked with highlights and popularity" do
+  test "hikes are joined where the train reaches them soonest, then ranked with highlights and terrain" do
     area
     rail([[47.32, -122.001, 50]])
     route = route_element(latitude: 47.3, name: "Falls Loop")
     hiking([route], highlights: [highlight_node("waterfall", 47.305, -122.0005, name: "Twin Falls")])
     transit([[{ duration: 2400, transfers: 1 }]])
-    wikipedia([{ title: "Twin Falls State Park", fullurl: "https://en.wikipedia.org/wiki/Twin_Falls_State_Park",
-      coordinates: [{ lat: 47.31, lon: -122.0 }], pageviews: { "2026-09-01" => 2_500 } }])
+    # The land rises in steps 400 m along the route, whose top stands 362 m above the land 2 km south of it.
+    elevation(->(latitude) { latitude < 47.301 ? 0 : latitude < 47.31 ? 38 : 400 })
     search_all(origin: "Pike Place Market", lat: "47.0", lon: "-122.0")
 
     assert_empty @requests["/api/"]
@@ -233,11 +251,13 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_equal "47.32,-122.0", query["destination"]
 
     update = data_for("update").sole["trails"].sole
-    assert_equal [2_500, 2], update.values_at("popularity", "scenic")
+    # Four points for views, and half of two for the waterfall.
+    assert_equal [5.0, "≈ 1,300 ft"], update.values_at("scenic", "climb")
     chips = Nokogiri::HTML5.fragment(update["chips"])
-    assert chips.at_css(".trail-chip[title='2,500 Wikipedia page views of Twin Falls State Park in the last 30 days']")
+    assert chips.at_css(".trail-chip[title='Its high point stands about 1,200 ft above the land within about a mile, " \
+      "and it climbs about 1,300 ft']")
     assert chips.at_css(".trail-chip[title='Waterfall: Twin Falls']")
-    assert_equal ["Very popular", "Twin Falls"], chips.css(".trail-chip-label").map(&:text)
+    assert_equal ["Big views", "Twin Falls"], chips.css(".trail-chip-label").map(&:text)
   end
 
   test "hikes the subway or light rail reaches, and stations near the city, are left out" do
@@ -268,7 +288,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     rail
     hiking([route_element(latitude: 47.3)])
     transit([[{ duration: 4000, transfers: 0 }]])
-    wikipedia
+    elevation
     search_all(origin: SearchesController::CURRENT_LOCATION, lat: "47.0", lon: "-122.0")
 
     assert_equal "Day hikes by train from your location in Seattle", data_for("place").sole["heading"]
@@ -294,7 +314,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     hiking([route_element(latitude: 47.3)])
     stub_get(TransitousService::ONE_TO_MANY_URL, "not json")
     stub_get(TransitousService::PLAN_URL, { itineraries: [{ duration: 4800, transfers: 2 }], direct: [] })
-    wikipedia
+    elevation
     search_all(origin: "Seattle")
 
     assert_match(/≈ 2 h 40 min\s+≈ 1 h 20 min each way · 2 transfers/, cards.at_css(".trail-stats").text.squish)

@@ -1,55 +1,97 @@
-# The nearest Wikipedia article about a park or natural area near a route: its
-# page views show how well known the place is, and its lead image, served from
-# Wikimedia Commons under a free license that requires crediting the author,
-# illustrates the route card.
+# Photos of the scenery near a route, served from Wikimedia Commons under free
+# licenses that require crediting the author: the lead image of the nearest
+# Wikipedia article about a park or natural area, then photos taken nearby.
 module WikipediaService
   API_URL = "https://en.wikipedia.org/w/api.php"
+  COMMONS_URL = "https://commons.wikimedia.org/w/api.php"
   RADIUS_METERS = 2_000
   THUMBNAIL_WIDTH = 500
   CACHE_TTL = 7.days
   CREDIT_CACHE_TTL = 30.days
-  VIEW_DAYS = 30
+  MAX_PHOTOS = 8
+  # Photos smaller than this, or wider than this many times their height, don't show the scenery well.
+  MIN_PHOTO_WIDTH = 800
+  MAX_ASPECT = 3
+  # Titles of files near a route that aren't of its scenery, and of the ones that likely are.
+  NOT_SCENERY = /\b(?:maps?|logos?|diagrams?|signs?|signposts?|plaques?|seals?|flags?|coat of arms|charts?|graphs?|locator|stamps?|collections?|bldg|buildings?|offices?|schools?|hospitals?|churche?s?|interiors?|portraits?|paintings?|drawings?|engravings?|lithographs?|postcards?|posters?|documents?|cars?|trucks?|buses)\b/i
+  SCENERY = /\b(?:views?|vistas?|overlooks?|lookouts?|lakes?|ponds?|reservoirs?|rivers?|falls|waterfalls?|mountains?|mount|mt|hills?|ridges?|trails?|summits?|peaks?|forests?|woods|panorama|autumn|foliage|creeks?|brooks?|gorges?|cliffs?|rocks?|sunsets?|sunrises?|landscapes?|hik(?:e|es|ing)|preserve|reservation|valleys?|meadows?|beach|shore|state park)\b/i
+  # Uploads from nature-observation apps, named for the species and an observation number.
+  SPECIES = /\A[A-Z][a-z]+ [a-z]+(?: [a-z]+)? \d{5,}\.jpe?g\z/
   NATURAL = /\b(?:parks?|trails?|lakes?|mount(?:ain)?s?|forests?|creeks?|falls|waterfalls?|preserve|reserve|natural area|wilderness|peaks?|summits?|rivers?|beach(?:es)?|woods|gardens?|arboretum|canyons?|gorge|ridges?|hills?|bay|ponds?|marsh|wetlands?|greenway|valley|islands?|glacier|nature|headland|cape|bluffs?|cliffs?|dunes?|meadows?|prairie)\b/i
   BUILT = /\b(?:schools?|station|university|college|church|hospital|airport|mall|stadium|library|museum|company|corporation|district|building|tower|bridge|hotel|apartments?|condominiums?|highway|interchange|railway|railroad|zoo|cemetery|memorial|monument)\b/i
 
-  # { title:, article_url:, monthly_views:, image:, image_url: }, or nil when no
-  # park or natural area is nearby. monthly_views covers the last 30 days.
+  # { title:, article_url:, image:, image_url: }, or nil when no park or
+  # natural area is nearby; image is nil when its article has no free one.
   def self.nearby_area(latitude, longitude, connection: nil, cache: Rails.cache)
     # Routes joined within about 1 km of each other share one lookup.
     latitude, longitude = latitude.round(2), longitude.round(2)
-    cache.fetch("wikipedia:area:v1:#{latitude}:#{longitude}", expires_in: CACHE_TTL) do
+    cache.fetch("wikipedia:area:v2:#{latitude}:#{longitude}", expires_in: CACHE_TTL) do
       connection ||= SearchHttp.connection(API_URL)
       page = nearest_natural_page(latitude, longitude, connection)
       next unless page
 
       image = page["pageimage"].is_a?(String) && wikimedia_url?(value_at(page, "thumbnail", "source"))
-      # Views for many pages arrive in batches, so the chosen page's may need a request of their own.
-      views = page["pageviews"]
-      views = query(connection, titles: page["title"], prop: "pageviews", pvipdays: VIEW_DAYS).first&.dig("pageviews") unless views.is_a?(Hash)
-      views = views.is_a?(Hash) ? views.values.grep(Integer).sum : 0
-      { title: page["title"], article_url: page["fullurl"], monthly_views: views,
+      { title: page["title"], article_url: page["fullurl"],
         image: (page["pageimage"] if image), image_url: (page["thumbnail"]["source"] if image) }
     end
   end
 
-  # { title:, article_url:, image_url:, file_url:, credit: }, or nil when the
-  # nearby area has no free photo.
-  def self.photo_near(latitude, longitude, connection: nil, cache: Rails.cache)
+  # Photos of the scenery near a point, as { title:, article_url:, photos:
+  # [{ image_url:, file_url:, credit:, caption: }] } with the nearest park or
+  # natural area's title and article (nil when there is none) and up to
+  # MAX_PHOTOS photos: its lead image, then photos taken nearby, scenery first.
+  # nil when there are none.
+  def self.photos_near(latitude, longitude, connection: nil, commons: nil, cache: Rails.cache)
     connection ||= SearchHttp.connection(API_URL)
     area = nearby_area(latitude, longitude, connection: connection, cache: cache)
-    return unless area&.dig(:image)
-
-    credit = cache.fetch("wikipedia:credit:v1:#{area[:image]}", expires_in: CREDIT_CACHE_TTL) do
-      credit(area[:image], connection)
+    lead = if area&.dig(:image)
+      credit = cache.fetch("wikipedia:credit:v1:#{area[:image]}", expires_in: CREDIT_CACHE_TTL) { credit(area[:image], connection) }
+      { image_url: area[:image_url], caption: "Near #{area[:title]}" }.merge(credit) if credit
     end
-    credit && area.slice(:title, :article_url, :image_url).merge(credit)
+    photos = [lead, *commons_photos(latitude, longitude, commons, cache)].compact
+      .uniq { |photo| photo[:file_url] }.first(MAX_PHOTOS)
+    { title: area&.dig(:title), article_url: area&.dig(:article_url), photos: photos } if photos.any?
+  end
+
+  # Credited photos taken within RADIUS_METERS of a point, on Wikimedia
+  # Commons, leaving out maps, signs, buildings, and close-ups of species.
+  def self.commons_photos(latitude, longitude, connection, cache)
+    latitude, longitude = latitude.round(2), longitude.round(2)
+    cache.fetch("wikipedia:commons:v1:#{latitude}:#{longitude}", expires_in: CACHE_TTL) do
+      connection ||= SearchHttp.connection(COMMONS_URL)
+      files = query(connection,
+        generator: "geosearch", ggscoord: "#{latitude}|#{longitude}", ggsradius: RADIUS_METERS, ggsnamespace: 6,
+        ggslimit: 40, prop: "imageinfo|coordinates", iiprop: "url|extmetadata|mime|size", iiurlwidth: THUMBNAIL_WIDTH,
+        iiextmetadatafilter: "Artist|LicenseShortName", colimit: "max")
+      files.filter_map { |file| commons_photo(file, latitude, longitude) }
+        .sort_by { |photo| [photo[:scenery] ? 0 : 1, photo[:meters]] }.first(MAX_PHOTOS)
+        .map { |photo| photo.except(:scenery, :meters) }
+    end
+  end
+
+  def self.commons_photo(file, latitude, longitude)
+    title = file["title"].delete_prefix("File:") if file["title"].is_a?(String)
+    info = value_at(file, "imageinfo", 0)
+    point = value_at(file, "coordinates", 0)
+    return unless title && info.is_a?(Hash) && info["mime"] == "image/jpeg" && !title.match?(NOT_SCENERY) &&
+      !title.match?(SPECIES) && info["width"].is_a?(Integer) && info["height"].is_a?(Integer) &&
+      info["width"] >= MIN_PHOTO_WIDTH && info["height"].positive? && info["width"] <= info["height"] * MAX_ASPECT &&
+      point.is_a?(Hash) && SearchHttp.coordinates?(point["lat"], point["lon"]) &&
+      wikimedia_url?(info["thumburl"]) && wikimedia_url?(info["descriptionurl"])
+
+    credit = credit_from(info)
+    return unless credit
+
+    caption = title.sub(/\.jpe?g\z/i, "").tr("_", " ").squish.truncate(80)
+    { image_url: info["thumburl"], file_url: info["descriptionurl"], credit: credit, caption: caption,
+      scenery: caption.match?(SCENERY), meters: OverpassService.distance(latitude, longitude, point["lat"], point["lon"]) }
   end
 
   def self.nearest_natural_page(latitude, longitude, connection)
     pages = query(connection,
       generator: "geosearch", ggscoord: "#{latitude}|#{longitude}", ggsradius: RADIUS_METERS, ggslimit: 20,
-      prop: "pageimages|coordinates|info|pageviews|description", piprop: "thumbnail|name", pithumbsize: THUMBNAIL_WIDTH,
-      pilicense: "free", inprop: "url", colimit: "max", pvipdays: VIEW_DAYS)
+      prop: "pageimages|coordinates|info|description", piprop: "thumbnail|name", pithumbsize: THUMBNAIL_WIDTH,
+      pilicense: "free", inprop: "url", colimit: "max")
     pages.select { |page| natural?(page) }.min_by do |page|
       point = page["coordinates"].first
       OverpassService.distance(latitude, longitude, point["lat"], point["lon"])
@@ -61,13 +103,19 @@ module WikipediaService
     file = query(connection,
       titles: "File:#{image}", prop: "imageinfo", iiprop: "extmetadata|url",
       iiextmetadatafilter: "Artist|LicenseShortName").first
-    file_url = value_at(file, "imageinfo", 0, "descriptionurl")
-    license = value_at(file, "imageinfo", 0, "extmetadata", "LicenseShortName", "value")
-    return unless license.is_a?(String) && license.strip.present? && wikimedia_url?(file_url)
+    info = value_at(file, "imageinfo", 0)
+    credit = credit_from(info) if info.is_a?(Hash)
+    { file_url: info["descriptionurl"], credit: credit } if credit
+  end
 
-    author = value_at(file, "imageinfo", 0, "extmetadata", "Artist", "value")
+  # "Author · License" for a file's image info, or nil when it has no license to credit.
+  def self.credit_from(info)
+    license = value_at(info, "extmetadata", "LicenseShortName", "value")
+    return unless license.is_a?(String) && license.strip.present? && wikimedia_url?(info["descriptionurl"])
+
+    author = value_at(info, "extmetadata", "Artist", "value")
     author = Nokogiri::HTML5.fragment(author).text.squish.truncate(60) if author.is_a?(String)
-    { file_url: file_url, credit: [author.presence, license.strip].compact.join(" · ") }
+    [author.presence, license.strip].compact.join(" · ")
   end
 
   # Like dig, but returns nil instead of raising when the JSON has another shape.

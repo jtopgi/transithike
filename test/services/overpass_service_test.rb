@@ -56,11 +56,29 @@ class OverpassServiceTest < ActiveSupport::TestCase
     stations = [station(20, 20, 90), station(1, 1, 60), station(60, 60, 120), station(21, 21, 45)]
     assert_equal [[47.0, -122.0], [46.5, -122.5], [46.5, -122.0], [47.0, -122.5], [47.5, -121.5]],
       OverpassService.tiles(stations)
-    many = (0...20).map { |index| station(100, 40 * index, 60 + index) }
-    tiles = OverpassService.tiles(many)
-    assert_equal OverpassService::MAX_TILES, tiles.size
-    assert_equal [[47.5, -122.5], [47.5, -122.0]], tiles.first(2)
     assert_empty OverpassService.tiles([])
+  end
+
+  # A station in the middle of the tile in this row and column from 47, -122, reached in minutes.
+  def centered(row, column, minutes)
+    [47.25 + row * OverpassService::TILE_DEGREES, -121.75 + column * OverpassService::TILE_DEGREES, minutes]
+  end
+
+  test "each band of travel time has its share of the tiles, so the scenery farther out is searched too" do
+    # Fifteen tiles within two hours, fifteen within three, and fifteen farther.
+    stations = [60, 130, 190].each_with_index.flat_map do |minutes, band|
+      (0...15).map { |index| centered(band, index, minutes + index) }
+    end
+    tiles = OverpassService.tiles(stations)
+    assert_equal 20, OverpassService::MAX_TILES
+    assert_equal [[8, 47.0], [7, 47.5], [5, 48.0]], tiles.group_by(&:first).map { |row, band| [band.size, row] }
+    assert_equal [47.0, -122.0], tiles.first
+    assert_equal [48.0, -120.0], tiles.last
+
+    # A band without enough tiles leaves room for more of the quickest: thirty within two hours, and two far out.
+    near = (0...30).map { |index| centered(index / 15, index % 15, 60 + index) }
+    few = OverpassService.tiles(near + [centered(2, 0, 190), centered(2, 1, 191)])
+    assert_equal [[15, 47.0], [3, 47.5], [2, 48.0]], few.group_by(&:first).map { |row, band| [band.size, row] }
   end
 
   test "routes in tiles are found by querying the region around them, and each tile's routes are shared for days" do
@@ -94,7 +112,8 @@ class OverpassServiceTest < ActiveSupport::TestCase
   test "neighboring tiles are queried a few at a time, and the routes of tiles whose query fails are left out" do
     cache = ActiveSupport::Cache::MemoryStore.new
     queries = []
-    tiles = [[48.0, -121.0], [47.0, -122.0], [47.0, -121.5], [47.5, -122.0], [47.5, -121.5], [48.0, -122.0]]
+    tiles = [[48.0, -121.0], [47.0, -122.0], [47.0, -121.5], [47.5, -122.0], [47.5, -121.5], [48.0, -122.0],
+      [46.0, -122.0], [46.5, -122.0]]
     connection = stub_connection(:post, lambda { |request|
       query = URI.decode_www_form(request.body).to_h.fetch("data")
       queries << query
@@ -103,9 +122,9 @@ class OverpassServiceTest < ActiveSupport::TestCase
       { "elements" => [candidate_of(route_element(id: 1, latitude: 47.1)), candidate_of(route_element(id: 2, latitude: 48.1))] }
     })
     assert_equal [1], routes_in(connection, tiles: tiles, cache: cache).pluck(:id)
-    # The first four tiles from south to west, and then the other two, asked twice when that query fails quickly.
-    assert_equal ["(47.0,-122.0,48.0,-121.0)->.region;", "(48.0,-122.0,48.5,-120.5)->.region;",
-      "(48.0,-122.0,48.5,-120.5)->.region;"], queries.map { |query| query[/\([^()]*\)->\.region;/] }
+    # The first four tiles from south to west, and then the other four, asked twice when that query fails quickly.
+    assert_equal ["(46.0,-122.0,47.5,-121.0)->.region;", "(47.5,-122.0,48.5,-120.5)->.region;",
+      "(47.5,-122.0,48.5,-120.5)->.region;"], queries.map { |query| query[/\([^()]*\)->\.region;/] }
     # Tiles whose query worked are cached; the others are asked again.
     routes_in(connection, tiles: tiles, cache: cache)
     assert_equal 5, queries.size
@@ -231,7 +250,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
     routes = [candidate(1, 30), candidate(2, 1), candidate(3, 50, notable: true), candidate(4, 2)]
     access = FakeAccess.new({ routes[0][:bounds] => 60, routes[1][:bounds] => 90, routes[2][:bounds] => 120 })
     assert_equal [3, 1, 2], pick(routes, access: access)
-    many = (1..130).map { |id| candidate(id, id) }
+    many = (1..170).map { |id| candidate(id, id) }
     assert_equal (1..OverpassService::MAX_TRANSIT_ROUTES).to_a, pick(many, access: FakeAccess.new(Hash.new { |_, box| box[0] }))
   end
 
@@ -401,8 +420,26 @@ class OverpassServiceTest < ActiveSupport::TestCase
 
     assert_includes queries.sole, "relation(id:1,2);way(r)->.ways;"
     assert_includes queries.sole, 'node(around.ways:150)["waterway"="waterfall"];'
-    assert_equal({ 1 => [{ kind: "waterfall", name: nil }, { kind: "peak", name: "Knob" },
-      { kind: "viewpoint", name: "Lookout" }, { kind: "viewpoint", name: nil }], 2 => [] }, highlights)
+    assert_equal({ 1 => [{ kind: "waterfall" }, { kind: "peak", name: "Knob" },
+      { kind: "viewpoint", name: "Lookout" }, { kind: "viewpoint" }], 2 => [] }, highlights)
+  end
+
+  test "highlights with a Wikipedia article are famous and come first, and waterfalls have their height in meters" do
+    trails = fetch([route_element(id: 1)])
+    famous = highlight_node("peak", 47.012, -122.0, name: "Big Knob")
+    famous["tags"].merge!("wikipedia" => "en:Big Knob", "wikidata" => "Q1")
+    # Every named hill has a Wikidata item, so that alone isn't enough.
+    hill = highlight_node("peak", 47.01, -122.0, name: "Little Knob")
+    hill["tags"]["wikidata"] = "Q34807513"
+    falls = [["25 m", 25.0], ["80 ft", 24.4], ["6", 6.0], ["tall", nil], ["0", nil]].each_with_index.map do |(height, _), index|
+      highlight_node("waterfall", 47.002 + index * 0.001, -121.999, name: "Falls #{index}").tap { |node| node["tags"]["height"] = height }
+    end
+    connection = overpass_connection(highlights: [hill, famous, *falls])
+    found = OverpassService.highlights(trails, connections: [connection], cache: ActiveSupport::Cache::MemoryStore.new)[1]
+
+    assert_equal [{ kind: "peak", name: "Big Knob", notable: true }, { kind: "peak", name: "Little Knob" }],
+      found.select { |highlight| highlight[:kind] == "peak" }
+    assert_equal [25.0, 24.4, 6.0, nil, nil], found.select { |highlight| highlight[:kind] == "waterfall" }.map { |highlight| highlight[:height] }
   end
 
   test "highlights are cached per route, and failures are not" do

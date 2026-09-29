@@ -13,9 +13,9 @@ module TransitousService
   SOURCES_URL = "https://transitous.org/sources/"
   # Route starts are often farther than the default 15-minute walk from a stop.
   MAX_POST_TRANSIT_SECONDS = 30 * 60
-  # Day trips by train take up to three and a half hours from setting out,
-  # waiting for the train included.
-  MAX_TRAVEL_MINUTES = 210
+  # Day trips by train take up to four hours from setting out, waiting for the
+  # train included, which reaches the scenery farther out while leaving time to hike.
+  MAX_TRAVEL_MINUTES = 240
   # Stations reached by then leave time to walk to a route within MAX_TRAVEL_MINUTES.
   STATION_MINUTES = MAX_TRAVEL_MINUTES - 30
   # Commuter, regional, and intercity trains, which take city dwellers out for
@@ -72,7 +72,7 @@ module TransitousService
   # MAX_HUBS of the busiest stations reached by subway, bus, or on foot, so the
   # trip there may start on any transit. Raises when transit can't be looked up.
   def self.rail_stations(origin:, departure_time:, connection: nil, cache: Rails.cache)
-    key = "transitous:rail:v2:#{origin.latitude.round(3)}:#{origin.longitude.round(3)}:#{departure_time.utc.iso8601}"
+    key = "transitous:rail:v3:#{origin.latitude.round(3)}:#{origin.longitude.round(3)}:#{departure_time.utc.iso8601}"
     cached = cache.read(key)
     return cached if cached
 

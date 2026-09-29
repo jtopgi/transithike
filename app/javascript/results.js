@@ -2,21 +2,20 @@
 import * as L from "leaflet"
 
 const TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-const LENGTHS = { any: [0, Infinity], short: [0, 3], medium: [3, 6], long: [6, Infinity] }
 // Ties keep the recommended order.
 const byScore = (a, b) => b.dataset.score - a.dataset.score || a.dataset.travel - b.dataset.travel
 const ascending = (key) => (a, b) => a.dataset[key] - b.dataset[key] || byScore(a, b)
 const descending = (key) => (a, b) => b.dataset[key] - a.dataset[key] || byScore(a, b)
 const ORDERS = {
+  scenic: descending("scenic"),
   recommended: byScore,
   travel: ascending("travel"),
   stay: descending("stay"),
-  distance: ascending("distance"),
-  popular: descending("popularity"),
-  scenic: descending("scenic"),
   "length-asc": ascending("length"),
   "length-desc": descending("length")
 }
+// A slider at its end filters nothing: any round trip, and any length from the shortest to the longest.
+const miles = (value) => `${Number(value)} mi`
 const MODE_ICONS = {
   BUS: "🚌", COACH: "🚍", TRAM: "🚊", SUBWAY: "🚇", FERRY: "⛴️",
   FUNICULAR: "🚞", AERIAL_LIFT: "🚡", AREAL_LIFT: "🚡", CABLE_CAR: "🚡"
@@ -46,7 +45,16 @@ class Results {
       { rootMargin: "200px" })
     this.trips = new IntersectionObserver((entries) => this.visible(entries, (card) => this.queueTrip(card)),
       { rootMargin: "100px" })
+    this.maxTrip = this.toolbar.querySelector("[data-max-trip]")
+    this.shortest = this.toolbar.querySelector("[data-length-min]")
+    this.longest = this.toolbar.querySelector("[data-length-max]")
     this.toolbar.addEventListener("change", () => this.update())
+    // Sliders filter as they move, and their handles can't pass each other.
+    this.toolbar.addEventListener("input", ({ target }) => {
+      if (target === this.shortest && Number(this.shortest.value) > Number(this.longest.value)) this.longest.value = this.shortest.value
+      if (target === this.longest && Number(this.longest.value) < Number(this.shortest.value)) this.shortest.value = this.longest.value
+      this.update()
+    })
   }
 
   stream() {
@@ -93,14 +101,18 @@ class Results {
     this.update()
   }
 
-  // Highlights and popularity rank the hikes once every batch is checked.
+  // Highlights and terrain rank the hikes once every batch is checked.
   refresh(trails) {
-    trails.forEach(({ id, score, popularity, scenic, chips }) => {
+    trails.forEach(({ id, score, scenic, climb, chips }) => {
       const card = this.list.querySelector(`[data-osm-id="${Number(id)}"]`)
       if (!card) return
 
-      Object.assign(card.dataset, { score, popularity, scenic })
+      Object.assign(card.dataset, { score, scenic })
       card.querySelector("[data-chips]").innerHTML = chips
+      if (climb) {
+        card.querySelector("[data-climb]").textContent = climb
+        card.querySelector("[data-climb-stat]").hidden = false
+      }
     })
     this.update()
   }
@@ -137,13 +149,22 @@ class Results {
   }
 
   update() {
-    const [min, max] = LENGTHS[this.toolbar.querySelector('input[name="length"]:checked').value]
-    const maxTrip = Number(this.toolbar.querySelector("[data-max-trip]").value) * 60 || Infinity
+    const anyTrip = this.maxTrip.value === this.maxTrip.max
+    const maxTrip = anyTrip ? Infinity : Number(this.maxTrip.value) * 60
+    const min = this.shortest.value === this.shortest.min ? 0 : Number(this.shortest.value)
+    const max = this.longest.value === this.longest.max ? Infinity : Number(this.longest.value)
+    this.toolbar.querySelector("[data-max-trip-label]").textContent = anyTrip ? "any" : `up to ${duration(Number(this.maxTrip.value))}`
+    this.toolbar.querySelector("[data-length-label]").textContent = min === 0 && max === Infinity ? "any"
+      : max === Infinity ? `${miles(min)} or more` : min === 0 ? `up to ${miles(max)}` : `${Number(min)}–${miles(max)}`
+    const range = this.toolbar.querySelector("[data-length-range]")
+    const percent = (input) => `${(input.value - input.min) / (input.max - input.min) * 100}%`
+    range.style.setProperty("--low", percent(this.shortest))
+    range.style.setProperty("--high", percent(this.longest))
     const cards = [...this.list.querySelectorAll("[data-trail]")]
     let shown = 0
     cards.sort(ORDERS[this.toolbar.querySelector("[data-sort]").value]).forEach((card) => {
       const length = Number(card.dataset.length)
-      card.hidden = !(length >= min && length < max && Number(card.dataset.travel) <= maxTrip)
+      card.hidden = !(length >= min && length <= max && Number(card.dataset.travel) <= maxTrip)
       if (!card.hidden) shown += 1
       this.list.append(card)
     })
@@ -158,7 +179,7 @@ class Results {
   preview(card) {
     this.previews.unobserve(card)
     const map = drawMap(card.querySelector(".trail-map"))
-    showPhoto(card, map).catch(() => {})
+    showPhotos(card, map).catch(() => {})
   }
 
   queueTrip(card) {
@@ -266,32 +287,51 @@ function drawMap(element) {
   return { map, fit }
 }
 
-async function showPhoto(card, preview) {
-  const link = card.querySelector("[data-photo-url]")
-  const response = await fetch(link.dataset.photoUrl, { headers: { Accept: "application/json" } })
+// Wikimedia serves any image at standard thumbnail widths, such as 120 px for the gallery.
+const thumbnail = (url) => url.replace(/\/\d+px-/, "/120px-")
+
+async function showPhotos(card, preview) {
+  const link = card.querySelector("[data-photos-url]")
+  const response = await fetch(link.dataset.photosUrl, { headers: { Accept: "application/json" } })
   if (response.status !== 200) return
 
-  const photo = await response.json()
+  const { photos } = await response.json()
   const image = link.querySelector("img")
-  image.addEventListener("load", () => {
-    link.href = photo.article_url
-    link.querySelector(".trail-photo-caption").textContent = `Near ${photo.title}`
-    link.hidden = false
-    card.querySelector(".trail-media").classList.add("has-photo")
-    preview.map.invalidateSize()
-    preview.fit()
-
-    const credit = card.querySelector(".trail-photo-credit")
-    const source = document.createElement("a")
-    source.href = photo.file_url
-    source.target = "_blank"
-    source.rel = "noopener"
-    source.textContent = photo.credit
-    credit.replaceChildren("Photo: ", source)
-    credit.hidden = false
-  }, { once: true })
-  image.alt = `Photo near ${photo.title}`
-  image.src = photo.image_url
+  const gallery = card.querySelector("[data-gallery]")
+  const show = (photo, button) => {
+    image.addEventListener("load", () => {
+      link.href = photo.file_url
+      link.querySelector(".trail-photo-caption").textContent = photo.caption
+      if (link.hidden) {
+        link.hidden = false
+        card.querySelector(".trail-media").classList.add("has-photo")
+        preview.map.invalidateSize()
+        preview.fit()
+      }
+      const source = Object.assign(document.createElement("a"), {
+        href: photo.file_url, target: "_blank", rel: "noopener", textContent: photo.credit
+      })
+      const credit = card.querySelector(".trail-photo-credit")
+      credit.replaceChildren("Photo: ", source)
+      credit.hidden = false
+    }, { once: true })
+    image.alt = photo.caption
+    image.src = photo.image_url
+    gallery.querySelectorAll(".trail-thumb").forEach((thumb) => thumb.setAttribute("aria-pressed", String(thumb === button)))
+  }
+  if (photos.length > 1) {
+    gallery.replaceChildren(...photos.map((photo, index) => {
+      const button = Object.assign(document.createElement("button"), { type: "button", className: "trail-thumb" })
+      button.setAttribute("aria-label", `Photo ${index + 1} of ${photos.length}: ${photo.caption}`)
+      button.append(Object.assign(document.createElement("img"), {
+        src: thumbnail(photo.image_url), alt: "", loading: "lazy", decoding: "async"
+      }))
+      button.addEventListener("click", () => show(photo, button))
+      return button
+    }))
+    gallery.hidden = false
+  }
+  show(photos[0], gallery.querySelector(".trail-thumb"))
 }
 
 document.addEventListener("DOMContentLoaded", () => {

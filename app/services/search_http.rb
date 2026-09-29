@@ -22,21 +22,28 @@ module SearchHttp
     end
   end
 
-  def self.json(expected = Hash)
-    response = yield
-    body = response.env[:streaming_response_body] || response.body
-    raise SearchErrors::UpstreamError, UNAVAILABLE_MESSAGE unless response.success? && body.is_a?(String)
-    raise SearchErrors::ResponseTooLarge, UNAVAILABLE_MESSAGE if body.bytesize > MAX_RESPONSE_BYTES
-
-    body = body.dup.force_encoding(Encoding::UTF_8)
+  def self.json(expected = Hash, &request)
+    body = self.body(&request).dup.force_encoding(Encoding::UTF_8)
     raise JSON::ParserError, "response body is not valid UTF-8" unless body.valid_encoding?
 
     data = JSON.parse(body)
     raise JSON::ParserError unless data.is_a?(expected)
 
     data
-  rescue Faraday::Error, JSON::ParserError
-    raise SearchErrors::UpstreamError, "A search provider is unavailable. Please try again later."
+  rescue JSON::ParserError
+    raise SearchErrors::UpstreamError, UNAVAILABLE_MESSAGE
+  end
+
+  # The body of the block's successful response.
+  def self.body
+    response = yield
+    body = response.env[:streaming_response_body] || response.body
+    raise SearchErrors::UpstreamError, UNAVAILABLE_MESSAGE unless response.success? && body.is_a?(String)
+    raise SearchErrors::ResponseTooLarge, UNAVAILABLE_MESSAGE if body.bytesize > MAX_RESPONSE_BYTES
+
+    body
+  rescue Faraday::Error
+    raise SearchErrors::UpstreamError, UNAVAILABLE_MESSAGE
   end
 
   def self.coordinates?(latitude, longitude)

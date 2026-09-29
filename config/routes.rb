@@ -4,7 +4,7 @@ Rails.application.routes.draw do
   get "search/stream" => "search_streams#show", as: :search_stream
   get "trip" => "trips#show", as: :trip, defaults: { format: :json }
   get "places" => "places#index", as: :places, defaults: { format: :json }
-  get "photo" => "photos#show", as: :photo, defaults: { format: :json }
+  get "photos" => "photos#index", as: :photos, defaults: { format: :json }
 
   # Liveness check for the container host and uptime monitors.
   get "up" => "rails/health#show", as: :rails_health_check

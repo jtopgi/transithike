@@ -39,8 +39,11 @@
           Transit travel times by <%= link_to "Transitous", "https://transitous.org" %>
           (<%= link_to "data sources", TransitousService::SOURCES_URL %>). Place search by
           <%= link_to "Photon", "https://photon.komoot.io" %>. Hiking routes and maps ©
-          <%= link_to "OpenStreetMap contributors", "https://www.openstreetmap.org/copyright" %>. Photos from
-          <%= link_to "Wikipedia", "https://www.wikipedia.org" %>, credited on each photo.
+          <%= link_to "OpenStreetMap contributors", "https://www.openstreetmap.org/copyright" %>. Elevation from
+          <%= link_to "Terrain Tiles", ElevationService::ATTRIBUTION_URL %> (USGS 3DEP, SRTM, GMTED2010, and other
+          sources). Photos from
+          <%= link_to "Wikipedia", "https://www.wikipedia.org" %> and
+          <%= link_to "Wikimedia Commons", "https://commons.wikimedia.org" %>, credited on each photo.
         </p>
         <p class="mb-0">
           Routes start at their first mapped point, which may not be an official trailhead, so check the route and
