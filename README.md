@@ -2,11 +2,13 @@
 
 [![CI](https://github.com/jtopgi/transithike/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/jtopgi/transithike/actions/workflows/ci.yml)
 
-Find nearby hiking routes reachable by public transit, ordered by estimated
-travel time. The application is Rails-rendered with Bootstrap: a starting-point
-box that suggests places as you type (or uses the device's location), and a
-results page of route cards with map previews and nearby photos that can be
-sorted by travel time, distance, or length and filtered by length.
+Find hiking routes you can reach by public transit, recommended by how good a
+day hike they look and how quickly transit gets you there. The application is
+Rails-rendered with Bootstrap: a starting-point box that suggests places as you
+type (or uses the device's location), and a results page of route cards with map
+previews, nearby photos, highlights, and popularity that can be sorted by
+recommendation, travel time, distance, popularity, scenery, or length and filtered
+by length and travel time.
 
 ## Requirements
 
@@ -52,33 +54,64 @@ Current Hiking Project availability could not be confirmed. Live probes of both
 trail providers were blocked by DNS restrictions in the modernization environment;
 test Overpass connectivity from your deployment before launching.
 
-- Searches cover routes intersecting a **25 km** radius around the origin.
-- Up to **100** relations are read; routes longer than **30 miles** (multi-day
-  trails) are left out, and the nearest **15** route starts are checked for
-  transit access. Results are not an exhaustive trail inventory.
-- Lengths are approximate, calculated from deduplicated mapped way geometry.
-  Nested or incomplete routes are skipped. A mapped route start is not necessarily
-  an official or accessible trailhead: check the route and local conditions.
-- Only routes reachable by public transit (within 4 hours), or on foot, are
-  displayed, sorted by travel time; the page can re-sort them and filter by length
-  without another search. Journeys may include up to 15 minutes' walk to the
-  first stop and 30 minutes from the last stop.
+- Searches look for routes within **10 km** of the origin, widening to 20, 40, and
+  **80 km** until at least **250** routes are found, so dense regions stay local
+  and sparse ones reach hikes farther away. Routes spanning less than 300 m or more
+  than **30 miles**, and repeated sections of one named trail (the same name within
+  5 km), are left out. Results are not an exhaustive trail inventory.
+- Transitous lists every stop reachable within 150 minutes. Routes within a
+  30-minute walk of one, or of the origin (the most the planner walks), are checked
+  for transit, most promising first (routes with Wikipedia or Wikidata entries, of
+  day-hike size, with distinctive names), up to **120** per search, keeping the
+  section of a trail that transit reaches soonest. Where transit is too dense to
+  list every stop (over 8 MB, remembered for a day), the checks are spread over
+  distance rings instead (40 within 15 km, 50 within 35 km, and 30 beyond), then
+  the nearest remaining routes.
+- Lengths are approximate, calculated from deduplicated mapped way geometry;
+  routes under half a mile are left out. Nested or incomplete routes are skipped.
+  Directions and travel times lead to the point on each route that transit reaches
+  soonest, estimated from the reachable stops and a straight-line walk (or to its
+  first mapped point when stops are unknown). That point is not necessarily an
+  official or accessible trailhead: check the route and local conditions.
+- Only routes reachable by public transit within **3 hours**, or on foot, are
+  shown: the best **30**, with at most two from one park or natural area before
+  the rest. Journeys may include up to 15 minutes' walk to the first stop and 30
+  minutes from the last stop. The page re-sorts and filters them without another
+  search.
+- **Recommended** adds a point for routes of 1.5 to 12 miles (half for 1 to 1.5 miles
+  or longer), up to two for highlights, about 0.75 per tenfold increase in page
+  views above 100, and half a point for routes with Wikipedia or Wikidata entries.
+  It subtracts 2.5 points for fully paved routes (less for partly paved ones), one
+  for generic names such as "Trail 2", 0.75 per hour of travel beyond 45 minutes
+  plus another point per hour beyond two hours, and 0.2 per transfer.
+- **Highlights** are mapped waterfalls, summits, and viewpoints within 150 m of a
+  route's ways; waterfalls and summits count twice as much as viewpoints, and
+  unnamed ones half as much as named ones. The paved share comes from mapped
+  surfaces, roads, and sidewalks.
+- **Popularity** is Wikipedia page views over the last 30 days of the nearest park
+  or natural area article to the middle of a route, not of the route itself:
+  "Popular" from 300 views and "Very popular" from 2,000. Articles count as natural
+  areas by their short description ("Park in Seattle"), or their title when they
+  have none.
 - There is no time to choose: trips leave now (rounded to the next quarter hour)
   between 5 AM and 3 PM at the origin, and otherwise at 8 AM the next morning,
   using the time zone Transitous reports for the origin (UTC when unknown).
-- Photos show the lead image of the nearest Wikipedia article about a park or
-  natural area within 2 km of a route start, which is not necessarily the route.
-  Elevation is not shown.
-- Provider failures produce a friendly error, not misleading empty results.
+- Photos show the lead image of the same article, within 2 km of the middle of a
+  route, which is not necessarily the route. Elevation is not shown.
+- Provider failures produce a friendly error, not misleading empty results. Stops,
+  highlights, and popularity only refine a search, which goes ahead without them.
 
 Route data is © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright),
 available under the ODbL. The public Overpass server is shared infrastructure:
 follow its [usage guidance](https://dev.overpass-api.de/overpass-doc/en/preface/commons.html).
 For significant traffic, arrange dedicated capacity and suitable caching rather
-than relying on this public instance. Provider calls have bounded timeouts and
-result limits. Validated routes are cached for **6 hours** for origins rounded to
-about 1 km, so nearby searches share them; production uses a bounded,
-process-local memory store. Failures are never cached.
+than relying on this public instance. When it is busy, searches use the public
+[VK Maps mirror](https://wiki.openstreetmap.org/wiki/Overpass_API#Public_Overpass_API_instances)
+instead, and prefer it for five minutes. Provider calls have bounded timeouts and
+result limits. An area's routes are cached for **a day** for origins rounded to
+about 5 km, so nearby searches share them, and each route's details and highlights
+for **a week**; production uses a bounded, process-local memory store. Failures
+are never cached.
 
 Transit travel times come from [Transitous](https://transitous.org), a free,
 community-run [MOTIS](https://github.com/motis-project/motis) service built on
@@ -88,21 +121,22 @@ source (this repository is MIT-licensed), use must be non-commercial, pages link
 to its [data sources](https://transitous.org/sources/), and requests identify the
 app with `SearchHttp::USER_AGENT` (change it if you fork). Contact the maintainers
 in their [Matrix room](https://matrix.to/#/%23transitous:matrix.spline.de) before
-sending substantial routing traffic. Each search asks for every route's trip in
-one request to the experimental one-to-many API, cached for 15 minutes, and falls
-back to planning routes one at a time if that API fails. Transitous serializes
-concurrent requests from one client, so requests are never sent in parallel. It
-also supplies each origin's time zone and area name, cached for 30 days. Transit
-coverage depends on the feeds Transitous has for a region.
+sending substantial routing traffic. Each search asks for the stops reachable from
+the origin with the one-to-all API, then for every checked route's trip in one
+request to the experimental one-to-many API, cached for 15 minutes, and falls back
+to planning the 15 nearest routes one at a time if that API fails. Transitous
+serializes concurrent requests from one client, so requests are never sent in
+parallel. It also supplies each origin's time zone and area name, cached for 30
+days. Transit coverage depends on the feeds Transitous has for a region.
 
 Place suggestions and typed searches use [Photon](https://photon.komoot.io),
 whose public instance asks for fair use: the page waits for three characters
 and a pause in typing, suggestions are cached for a day, and they favor places
 near the visitor's time zone without asking for their location. Map previews
 load [OpenStreetMap tiles](https://operations.osmfoundation.org/policies/tiles/)
-only as cards scroll into view, and photos come from the
+only as cards scroll into view, and photos and page views come from the
 [Wikipedia API](https://www.mediawiki.org/wiki/API:Etiquette) with each
-author and license credited, cached for a week. Suggestions, photos, and
+author and license credited, cached for a week and shared by routes within about 1 km. Suggestions, photos, and
 searches are rate limited per visitor. The Directions link opens Google Maps'
 public directions page, which needs no API key. Provider outages cannot be
 validated by offline tests; perform a real search before launching.

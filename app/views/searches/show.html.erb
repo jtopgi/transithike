@@ -38,10 +38,22 @@
       <div class="d-flex align-items-center gap-2">
         <label for="sort" class="form-label small fw-semibold mb-0">Sort by</label>
         <select id="sort" class="form-select form-select-sm w-auto" data-sort>
+          <option value="recommended">Recommended</option>
           <option value="duration">Fastest to reach</option>
           <option value="distance">Closest</option>
+          <option value="popular">Most popular</option>
+          <option value="scenic">Most scenic</option>
           <option value="length-asc">Shortest hike</option>
           <option value="length-desc">Longest hike</option>
+        </select>
+      </div>
+      <div class="d-flex align-items-center gap-2">
+        <label for="trip" class="form-label small fw-semibold mb-0">Trip</label>
+        <select id="trip" class="form-select form-select-sm w-auto" data-max-trip>
+          <option value="">Any travel time</option>
+          <option value="60">Up to 1 hour</option>
+          <option value="90">Up to 1½ hours</option>
+          <option value="120">Up to 2 hours</option>
         </select>
       </div>
       <div class="btn-group btn-group-sm" role="group" aria-label="Hike length" data-length-filter>
@@ -55,14 +67,19 @@
     <div class="row row-cols-1 row-cols-md-2 g-4" data-trails>
       <%= render partial: "trail", collection: @trails %>
     </div>
-    <p class="text-center text-body-secondary py-5" data-no-matches hidden>No routes of that length. Try another length.</p>
+    <p class="text-center text-body-secondary py-5" data-no-matches hidden>No routes match these filters. Try another length or a longer trip.</p>
     <p class="small text-body-secondary mt-4 mb-0">
-      Routes are sorted by travel time on public transit, or on foot when walking is faster. Lengths are approximate,
-      calculated from OpenStreetMap geometry. Directions lead to the first mapped point of each route,
-      not a verified trailhead or public access point. Photos show a nearby park or natural area, not necessarily the route.
+      Recommended routes are unpaved and of day-hike length, pass waterfalls, summits, or viewpoints, are in well-known
+      parks, and are quicker to reach. Popularity comes from Wikipedia page views of the nearest park or natural area,
+      not of the route itself. Travel times are by public transit, or on foot when walking is faster. Lengths are
+      approximate, calculated from OpenStreetMap geometry. Directions lead to where transit reaches each route soonest,
+      not to a verified trailhead or public access point. Photos show a nearby park or natural area, not necessarily the route.
     </p>
   <% end %>
   <p class="small text-body-secondary mt-2 mb-0">
-    Each search checks transit for the <%= OverpassService::MAX_TRANSIT_ROUTES %> nearest mapped hiking routes within 25 km that are under <%= OverpassService::MAX_LENGTH_MILES %> miles long.
+    Each search looks for mapped hiking routes up to <%= OverpassService::SEARCH_RADII_METERS.last / 1000 %> km
+    (<%= (OverpassService::SEARCH_RADII_METERS.last / OverpassService::METERS_PER_MILE).round %> miles) away, or less
+    where routes are plentiful, checks transit for up to <%= OverpassService::MAX_TRANSIT_ROUTES %> of them, and shows
+    the best <%= TrailsService::MAX_RESULTS %> under <%= OverpassService::MAX_LENGTH_MILES %> miles long.
   </p>
 </div>

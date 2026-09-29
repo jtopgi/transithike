@@ -47,6 +47,48 @@ class TransitousServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "reachable stops list where transit goes and when, skipping malformed entries" do
+    body = { "all" => [
+      { "place" => { "lat" => 47.61, "lon" => -122.33, "name" => "3rd Ave" }, "duration" => 12, "k" => 1 },
+      { "place" => { "lat" => 47.5, "lon" => -122.0 }, "duration" => 95.0, "k" => 2 },
+      { "place" => { "lat" => 91, "lon" => 0 }, "duration" => 5, "k" => 1 },
+      { "place" => { "lat" => 47.5, "lon" => -122.0 }, "duration" => -1, "k" => 1 },
+      { "place" => { "lat" => 47.5, "lon" => -122.0 }, "duration" => 5, "k" => "1" },
+      { "place" => nil, "duration" => 5, "k" => 1 }, nil
+    ] }
+    connection = stub_connection(:get, body) do |request|
+      assert_equal "47.6000000,-122.3000000", request.params["one"]
+      assert_equal "2026-09-23T15:00:00Z", request.params["time"]
+      assert_equal "150", request.params["maxTravelTime"]
+    end
+    assert_equal [[47.61, -122.33, 12, 1], [47.5, -122.0, 95.0, 2]],
+      TransitousService.reachable_stops(origin: origin, departure_time: DEPARTURE, connection: connection)
+    [{}, { "all" => nil }, []].each do |invalid|
+      assert_raises(SearchErrors::UpstreamError) do
+        TransitousService.reachable_stops(origin: origin, departure_time: DEPARTURE, connection: stub_connection(:get, invalid))
+      end
+    end
+  end
+
+  test "where transit is too dense to list every stop, searches go without the list for a day" do
+    travel_to Time.utc(2026, 9, 22, 12) do
+      cache = ActiveSupport::Cache::MemoryStore.new
+      calls = 0
+      huge = stub_connection(:get, { "all" => [] }) do
+        calls += 1
+        raise SearchErrors::ResponseTooLarge
+      end
+      arguments = { origin: origin, departure_time: DEPARTURE, connection: huge, cache: cache }
+      assert_nil TransitousService.reachable_stops(**arguments)
+      assert_nil TransitousService.reachable_stops(**arguments, origin: Place.new(latitude: 47.64, longitude: -122.34))
+      assert_equal 1, calls
+
+      travel 1.day + 1.minute
+      assert_nil TransitousService.reachable_stops(**arguments)
+      assert_equal 2, calls
+    end
+  end
+
   test "trips to every destination take one request and use the fastest way" do
     body = {
       "transit_durations" => [[{ "duration" => 2700.0, "transfers" => 0 }, { "duration" => 2400.0, "transfers" => 1 }], []],
@@ -56,7 +98,7 @@ class TransitousServiceTest < ActiveSupport::TestCase
       assert_equal "47.6000000;-122.3000000", request.params["one"]
       assert_equal "47.5000000;-122.0000000,47.4000000;-122.0000000", request.params["many"]
       assert_equal "2026-09-23T15:00:00Z", request.params["time"]
-      assert_equal "240", request.params["maxTravelTime"]
+      assert_equal "180", request.params["maxTravelTime"]
       assert_equal "1800", request.params["maxPostTransitTime"]
     end
     assert_equal [{ duration: 2400.0, transfers: 1 }, nil], trips(connection)

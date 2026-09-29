@@ -1,13 +1,20 @@
-// Results page: sorting and length filters, route map previews, and nearby photos.
+// Results page: sorting, length and travel time filters, route map previews, and nearby photos.
 import * as L from "leaflet"
 
 const TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 const LENGTHS = { any: [0, Infinity], short: [0, 3], medium: [3, 6], long: [6, Infinity] }
+// Ties keep the recommended order.
+const byRank = (a, b) => a.dataset.rank - b.dataset.rank
+const ascending = (key) => (a, b) => a.dataset[key] - b.dataset[key] || byRank(a, b)
+const descending = (key) => (a, b) => b.dataset[key] - a.dataset[key] || byRank(a, b)
 const ORDERS = {
-  duration: (a, b) => a.dataset.duration - b.dataset.duration,
-  distance: (a, b) => a.dataset.distance - b.dataset.distance,
-  "length-asc": (a, b) => a.dataset.length - b.dataset.length,
-  "length-desc": (a, b) => b.dataset.length - a.dataset.length
+  recommended: byRank,
+  duration: ascending("duration"),
+  distance: ascending("distance"),
+  popular: descending("popularity"),
+  scenic: descending("scenic"),
+  "length-asc": ascending("length"),
+  "length-desc": descending("length")
 }
 
 function setUpToolbar() {
@@ -22,9 +29,10 @@ function setUpToolbar() {
 
   const update = () => {
     const [min, max] = LENGTHS[toolbar.querySelector('input[name="length"]:checked').value]
+    const maxTrip = Number(toolbar.querySelector("[data-max-trip]").value) * 60 || Infinity
     let shown = 0
     cards.sort(ORDERS[sort.value]).forEach((card) => {
-      card.hidden = !(card.dataset.length >= min && card.dataset.length < max)
+      card.hidden = !(card.dataset.length >= min && card.dataset.length < max && Number(card.dataset.duration) <= maxTrip)
       if (!card.hidden) shown += 1
       list.append(card)
     })
@@ -49,7 +57,7 @@ function drawMap(element) {
   const route = L.polyline(JSON.parse(element.dataset.path), { color: "#15803d", weight: 4 }).addTo(map)
   L.circleMarker(JSON.parse(element.dataset.start), {
     radius: 6, color: "#fff", weight: 2, fillColor: "#14532d", fillOpacity: 1
-  }).bindTooltip("Route start").addTo(map)
+  }).bindTooltip("Directions lead here").addTo(map)
   const fit = () => map.fitBounds(route.getBounds(), { padding: [16, 16] })
   fit()
   return { map, fit }
