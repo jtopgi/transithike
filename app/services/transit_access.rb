@@ -12,7 +12,7 @@ class TransitAccess
   WALK_METERS = MAX_WALK_MINUTES * WALK_METERS_PER_MINUTE / DETOUR
   CELL_DEGREES = 0.02
 
-  # stops are [latitude, longitude, minutes, rides] from the origin.
+  # stops are [latitude, longitude, minutes] from the origin, followed by anything.
   def initialize(latitude, longitude, stops)
     @origin = [latitude, longitude, 0]
     @cells = stops.group_by { |stop| cell(stop[0], stop[1]) }

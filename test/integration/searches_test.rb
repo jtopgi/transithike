@@ -5,7 +5,8 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   include SearchTestSupport
 
   setup do
-    travel_to Time.utc(2026, 9, 22, 22) # 3 PM in Seattle, so trips plan for 8 AM tomorrow.
+    # 3 PM on Tuesday in Seattle, so trips are for 8 AM on Saturday.
+    travel_to Time.utc(2026, 9, 22, 22)
     @old_adapter = Faraday.default_adapter
     @old_adapter_options = Faraday.default_adapter_options
     @stubs = Faraday::Adapter::Test::Stubs.new
@@ -40,29 +41,45 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     stub_get(TransitousService::REVERSE_GEOCODE_URL, [{ tz: time_zone, areas: [{ name: "Seattle", default: true }] }])
   end
 
-  # Both Overpass instances answer the area, route details and highlights queries.
+  # Transit reaches a station a kilometer from the origin at 47, -122 in ten
+  # minutes, and trains from there reach the stations, [latitude, longitude,
+  # minutes] from the origin. By default, one 33 km north.
+  def rail(stations = [[47.3, -122.0, 50]])
+    stub_get(TransitousService::ONE_TO_ALL_URL) do |env|
+      all = if env.params["transitModes"]
+        stations.map { |latitude, longitude, minutes| reached_stop(latitude, longitude, minutes - 10) }
+      else
+        [reached_stop(47.01, -122.0, 10, id: "hub", importance: 0.5)]
+      end
+      [200, {}, JSON.generate(all: all)]
+    end
+  end
+
+  # Both Overpass instances answer the tiles, route details and highlights queries.
   def hiking(routes, highlights: [], paved: [])
     OverpassService::URLS.each do |url|
       @stubs.post(URI(url).path) do |env|
         query = URI.decode_www_form(env.body).to_h.fetch("data")
+        @requests["overpass"] << query
         [200, {}, JSON.generate(elements: overpass_elements(query, routes: routes, highlights: highlights, paved: paved))]
       end
     end
   end
 
-  def stops(*stops)
-    stub_get(TransitousService::ONE_TO_ALL_URL, { all: stops.map do |lat, lon, minutes, rides|
-      { place: { lat: lat, lon: lon, modes: ["BUS"] }, duration: minutes, k: rides }
-    end })
-  end
-
-  # The one-request API answers trips there, and with arriveBy, the latest trips
-  # back, which by default leave two hours before the 11 PM deadline.
-  def transit(trips, returns: nil, walks: [])
+  # The one-request API answers trips there; with arriveBy, the latest trips
+  # back, which by default leave two hours before the 11 PM deadline; and with
+  # transitModes, trips by city transit, which by default reach nothing.
+  def transit(trips, returns: nil, city: nil, walks: [])
     stub_get(TransitousService::ONE_TO_MANY_URL) do |env|
       back = env.params["arriveBy"] == "true"
-      durations = back ? returns || trips.map { [{ duration: 7200, transfers: 0 }] } : trips
-      [200, {}, JSON.generate(transit_durations: durations, street_durations: back ? [] : walks)]
+      durations = if back
+        returns || trips.map { [{ duration: 7200, transfers: 0 }] }
+      elsif env.params["transitModes"]
+        city || trips.map { [] }
+      else
+        trips
+      end
+      [200, {}, JSON.generate(transit_durations: durations, street_durations: back || env.params["transitModes"] ? [] : walks)]
     end
   end
 
@@ -90,69 +107,90 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     Nokogiri::HTML5.fragment(data_for("trails").map { |batch| batch["html"] }.join)
   end
 
-  test "the home page asks only for a starting point" do
+  test "the home page asks for a starting point and a weekend day" do
     get root_path
     assert_response :success
-    assert_equal %w[origin lat lon], css_select("form[action='#{search_path}'] [name]").map { |field| field["name"] }
+    assert_equal %w[origin lat lon tz day day], css_select("form[action='#{search_path}'] [name]").map { |field| field["name"] }
     assert_select "input[name=origin][role=combobox][aria-controls=origin-suggestions][required]"
     assert_select "input[name=lat][disabled]"
+    assert_select "input[name=day][value=saturday][checked]"
+    assert_select "input[name=day][value=sunday]:not([checked])"
     assert_select "button[data-use-location][hidden]"
+    assert_select "h1", text: "Weekend hikes you can reach by train"
   end
 
-  test "the results page shows at once, ready to stream the search" do
-    get search_path, params: { origin: "Pike Place Market", lat: "47.0", lon: "-122.0", arrival_time: "2026-09-23T12:30" }
+  test "the results page shows at once, ready to stream the search for the day asked for" do
+    get search_path, params: { origin: "Pike Place Market", lat: "47.0", lon: "-122.0", day: "sunday", tz: "America/New_York" }
 
     assert_response :success
     assert_empty @requests
-    assert_select "h1[data-heading]", text: "Hikes near Pike Place Market"
-    assert_select "[data-stream-url='#{search_stream_path(origin: 'Pike Place Market', lat: '47.0', lon: '-122.0')}']"
+    assert_select "h1[data-heading]", text: "Day hikes by train from Pike Place Market"
+    assert_select "[data-stream-url='#{search_stream_path(origin: 'Pike Place Market', lat: '47.0', lon: '-122.0',
+      day: 'sunday', tz: 'America/New_York')}']"
     assert_select "input[name=lat][value='47.0']:not([disabled])"
-    assert_select "[data-progress][role=status]", text: /Finding hikes/
+    assert_select "input[name=tz][value='America/New_York']"
+    assert_select "input[name=day][value=sunday][checked]"
+    assert_select "[data-progress][role=status]", text: /Finding the stations trains reach/
     assert_select "[data-skeleton]", count: 2
     assert_select "[data-results-toolbar][hidden] select[data-sort] option", count: 8
     assert_select "select[data-sort] option:first-child[value=recommended]"
     assert_select "select[data-sort] option[value=stay]", text: "Most time there"
-    assert_select "[data-results-toolbar] select[data-max-trip] option", count: 4
+    assert_select "[data-results-toolbar] select[data-max-trip] option", count: 5
     assert_select "noscript", text: /needs JavaScript/
     assert_select "footer a[href='https://transitous.org/sources/']", text: "data sources"
     assert_includes response.body, "a way back by 11 PM"
+    assert_includes response.body, "at least 20 km"
+
+    get search_path, params: { origin: "Seattle", day: "monday", tz: "Not a zone" }
+    assert_select "[data-stream-url='#{search_stream_path(origin: 'Seattle')}']"
+    assert_select "input[name=tz][value]", count: 0
+    assert_select "input[name=day][value=saturday][checked]"
   end
 
-  test "a typed place streams the place, each batch of hikes with the way back, and the ranking" do
+  test "a typed place streams the place, each batch of hikes by train with the way back, and the ranking" do
     geocode
     area
-    hiking([route_element(name: "<script>alert(1)</script>")])
-    transit([[{ duration: 2400, transfers: 1 }]])
+    rail
+    hiking([route_element(latitude: 47.3, name: "<script>alert(1)</script>")])
+    transit([[{ duration: 5400, transfers: 1 }]])
     wikipedia
-    search_all(origin: "A & B / 東京")
+    search_all(origin: "A & B / 東京", tz: "America/Los_Angeles")
 
     assert_equal %w[place checking trails ranking update done], events.map(&:first)
-    assert_equal "A & B / 東京", @requests["/api/"].first.params["q"]
-    trips, returns = @requests[URI(TransitousService::ONE_TO_MANY_URL).path].map(&:params)
-    assert_equal ["47.0000000;-122.0000000", "47.0000000;-122.0000000", "2026-09-23T15:00:00Z"],
-      trips.values_at("one", "many", "time")
-    assert_equal ["2026-09-24T06:00:00Z", "true"], returns.values_at("time", "arriveBy")
+    # The visitor's time zone ranks places near them first.
+    assert_equal ["A & B / 東京", "34.1", "-118.2"], @requests["/api/"].first.params.values_at("q", "lat", "lon")
+    hubs, rides = @requests[URI(TransitousService::ONE_TO_ALL_URL).path].map(&:params)
+    assert_equal ["47.0000000,-122.0000000", "2026-09-26T15:00:00Z", "60"], hubs.values_at("one", "time", "maxTravelTime")
+    assert_equal ["hub", "2026-09-26T15:10:00Z", TransitousService::TRAIN_MODES.join(",")],
+      rides.values_at("one", "time", "transitModes")
+    trips, city, returns = @requests[URI(TransitousService::ONE_TO_MANY_URL).path].map(&:params)
+    assert_equal ["47.0000000;-122.0000000", "47.3000000;-122.0000000", "2026-09-26T15:00:00Z", nil],
+      trips.values_at("one", "many", "time", "transitModes")
+    assert_equal ["47.3000000;-122.0000000", "SUBWAY,TRAM"], city.values_at("many", "transitModes")
+    assert_equal ["2026-09-27T06:00:00Z", "true"], returns.values_at("time", "arriveBy")
+    # The station is on the line between two tiles, so routes within a walk of it are in either.
+    assert_includes @requests["overpass"].first, 'relation["type"="route"]["route"="hiking"](47.0,-122.5,47.5,-121.5)->.region;'
 
     place = data_for("place").sole
-    assert_equal "Hikes near Seattle, Washington, United States", place["heading"]
-    assert_equal "Travel times for leaving tomorrow at 8:00\u00a0AM\u00a0PDT, with a way back by 11\u00a0PM.", place["departure"]
+    assert_equal "Day hikes by train from Seattle, Washington, United States", place["heading"]
+    assert_equal "Saturday, September 26, leaving at 8:00\u00a0AM\u00a0PDT, with a way back by 11\u00a0PM.", place["departure"]
     assert_equal "America/Los_Angeles", place["time_zone"]
     assert_equal [{ "count" => 1 }], data_for("checking")
 
-    card = cards.at_css("[data-trail][data-osm-id='123'][data-duration='2400'][data-length='1.38'][data-distance='0.0']" \
+    card = cards.at_css("[data-trail][data-osm-id='123'][data-duration='5400'][data-length='1.38'][data-distance='20.73']" \
       "[data-popularity='0'][data-scenic='0']")
     assert card
-    # Arriving at 8:40 AM with the last trip back at 9 PM leaves 12 hours 20 minutes.
-    assert_equal "44400", card["data-stay"]
-    assert card.at_css(".trail-map[data-path='[[[47.0,-122.0],[47.02,-122.0]]]'][data-start='[47.0,-122.0]']")
-    assert card.at_css("a[data-photo-url='#{photo_path(lat: 47.02, lon: -122.0)}'][hidden]")
-    assert_match(/40 min\s+1 transfer/, card.at_css(".trail-stats").text)
-    assert_match(/Last trip back 9:00 PM\s+· up to 12 h there/, card.at_css(".trail-return").text.squish)
+    # Arriving at 9:30 AM with the last trip back at 9 PM leaves 11 hours 30 minutes.
+    assert_equal "41400", card["data-stay"]
+    assert card.at_css(".trail-map[data-path='[[[47.3,-122.0],[47.32,-122.0]]]'][data-start='[47.3,-122.0]']")
+    assert card.at_css("a[data-photo-url='#{photo_path(lat: 47.32, lon: -122.0)}'][hidden]")
+    assert_match(/90 min\s+1 transfer/, card.at_css(".trail-stats").text)
+    assert_match(/Last trip back 9:00 PM\s+· up to 11 h there/, card.at_css(".trail-return").text.squish)
     trip_url = card.at_css("[data-trip-url]")["data-trip-url"]
-    assert_equal trip_path(from: "47.0,-122.0", to: "47.0,-122.0", leave: "2026-09-23T15:00:00Z", back_by: "2026-09-24T06:00:00Z"), trip_url
+    assert_equal trip_path(from: "47.0,-122.0", to: "47.3,-122.0", leave: "2026-09-26T15:00:00Z", back_by: "2026-09-27T06:00:00Z"), trip_url
     assert card.at_css("a[href='https://www.openstreetmap.org/relation/123'][target=_blank]")
     query = URI.decode_www_form(URI(card.at_css("a[href^='https://www.google.com/maps/dir/?']")["href"]).query).to_h
-    assert_equal ["Seattle, Washington, United States", "47.0,-122.0", "transit"], query.values_at("origin", "destination", "travelmode")
+    assert_equal ["Seattle, Washington, United States", "47.3,-122.0", "transit"], query.values_at("origin", "destination", "travelmode")
     assert_nil card.at_css("script")
     assert_includes card.to_html, "&lt;script&gt;"
 
@@ -162,23 +200,34 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_equal({ "count" => 1, "notices" => [] }, data_for("done").sole)
   end
 
-  test "hikes are joined where transit reaches them soonest, then ranked with highlights and popularity" do
+  test "a search for Sunday sets out on Sunday morning" do
+    geocode
     area
-    stops([47.12, -122.001, 30, 1])
-    route = route_element(latitude: 47.1, name: "Falls Loop")
-    hiking([route], highlights: [highlight_node("waterfall", 47.105, -122.0005, name: "Twin Falls")])
+    rail
+    hiking([])
+    search_all(origin: "Seattle", day: "sunday")
+    assert_equal "Sunday, September 27, leaving at 8:00\u00a0AM\u00a0PDT, with a way back by 11\u00a0PM.",
+      data_for("place").sole["departure"]
+    assert_equal "2026-09-27T15:00:00Z", @requests[URI(TransitousService::ONE_TO_ALL_URL).path].first.params["time"]
+  end
+
+  test "hikes are joined where the train reaches them soonest, then ranked with highlights and popularity" do
+    area
+    rail([[47.32, -122.001, 50]])
+    route = route_element(latitude: 47.3, name: "Falls Loop")
+    hiking([route], highlights: [highlight_node("waterfall", 47.305, -122.0005, name: "Twin Falls")])
     transit([[{ duration: 2400, transfers: 1 }]])
     wikipedia([{ title: "Twin Falls State Park", fullurl: "https://en.wikipedia.org/wiki/Twin_Falls_State_Park",
-      coordinates: [{ lat: 47.11, lon: -122.0 }], pageviews: { "2026-09-01" => 2_500 } }])
+      coordinates: [{ lat: 47.31, lon: -122.0 }], pageviews: { "2026-09-01" => 2_500 } }])
     search_all(origin: "Pike Place Market", lat: "47.0", lon: "-122.0")
 
     assert_empty @requests["/api/"]
-    assert_equal "Hikes near Pike Place Market", data_for("place").sole["heading"]
-    assert_equal "47.1200000;-122.0000000", @requests[URI(TransitousService::ONE_TO_MANY_URL).path].first.params["many"]
+    assert_equal "Day hikes by train from Pike Place Market", data_for("place").sole["heading"]
+    assert_equal "47.3200000;-122.0000000", @requests[URI(TransitousService::ONE_TO_MANY_URL).path].first.params["many"]
     card = cards.at_css("[data-trail]")
-    assert card.at_css(".trail-map[data-start='[47.12,-122.0]']")
+    assert card.at_css(".trail-map[data-start='[47.32,-122.0]']")
     query = URI.decode_www_form(URI(card.at_css("a[href^='https://www.google.com/maps/dir/?']")["href"]).query).to_h
-    assert_equal "47.12,-122.0", query["destination"]
+    assert_equal "47.32,-122.0", query["destination"]
 
     update = data_for("update").sole["trails"].sole
     assert_equal [2_500, 2], update.values_at("popularity", "scenic")
@@ -188,15 +237,39 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_equal ["Very popular", "Twin Falls"], chips.css(".trail-chip-label").map(&:text)
   end
 
+  test "hikes the subway or light rail reaches, and stations near the city, are left out" do
+    geocode
+    area
+    # A station 33 km north, and one 11 km south.
+    rail([[47.3, -122.0, 50], [46.9, -122.0, 20]])
+    hiking([route_element(latitude: 47.3)])
+    transit([[{ duration: 5400, transfers: 1 }]], city: [[{ duration: 6000, transfers: 2 }]])
+    search_all(origin: "Seattle")
+    assert_equal %w[place checking done], events.map(&:first)
+    assert_equal 0, data_for("done").sole["count"]
+    assert_includes @requests["overpass"].first, "(47.0,-122.0,47.5,-121.5)"
+    refute_includes @requests["overpass"].first, "(46.5,"
+  end
+
+  test "without stations beyond the city, no hikes are looked for" do
+    geocode
+    area
+    rail([[46.9, -122.0, 20]])
+    search_all(origin: "Seattle")
+    assert_equal [["place", "done"], 0], [events.map(&:first), data_for("done").sole["count"]]
+    assert_empty @requests["overpass"]
+  end
+
   test "the device's location is named after its area and starts directions from it" do
     area
-    hiking([route_element])
-    transit([[]], walks: [{ duration: 900 }])
+    rail
+    hiking([route_element(latitude: 47.3)])
+    transit([[{ duration: 4000, transfers: 0 }]])
     wikipedia
     search_all(origin: SearchesController::CURRENT_LOCATION, lat: "47.0", lon: "-122.0")
 
-    assert_equal "Hikes near your location in Seattle", data_for("place").sole["heading"]
-    assert_match(/15 min\s+on foot/, cards.at_css(".trail-stats").text)
+    assert_equal "Day hikes by train from your location in Seattle", data_for("place").sole["heading"]
+    assert_match(/67 min\s+direct/, cards.at_css(".trail-stats").text)
     href = cards.at_css("a[href^='https://www.google.com/maps/dir/?']")["href"]
     refute_includes URI.decode_www_form(URI(href).query).to_h, "origin"
   end
@@ -204,6 +277,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   test "invalid coordinates fall back to looking up the typed place" do
     geocode
     area
+    rail
     hiking([])
     search_all(origin: "Seattle", lat: "91", lon: "-122.0")
     assert_equal 1, @requests["/api/"].size
@@ -213,13 +287,14 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   test "trips fall back to planning each route when the one-request API fails, and say the way back wasn't checked" do
     geocode
     area
-    hiking([route_element])
+    rail
+    hiking([route_element(latitude: 47.3)])
     stub_get(TransitousService::ONE_TO_MANY_URL, "not json")
-    stub_get(TransitousService::PLAN_URL, { itineraries: [{ duration: 1800, transfers: 2 }], direct: [] })
+    stub_get(TransitousService::PLAN_URL, { itineraries: [{ duration: 4800, transfers: 2 }], direct: [] })
     wikipedia
     search_all(origin: "Seattle")
 
-    assert_match(/30 min\s+2 transfers/, cards.at_css(".trail-stats").text)
+    assert_match(/80 min\s+2 transfers/, cards.at_css(".trail-stats").text)
     assert_match(/couldn't check the way back/, cards.at_css(".trail-return").text)
     assert_equal ["We couldn't check the way back for some hikes. Check the last trip back before you go."],
       data_for("done").sole["notices"]
@@ -228,16 +303,19 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   test "a failed area lookup still searches, in UTC" do
     geocode
     stub_get(TransitousService::REVERSE_GEOCODE_URL, "{}", status: 503)
+    rail
     hiking([])
     search_all(origin: "Seattle")
-    assert_equal "Travel times for leaving tomorrow at 8:00\u00a0AM\u00a0UTC, with a way back by 11\u00a0PM.", data_for("place").sole["departure"]
+    assert_equal "Saturday, September 26, leaving at 8:00\u00a0AM\u00a0UTC, with a way back by 11\u00a0PM.",
+      data_for("place").sole["departure"]
   end
 
   test "hikes without a way back the same day are left out" do
     geocode
     area
-    hiking([route_element])
-    transit([[{ duration: 2400, transfers: 1 }]], returns: [[]])
+    rail
+    hiking([route_element(latitude: 47.3)])
+    transit([[{ duration: 5400, transfers: 1 }]], returns: [[]])
     search_all(origin: "Seattle")
     assert_equal %w[place checking done], events.map(&:first)
     assert_equal 0, data_for("done").sole["count"]
@@ -269,12 +347,23 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     refute_includes response.body, "private provider details"
   end
 
+  test "a failed rail station lookup is a failure, not an empty success" do
+    geocode
+    area
+    stub_get(TransitousService::ONE_TO_ALL_URL, "{}", status: 503)
+    search_all(origin: "Seattle")
+    assert_equal %w[place failure], events.map(&:first)
+    assert_match(/unavailable/, data_for("failure").sole["message"])
+  end
+
   test "a malformed route response is a failure, not an empty success" do
     geocode
     area
+    rail
     OverpassService::URLS.each { |url| @stubs.post(URI(url).path) { [200, {}, "not json"] } }
     search_all(origin: "Seattle")
     assert_equal %w[place failure], events.map(&:first)
+    assert_equal 2, @requests[URI(TransitousService::ONE_TO_ALL_URL).path].size
   end
 
   def leg(mode, name, start, finish)

@@ -2,14 +2,17 @@
 
 [![CI](https://github.com/jtopgi/transithike/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/jtopgi/transithike/actions/workflows/ci.yml)
 
-Plan day hikes you can reach by bus, light rail, commuter rail, Amtrak, or ferry,
-with a way back the same day. The application is Rails-rendered with Bootstrap: a
+Plan weekend day hikes you can reach by train from the city, with a train back
+the same evening. It is for city dwellers who want a Saturday or Sunday out of
+town: hikes near commuter-rail, Amtrak, and other train stations, not the parks
+the subway already reaches. The application is Rails-rendered with Bootstrap: a
 starting-point box that suggests places as you type (or uses the device's
-location), and a results page that shows at once and streams in hikes as they are
-found. Each card has a map preview, a nearby photo, highlights, popularity, the
-last trip back and how long that leaves there, and the trains, buses, and ferries
-to take each way. Hikes can be sorted by recommendation, travel time, time there,
-distance, popularity, scenery, or length, and filtered by length and travel time.
+location) with a Saturday/Sunday choice, and a results page that shows at once
+and streams in hikes as they are found. Each card has a map preview, a nearby
+photo, highlights, popularity, the last trip back and how long that leaves there,
+and the trains and other transit to take each way. Hikes can be sorted by
+recommendation, travel time, time there, distance, popularity, scenery, or length,
+and filtered by length and travel time.
 
 ## Requirements
 
@@ -55,48 +58,64 @@ Current Hiking Project availability could not be confirmed. Live probes of both
 trail providers were blocked by DNS restrictions in the modernization environment;
 test Overpass connectivity from your deployment before launching.
 
-- Searches look for routes within **10 km** of the origin, widening to 20, 40, and
-  **80 km** until at least **250** routes are found, and near stations and stops
-  that transit reaches beyond that area (up to 40 cells of 0.05°, stations first,
-  spread over travel times). Routes spanning less than 300 m, under **1 mile** or
-  over **30 miles** long, at least half on paved paths or roads, and repeated
-  sections of one named trail (the same name within 5 km) are left out: they are
-  walks or multi-day trails rather than day hikes. Results are not an exhaustive
-  trail inventory; in regions where few hiking routes are mapped in OpenStreetMap,
-  there are few results.
-- Transitous lists every stop reachable within 150 minutes. Where that list is over
-  8 MB, it lists the stops reached by rail, subway, tram, and ferry instead, then
-  those within 90 minutes, and remembers for a day which list fits the area. Routes
-  within a 30-minute walk of a listed stop, or of the origin (the most the planner
-  walks), are checked for transit, most promising first (routes with Wikipedia or
-  Wikidata entries, of day-hike size, with distinctive names), up to **120** per
-  search, keeping the section of a trail that transit reaches soonest. Where no
-  list fits, the checks are spread over distance rings instead (40 within 15 km, 50
-  within 35 km, and 30 beyond), then the nearest remaining routes.
-- Routes are checked in batches of 40, starting near the origin while farther
-  stations are looked up, and each batch's hikes show as soon as their trips there
-  and back are known. A batch that fails is skipped; a search fails only when
-  nothing is found.
-- Trips leave now (rounded to the next quarter hour) between 5 and 10 AM at the
-  origin, and otherwise at 8 AM the next morning, using the time zone Transitous
-  reports for the origin (UTC when unknown). Only routes reachable within **3 hours**
-  are shown, and only with a way back that arrives by **11 PM** the same day and
-  leaves enough time to hike: the route's length at 2 mph, or twice that for routes
-  that don't loop, but at least 1½ and at most 4 hours (long routes can be
-  shortened). Journeys may include up to 30 minutes' walk from the last stop, and
-  from the route to the first stop on the way back.
+- **Stations.** Transitous lists the stops any transit reaches from the origin
+  within an hour (40 or 25 minutes where that list is over 8 MB, remembered for a
+  day per area). Trains are boarded at up to **three** of the busiest train
+  stations among them, at least 1 km apart, skipping any that an earlier one's
+  trains reach within 10 minutes of getting there directly; so the trip may start
+  on the subway, a bus, or on foot. From each, Transitous lists the stations
+  reached by commuter, regional, intercity, and suburban trains
+  (`TransitousService::TRAIN_MODES`, which leave out Transitous's `RAIL`, since it
+  includes the subway) within **3 hours** of setting out, or within 120 or 80
+  minutes of boarding where that list is over 8 MB, as across Switzerland
+  (remembered for a day per area). Stations closer than **20 km** to the origin
+  are in or next to the city and don't count.
+- **Routes.** Hiking-route relations are found in 0.5° tiles holding routes
+  within a 30-minute walk of a station, up to 16 tiles with the quickest stations
+  first: the first four in one query, the rest four neighbors at a time, each query
+  finding the routes of the region around its tiles once, then keeping those in
+  the tiles (a tile's routes are left out when its query fails). Routes
+  spanning less than 300 m, under **1 mile** or over **30 miles** long, at least
+  half on paved paths or roads, and repeated sections of one named trail (the same
+  name within 5 km) are left out: they are walks or multi-day trails rather than
+  day hikes. Routes within a 30-minute walk of a station (the most the planner
+  walks) are checked, most promising first (routes with Wikipedia or Wikidata
+  entries, of day-hike size, with distinctive names), up to **120** per search,
+  keeping the section of a trail that trains reach soonest. Results are not an
+  exhaustive trail inventory; where few hiking routes are mapped in OpenStreetMap
+  near stations, there are few results.
+- Routes are checked in batches of 40, starting with the first tiles' while the
+  others are found, and each batch's hikes show as soon as their trips there and
+  back are known. A batch that fails is skipped; a search fails only when nothing
+  is found.
+- **Weekend trips.** Searches are for Saturday or Sunday: the one chosen, or
+  whichever comes first. Trips leave at **8 AM** that day in the time zone
+  Transitous reports for the origin (UTC when unknown), or now (rounded to the
+  next quarter hour) once that morning has begun; from 10 AM it's too late to set
+  out, so the trip is for the same day a week later. The search page offers the
+  next weekend day by the device's clock. Only routes reachable within **3½
+  hours** of setting out, waiting included, are shown, and only with a way back
+  that arrives by **11 PM** the same day and leaves enough time to hike: the
+  route's length at 2 mph, or twice that for routes that don't loop, but at least
+  1½ and at most 4 hours (long routes can be shortened). Journeys may include up
+  to 30 minutes' walk from the last stop, and from the route to the first stop on
+  the way back.
+- **Not the city's parks.** Hikes the subway, metro, or light rail
+  (`TransitousService::CITY_MODES`: Transitous's `SUBWAY` and `TRAM`; its `METRO`
+  means suburban trains) reach within those 3½ hours are left out, since
+  city dwellers likely know them already; when that can't be checked, they stay.
 - Lengths are approximate, calculated from deduplicated mapped way geometry.
   Nested or incomplete routes are skipped. Directions and travel times lead to the
-  point on each route that transit reaches soonest, estimated from the reachable
-  stops and a straight-line walk (or to its first mapped point when stops are
-  unknown). That point is not necessarily an official or accessible trailhead:
-  check the route and local conditions.
+  point on each route that trains reach soonest, estimated from the stations and a
+  straight-line walk. That point is not necessarily an official or accessible
+  trailhead: check the route and local conditions.
 - **Recommended** adds 1.5 points for routes of 3 to 12 miles (1 for 2 to 3 or 12
   to 16 miles, a quarter for shorter ones), up to two for highlights, about 0.75
   per tenfold increase in page views above 100, and half a point for routes with
   Wikipedia or Wikidata entries. It subtracts up to 1.25 points for partly paved
   routes, one for generic names such as "Trail 2", half a point per hour of travel
-  beyond one hour plus another point per hour beyond two hours, 0.1 per transfer,
+  beyond an hour and a half plus another point per hour beyond three hours, 0.1 per
+  transfer,
   half a point when there isn't time to hike the whole route before the last trip
   back, and 1.5 points for each route after the first two in one park or natural
   area, for variety.
@@ -111,8 +130,9 @@ test Overpass connectivity from your deployment before launching.
   Seattle"), or their title when they have none.
 - Photos show the lead image of the same article, within 2 km of the middle of a
   route, which is not necessarily the route. Elevation is not shown.
-- Provider failures produce a friendly error, not misleading empty results. Stops,
-  highlights, and popularity only refine a search, which goes ahead without them.
+- Provider failures produce a friendly error, not misleading empty results. The
+  origin's area, the tiles after the first four, highlights, and popularity only
+  refine a search, which goes ahead without them.
   Highlights not found within 5 seconds of the last batch are left out, and the
   lookup finishes in the background so later searches have them. When the way back
   can't be looked up, hikes are shown with a notice saying so.
@@ -125,11 +145,12 @@ than relying on this public instance. Each server process sends it at most two
 queries at a time, the number of slots it gives each client: other queries wait up
 to 30 seconds for a slot, and highlights are skipped when none is free. When it is busy, searches use the public
 [VK Maps mirror](https://wiki.openstreetmap.org/wiki/Overpass_API#Public_Overpass_API_instances)
-instead, and prefer it for five minutes. Provider calls have bounded timeouts and
-result limits. An area's routes are cached for **a day** for origins rounded to
-about 5 km, so nearby searches share them, as are the routes near each cell of
-farther stops, and each route's details and highlights for **a week**; production uses a bounded, process-local memory store. Failures
-are never cached.
+instead, and prefer it for five minutes. When both turn a query away within 15
+seconds, as they do when briefly overloaded, the preferred one is asked once more
+after a 3-second pause (highlights excepted). Provider calls have bounded timeouts and
+result limits. Each tile's routes are cached for **three days** and shared by every
+search, and each route's details and highlights for **a week**; production uses a
+bounded, process-local memory store. Failures are never cached.
 
 Transit travel times come from [Transitous](https://transitous.org), a free,
 community-run [MOTIS](https://github.com/motis-project/motis) service built on
@@ -140,10 +161,12 @@ to its [data sources](https://transitous.org/sources/), and requests identify th
 app with `SearchHttp::USER_AGENT` (change it if you fork). Contact the maintainers
 in their [Matrix room](https://matrix.to/#/%23transitous:matrix.spline.de) before
 sending substantial routing traffic. Each search asks for the stops reachable from
-the origin with the one-to-all API (up to three times where transit is dense), then
-for each batch, for every route's trip there and the latest trip back in two
-requests to the experimental one-to-many API, all cached for 15 minutes. If that
-API fails, it plans up to 15 of the nearest routes one at a time. Once a search is
+the origin with the one-to-all API (up to three times where transit is dense), and
+for the stations trains reach from up to three of them, which are cached for six
+hours for origins within about 100 m. Then for each batch, it asks for every
+route's trip there, the trip there by city transit, and the latest trip back in
+three requests to the experimental one-to-many API, all cached for 15 minutes. If
+that API fails, it plans up to 15 of the nearest routes one at a time. Once a search is
 done, each card the visitor scrolls to plans its trips there and back to show
 their legs, cached the same way. Transitous serializes concurrent requests from one
 client, so a search's requests are never sent in parallel. It also supplies each
@@ -152,8 +175,9 @@ the feeds Transitous has for a region.
 
 Place suggestions and typed searches use [Photon](https://photon.komoot.io),
 whose public instance asks for fair use: the page waits for three characters
-and a pause in typing, suggestions are cached for a day, and they favor places
-near the visitor's time zone without asking for their location. Map previews
+and a pause in typing, suggestions are cached for a day, and both favor places
+near the visitor's time zone without asking for their location, so a ZIP code
+such as 11101 finds Queens rather than a namesake abroad. Map previews
 load [OpenStreetMap tiles](https://operations.osmfoundation.org/policies/tiles/)
 only as cards scroll into view, and photos and page views come from the
 [Wikipedia API](https://www.mediawiki.org/wiki/API:Etiquette) with each
@@ -232,7 +256,8 @@ from GitHub Actions:
   tagged with the commit SHA, and points the web app at it. The image reports
   its commit in an `X-App-Revision` header, so the job waits until the new build
   serves traffic, loads the site twice with its session cookie, and runs one
-  real search; a provider outage there only produces a warning. Deployments and
+  real Saturday search from Grand Central Terminal; a provider outage there only
+  produces a warning. Deployments and
   the app URL appear under the repository's `production` environment.
 - Images are built by GitHub Actions because Azure free-credit subscriptions
   cannot use Container Registry build tasks.

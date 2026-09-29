@@ -174,9 +174,10 @@ jobs:
       # the last shows the platform isn't holding the stream back.
       - name: Run a real search
         run: |
-          read -r status first total < <(curl --silent --show-error --no-buffer --max-time 150 --output search.txt \
+          read -r status first total < <(curl --silent --show-error --no-buffer --max-time 240 --output search.txt \
             --write-out '%{http_code} %{time_starttransfer} %{time_total}\n' \
-            --get "$URL/search/stream" --data-urlencode "origin=Seattle, WA")
+            --get "$URL/search/stream" --data-urlencode "origin=Grand Central Terminal, New York" \
+            --data-urlencode "lat=40.7527" --data-urlencode "lon=-73.9772" --data-urlencode "day=saturday")
           echo "HTTP $status: first event after ${first}s, done after ${total}s."
           if [ "$status" != 200 ]; then echo "::error::The search stream returned HTTP $status."; exit 1; fi
           if grep --quiet "^event: failure" search.txt; then

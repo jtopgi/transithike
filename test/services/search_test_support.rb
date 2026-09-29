@@ -30,19 +30,22 @@ module SearchTestSupport
     { "type" => "node", "id" => id, "lat" => latitude, "lon" => longitude, "tags" => { key => value, "name" => name }.compact }
   end
 
-  # The area, farther routes, route details, or highlights response for an
-  # Overpass query, built from full route elements. far routes answer the query
-  # for routes near stops beyond the searched area, which reports radius.
-  def overpass_elements(query, routes:, highlights: [], paved: [], far: [], radius: 80_000)
-    if query.include?(".searched out")
-      routes.map { |route| candidate_of(route) } + [{ "type" => "search", "id" => 1, "tags" => { "radius" => radius.to_s } }]
-    elsif query.include?("out tags bb")
-      far.map { |route| candidate_of(route) }
+  # The tiles, route details, or highlights response for an Overpass query,
+  # built from full route elements.
+  def overpass_elements(query, routes:, highlights: [], paved: [])
+    if query.include?("out tags bb")
+      routes.map { |route| candidate_of(route) }
     elsif query.include?("out geom")
-      (routes + far).uniq { |route| route["id"] } + paved.map { |id| { "type" => "way", "id" => id } }
+      routes + paved.map { |id| { "type" => "way", "id" => id } }
     else
       highlights
     end
+  end
+
+  # A one-to-all entry: a stop served by modes, reached after minutes and rides.
+  def reached_stop(latitude, longitude, minutes, rides: 1, modes: ["REGIONAL_RAIL"], id: nil, importance: nil)
+    { "place" => { "lat" => latitude, "lon" => longitude, "modes" => modes, "stopId" => id, "importance" => importance }.compact,
+      "duration" => minutes, "k" => rides }
   end
 
   def overpass_connection(routes: [route_element], queries: nil, **elements)
@@ -53,7 +56,7 @@ module SearchTestSupport
     })
   end
 
-  # A route as the area query lists it: tags and a bounding box.
+  # A route as the tiles query lists it: tags and a bounding box.
   def candidate_of(route)
     points = route["members"].flat_map { |member| member.is_a?(Hash) && member["geometry"].is_a?(Array) ? member["geometry"] : [] }
       .select { |point| point.is_a?(Hash) }

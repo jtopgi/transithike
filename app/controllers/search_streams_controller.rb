@@ -7,7 +7,9 @@ class SearchStreamsController < ApplicationController
 
   def show
     start_stream
-    result = TrailsService.search(origin: requested_origin(origin_text)) { |event, payload| send_found(event, payload) }
+    # Typed places near the visitor's time zone come first, so "11101" finds Queens, not Costa Rica.
+    result = TrailsService.search(origin: requested_origin(origin_text), day: requested_day,
+      near: PhotonService.zone_center(requested_time_zone)) { |event, payload| send_found(event, payload) }
     send_event("done", count: result.trails.size, notices: notices(result))
   rescue SearchErrors::InvalidInput, SearchErrors::UpstreamError => error
     send_event("failure", message: error.message)
@@ -30,7 +32,7 @@ class SearchStreamsController < ApplicationController
     case event
     when :place
       @result = payload
-      send_event("place", heading: "Hikes near #{helpers.place_label(payload)}", departure: helpers.trip_times(payload),
+      send_event("place", heading: "Day hikes by train from #{helpers.place_label(payload)}", departure: helpers.trip_times(payload),
         time_zone: payload.departure_time.time_zone.tzinfo.name)
     when :checking then send_event("checking", count: payload)
     when :trails
