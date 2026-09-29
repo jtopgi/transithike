@@ -18,9 +18,17 @@ module OverpassService
   RINGS = [[15, 40], [35, 50], [Float::INFINITY, 30]].freeze
   # Routes this close together with the same name are sections of one trail.
   DUPLICATE_METERS = 5_000
+  # Stops beyond the searched area are grouped into cells this many degrees
+  # across, and routes are found within a cell's half diagonal and a half-hour
+  # walk of its center, for at most MAX_FAR_CELLS cells.
+  FAR_CELL_DEGREES = 0.05
+  FAR_CELL_METERS = 5_500
+  MAX_FAR_CELLS = 40
   # Routes spanning less are rarely hikes worth a trip.
   MIN_SPAN_METERS = 300
-  MIN_LENGTH_MILES = 0.5
+  # Shorter routes, and routes mostly on paved paths or roads, are walks rather than day hikes.
+  MIN_LENGTH_MILES = 1.0
+  MOSTLY_PAVED = 0.5
   # Longer routes are multi-day trails rather than hikes from a nearby start.
   MAX_LENGTH_MILES = 30
   METERS_PER_MILE = 1609.344
@@ -50,9 +58,12 @@ module OverpassService
   # Names like "Trail 2" or "Fitness Loop" rarely mark a hike worth the trip.
   GENERIC_NAME = /\A(?:(?:trail|loop|path|route|track|section)\W*\w{0,3}|.*\b(?:fitness|exercise|connector|parcours)\b.*)\z/i
   # duration is in seconds; transfers is nil when walking the whole way is fastest.
-  # paved is the share of the route's length on paved ways or roads.
+  # paved is the share of the route's length on paved ways or roads, and loop is
+  # true for routes that end where they start. arrival and last_return are the
+  # times transit gets there and last leaves for the origin.
   Trail = Struct.new(:name, :summary, :latitude, :longitude, :length, :osm_id, :path, :highlights, :notable,
-    :paved, :distance, :duration, :transfers, :origin, :area, :score, keyword_init: true) do
+    :paved, :loop, :distance, :duration, :transfers, :arrival, :last_return, :origin, :area, :score,
+    keyword_init: true) do
     # A point halfway along the route, in its area even where transit reaches it from town.
     def midpoint
       points = Array(path).flatten(1)
@@ -60,8 +71,9 @@ module OverpassService
     end
   end
 
-  # Every route in the search area, as { id:, name:, latitude:, longitude:, bounds:, span:, notable: }:
-  # the center of the route's [south, west, north, east] bounding box, and its diagonal in meters.
+  # The routes in the search area and its radius in meters, as { radius:, routes: }
+  # with each route as { id:, name:, latitude:, longitude:, bounds:, span:, notable: }:
+  # the center of its [south, west, north, east] bounding box, and its diagonal in meters.
   def self.candidates(lat:, lon:, connections: nil, cache: Rails.cache)
     unless SearchHttp.coordinates?(lat, lon)
       raise SearchErrors::InvalidInput, "The origin does not have valid coordinates."
@@ -69,21 +81,76 @@ module OverpassService
 
     # Rounding to about 5 km lets nearby searches share one query.
     center = [lat, lon].map { |value| (value.to_f * 20).round / 20.0 }
-    cache.fetch("overpass:area:v1:#{center.join(':')}", expires_in: AREA_CACHE_TTL) do
+    cache.fetch("overpass:area:v2:#{center.join(':')}", expires_in: AREA_CACHE_TTL) do
       steps = SEARCH_RADII_METERS.map do |radius|
-        %(relation(around:#{radius},#{center.join(',')})["type"="route"]["route"="hiking"]->.routes;)
+        %(relation(around:#{radius},#{center.join(',')})["type"="route"]["route"="hiking"]->.routes;) +
+          "make search radius=#{radius}->.searched;"
       end
       widen = steps.drop(1).map { |step| "if (routes.count(relations) < #{ENOUGH_ROUTES}) { #{step} }" }
-      elements("[out:json][timeout:20];#{steps.first}#{widen.join}.routes out tags bb;", connections, cache)
-        .filter_map { |element| candidate(element) }
+      query = "[out:json][timeout:20];#{steps.first}#{widen.join}.routes out tags bb;.searched out;"
+      searched, routes = elements(query, connections, cache).partition do |element|
+        element.is_a?(Hash) && element["type"] == "search"
+      end
+      tags = searched.first["tags"] if searched.one?
+      radius = Integer(tags["radius"], exception: false) if tags.is_a?(Hash) && tags["radius"].is_a?(String)
+      unless SEARCH_RADII_METERS.include?(radius)
+        raise SearchErrors::UpstreamError, "The hiking route provider returned an incomplete response."
+      end
+
+      { radius: radius, routes: routes.filter_map { |element| candidate(element) } }
     end
   end
 
-  # The candidates worth checking for transit, measured and joined where transit
-  # reaches them best when access is known; distance is in miles from the origin.
-  def self.trails(candidates, lat:, lon:, access: nil, connections: nil, cache: Rails.cache)
-    routes(pick(candidates, lat: lat, lon: lon, access: access), connections, cache).filter_map do |trail|
-      next unless trail.length.between?(MIN_LENGTH_MILES, MAX_LENGTH_MILES)
+  # Routes near the reachable stops farther than beyond meters from the origin,
+  # where trains, buses, and ferries go past the searched area. Each cell's
+  # routes are cached, and only uncached cells are queried.
+  def self.candidates_near(stops, lat:, lon:, beyond:, connections: nil, cache: Rails.cache)
+    cells = far_cells(stops, lat, lon, beyond)
+    keys = cells.to_h { |cell| [cell, "overpass:cell:v1:#{cell.join(':')}"] }
+    found = keys.empty? ? {} : cache.read_multi(*keys.values)
+    missing = cells.reject { |cell| found.key?(keys[cell]) }
+    if missing.any?
+      clauses = missing.map do |latitude, longitude|
+        %(relation(around:#{FAR_CELL_METERS},#{latitude},#{longitude})["type"="route"]["route"="hiking"];)
+      end
+      routes = elements("[out:json][timeout:20];(#{clauses.join});out tags bb;", connections, cache)
+        .filter_map { |element| candidate(element) }
+      missing.each do |cell|
+        found[keys[cell]] = routes.select { |route| distance_to_box(*cell, route[:bounds]) <= FAR_CELL_METERS }
+        cache.write(keys[cell], found[keys[cell]], expires_in: AREA_CACHE_TTL)
+      end
+    end
+    keys.values.flat_map { |key| found[key] }.uniq { |route| route[:id] }
+  end
+
+  # Cells [latitude, longitude] around the stops farther than beyond meters from
+  # the origin. Where there are too many, cells with stations come first, and
+  # each group is spread over travel times.
+  def self.far_cells(stops, lat, lon, beyond)
+    cells = stops.select { |stop| distance(lat, lon, stop[0], stop[1]) > beyond }.group_by do |stop|
+      stop.first(2).map { |value| ((value / FAR_CELL_DEGREES).round * FAR_CELL_DEGREES).round(2) }
+    end
+    return cells.keys if cells.size <= MAX_FAR_CELLS
+
+    stations, others = cells.sort_by { |_, grouped| grouped.map { |stop| stop[2] }.min }
+      .partition { |_, grouped| grouped.any? { |stop| stop[4] } }.map { |group| group.map(&:first) }
+    picked = spread(stations, MAX_FAR_CELLS)
+    picked + spread(others, MAX_FAR_CELLS - picked.size)
+  end
+
+  # Up to count items, evenly spaced through the list.
+  def self.spread(list, count)
+    return list.first([count, 0].max) if list.size <= count || count <= 1
+
+    (0...count).map { |index| list[(index * (list.size - 1).fdiv(count - 1)).round] }
+  end
+
+  # The routes with these ids, measured, leaving out those too short, too long,
+  # or mostly paved for a day hike, and joined where transit reaches them
+  # soonest when access is known; distance is in miles from the origin.
+  def self.trails_for(ids, lat:, lon:, access: nil, connections: nil, cache: Rails.cache)
+    routes(ids, connections, cache).filter_map do |trail|
+      next unless trail.length.between?(MIN_LENGTH_MILES, MAX_LENGTH_MILES) && trail.paved.to_f < MOSTLY_PAVED
 
       if access
         trail.latitude, trail.longitude = access.access_point(trail.path)
@@ -157,7 +224,7 @@ module OverpassService
   def self.routes(ids, connections, cache)
     return [] if ids.empty?
 
-    keys = ids.to_h { |id| [id, "overpass:route:v1:#{id}"] }
+    keys = ids.to_h { |id| [id, "overpass:route:v2:#{id}"] }
     found = cache.read_multi(*keys.values)
     missing = ids.reject { |id| found.key?(keys[id]) }
     if missing.any?
@@ -227,11 +294,13 @@ module OverpassService
 
     first_way = ways.first
     start = first_way["role"] == "backward" ? first_way["geometry"].last : first_way["geometry"].first
+    # Every way end meets another in a loop, while a line has two loose ends.
+    ends = ways.flat_map { |way| way["geometry"].values_at(0, -1) }.map { |point| [point["lat"], point["lon"]] }.tally
     {
       name: name(tags) || UNNAMED,
       summary: tags["description"].is_a?(String) ? tags["description"] : "A hiking route mapped by OpenStreetMap contributors.",
       latitude: start["lat"], longitude: start["lon"], length: meters / METERS_PER_MILE, osm_id: element["id"],
-      path: preview_path(ways), notable: notable?(tags),
+      path: preview_path(ways), notable: notable?(tags), loop: ends.values.all?(&:even?),
       paved: (ways.zip(lengths).sum { |way, length| paved.include?(way["ref"]) ? length : 0 } / meters).round(2)
     }
   end
@@ -343,6 +412,10 @@ module OverpassService
     geometry.is_a?(Array) && geometry.length >= 2 && geometry.all? do |point|
       point.is_a?(Hash) && SearchHttp.coordinates?(point["lat"], point["lon"])
     end
+  end
+
+  def self.distance_to_box(latitude, longitude, (south, west, north, east))
+    distance(latitude, longitude, latitude.clamp(south, north), longitude.clamp(west, east))
   end
 
   def self.distance(lat1, lon1, lat2, lon2)

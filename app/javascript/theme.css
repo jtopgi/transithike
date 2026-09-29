@@ -222,6 +222,61 @@ body {
   white-space: nowrap;
 }
 
+/* Bootstrap's display utilities would otherwise show hidden toolbars. */
+.results-toolbar[hidden] {
+  display: none !important;
+}
+
+.search-progress {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--th-forest);
+  font-weight: 600;
+}
+
+.trail-skeleton .trail-media,
+.skeleton-line {
+  background: linear-gradient(90deg, #e9eee7 25%, #f4f7f2 50%, #e9eee7 75%) 0 0 / 200% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton-line {
+  height: 0.9rem;
+  margin-bottom: 0.8rem;
+  border-radius: 0.4rem;
+}
+
+@keyframes skeleton-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.trail-return {
+  margin-bottom: 0.75rem;
+  font-size: 0.95rem;
+}
+
+.trail-trip {
+  margin-bottom: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.6rem;
+  background: var(--th-mist);
+}
+
+.trail-trip-line {
+  margin: 0;
+}
+
+.trail-trip-line + .trail-trip-line {
+  margin-top: 0.3rem;
+}
+
+.trail-leg {
+  white-space: nowrap;
+}
+
 .trail-summary {
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -239,5 +294,10 @@ body {
   .trail-card:hover {
     transition: none;
     transform: none;
+  }
+
+  .trail-skeleton .trail-media,
+  .skeleton-line {
+    animation: none;
   }
 }

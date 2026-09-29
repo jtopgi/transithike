@@ -1,16 +1,16 @@
-<% content_for :title, @result ? "Hikes near #{place_label(@result)}" : "Hiking routes" %>
+<% label = coordinates && @origin == SearchesController::CURRENT_LOCATION ? "your location" : @origin %>
+<% content_for :title, @error ? "Hiking routes" : "Hikes near #{label}" %>
 <section class="results-hero text-white">
   <div class="container py-4">
     <div class="row g-4 align-items-center">
       <div class="col-lg-6">
-        <% if @result %>
-          <h1 class="h2 fw-bold mb-1">Hikes near <%= place_label(@result) %></h1>
-          <p class="mb-0 results-subtitle">
-            Travel times for <%= departure_phrase(@result.departure_time) %>.
-            Not the place you meant? Try a more specific starting point.
-          </p>
-        <% else %>
+        <% if @error %>
           <h1 class="h2 fw-bold mb-0">Hiking routes</h1>
+        <% else %>
+          <h1 class="h2 fw-bold mb-1" data-heading>Hikes near <%= label %></h1>
+          <p class="mb-0 results-subtitle" data-departure>
+            Day trips by train, bus, and ferry, with a way back the same day.
+          </p>
         <% end %>
       </div>
       <div class="col-lg-6">
@@ -24,22 +24,24 @@
   </div>
 </section>
 
-<div class="container py-4">
+<% stream_url = search_stream_path({ origin: @origin, lat: coordinates&.first, lon: coordinates&.last }.compact) unless @error %>
+<%= tag.div class: "container py-4", data: { stream_url: stream_url } do %>
   <% if @error %>
     <div class="alert alert-danger" role="alert"><%= @error %></div>
-  <% elsif @trails.empty? %>
-    <div class="empty-state text-center py-5">
-      <div class="display-6 mb-3" aria-hidden="true">🧭</div>
-      <p class="lead mb-2" role="status">No hiking routes with transit directions were found for this search.</p>
-      <p class="text-body-secondary mb-0">Try a different starting point, such as a nearby town or a transit station.</p>
-    </div>
   <% else %>
+    <noscript><div class="alert alert-warning">TransitHike needs JavaScript to find hikes.</div></noscript>
+    <div class="alert alert-danger" role="alert" data-failure hidden></div>
+    <div class="search-progress mb-4" data-progress role="status" aria-live="polite">
+      <span class="spinner-border spinner-border-sm text-success" aria-hidden="true"></span>
+      <span data-progress-text>Finding hikes and the trains, buses, and ferries that reach them…</span>
+    </div>
     <div class="results-toolbar d-flex flex-wrap align-items-center gap-3 mb-4" data-results-toolbar hidden>
       <div class="d-flex align-items-center gap-2">
         <label for="sort" class="form-label small fw-semibold mb-0">Sort by</label>
         <select id="sort" class="form-select form-select-sm w-auto" data-sort>
           <option value="recommended">Recommended</option>
           <option value="duration">Fastest to reach</option>
+          <option value="stay">Most time there</option>
           <option value="distance">Closest</option>
           <option value="popular">Most popular</option>
           <option value="scenic">Most scenic</option>
@@ -57,29 +59,49 @@
         </select>
       </div>
       <div class="btn-group btn-group-sm" role="group" aria-label="Hike length" data-length-filter>
-        <% { "any" => "Any length", "short" => "Under 3 mi", "medium" => "3–6 mi", "long" => "Over 6 mi" }.each do |value, label| %>
+        <% { "any" => "Any length", "short" => "Under 3 mi", "medium" => "3–6 mi", "long" => "Over 6 mi" }.each do |value, text| %>
           <input type="radio" class="btn-check" name="length" id="length-<%= value %>" value="<%= value %>" <%= "checked" if value == "any" %>>
-          <label class="btn btn-outline-success" for="length-<%= value %>"><%= label %></label>
+          <label class="btn btn-outline-success" for="length-<%= value %>"><%= text %></label>
         <% end %>
       </div>
       <span class="small text-body-secondary ms-lg-auto" data-results-count aria-live="polite"></span>
     </div>
     <div class="row row-cols-1 row-cols-md-2 g-4" data-trails>
-      <%= render partial: "trail", collection: @trails %>
+      <% 2.times do %>
+        <div class="col" data-skeleton aria-hidden="true">
+          <div class="card trail-card trail-skeleton h-100 border-0 shadow-sm">
+            <div class="trail-media"></div>
+            <div class="card-body p-4">
+              <div class="skeleton-line w-75"></div>
+              <div class="skeleton-line w-50"></div>
+              <div class="skeleton-line w-100"></div>
+            </div>
+          </div>
+        </div>
+      <% end %>
     </div>
-    <p class="text-center text-body-secondary py-5" data-no-matches hidden>No routes match these filters. Try another length or a longer trip.</p>
+    <p class="text-center text-body-secondary py-5" data-no-matches hidden>No hikes match these filters. Try another length or a longer trip.</p>
+    <div class="empty-state text-center py-5" data-empty hidden>
+      <div class="display-6 mb-3" aria-hidden="true">🧭</div>
+      <p class="lead mb-2">No day hikes with a way back the same day were found for this search.</p>
+      <p class="text-body-secondary mb-0">Try a different starting point, such as a nearby town or a transit station.</p>
+    </div>
+    <div class="alert alert-warning mt-4 mb-0" role="status" data-notices hidden></div>
     <p class="small text-body-secondary mt-4 mb-0">
-      Recommended routes are unpaved and of day-hike length, pass waterfalls, summits, or viewpoints, are in well-known
-      parks, and are quicker to reach. Popularity comes from Wikipedia page views of the nearest park or natural area,
-      not of the route itself. Travel times are by public transit, or on foot when walking is faster. Lengths are
-      approximate, calculated from OpenStreetMap geometry. Directions lead to where transit reaches each route soonest,
-      not to a verified trailhead or public access point. Photos show a nearby park or natural area, not necessarily the route.
+      Trips go by bus, light rail, commuter rail, Amtrak, and ferry, from the timetables Transitous has for the region,
+      leaving in the morning. Every hike shown has a way back by 11 PM that leaves time to hike it. Recommended hikes
+      are unpaved and of day-hike length, pass waterfalls, summits, or viewpoints, are in well-known parks, and aren't
+      too far to go. Popularity comes from Wikipedia page views of the nearest park or natural area, not of the route
+      itself. Lengths are approximate, calculated from OpenStreetMap geometry. Directions lead to where transit reaches
+      each route soonest, not to a verified trailhead or public access point. Photos show a nearby park or natural area,
+      not necessarily the route.
     </p>
   <% end %>
   <p class="small text-body-secondary mt-2 mb-0">
     Each search looks for mapped hiking routes up to <%= OverpassService::SEARCH_RADII_METERS.last / 1000 %> km
     (<%= (OverpassService::SEARCH_RADII_METERS.last / OverpassService::METERS_PER_MILE).round %> miles) away, or less
-    where routes are plentiful, checks transit for up to <%= OverpassService::MAX_TRANSIT_ROUTES %> of them, and shows
-    the best <%= TrailsService::MAX_RESULTS %> under <%= OverpassService::MAX_LENGTH_MILES %> miles long.
+    where routes are plentiful, and near stations and stops farther out, then checks transit for up to
+    <%= OverpassService::MAX_TRANSIT_ROUTES %> hikes of <%= OverpassService::MIN_LENGTH_MILES.round %> to
+    <%= OverpassService::MAX_LENGTH_MILES %> miles that aren't mostly paved.
   </p>
-</div>
+<% end %>
