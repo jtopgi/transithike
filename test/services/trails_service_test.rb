@@ -69,6 +69,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
     end
 
     def candidates(**arguments)
+      @release&.wait(5) if @stuck.include?(:candidates)
       @arguments = arguments
       raise @trails if @trails.is_a?(Exception)
 
@@ -364,15 +365,15 @@ class TrailsServiceTest < ActiveSupport::TestCase
     release.set
   end
 
-  test "hiking-route lookups run on the Overpass pool, not the search's thread or the shared pool" do
-    pool = Class.new(Concurrent::FixedThreadPool) do
+  test "hiking-route lookups alongside other work run on the Overpass pool, and each batch's on the search's thread" do
+    pool = Class.new(Concurrent::CachedThreadPool) do
       attr_reader :posted
 
       def post(*arguments, &task)
         @posted = @posted.to_i + 1
         super
       end
-    end.new(2)
+    end.new
     original = Rails.configuration.x.overpass_pool
     Rails.configuration.x.overpass_pool = pool
     trails = [trail("a"), trail("b")]
@@ -381,23 +382,23 @@ class TrailsServiceTest < ActiveSupport::TestCase
       search(transit: FakeTransit.new(trips: { "a" => minutes(30), "b" => minutes(30) }), hiking: hiking)
     end
     assert_equal %w[a b], result.trails.map(&:name).sort
-    # The area's routes, two batches, and highlights for each unless lookups were waiting.
-    assert_operator pool.posted, :>=, 3
-    refute_includes hiking.threads, Thread.current
+    # The area's routes, and each batch's highlights.
+    assert_equal 3, pool.posted
+    assert_equal [Thread.current] * 2, hiking.threads
   ensure
     Rails.configuration.x.overpass_pool = original
     pool&.shutdown
   end
 
-  test "a search gives up on route lookups that take too long, but not on farther routes" do
+  test "a search gives up on the area's routes when they take too long, but not on farther routes" do
     release = Concurrent::Event.new
     transit = FakeTransit.new(trips: { "a" => minutes(30) }, stops: [[47.1, -122.1, 30, 1, true]])
-    error = assert_raises(SearchErrors::UpstreamError) do
+    error = assert_raises(SearchErrors::ProviderBusy) do
       stub_const(TrailsService, :OVERPASS_WAIT_SECONDS, 0.1) do
-        search(transit: transit, hiking: FakeHiking.new([trail("a")], release: release, stuck: [:trails_for]))
+        search(transit: transit, hiking: FakeHiking.new([trail("a")], release: release, stuck: [:candidates]))
       end
     end
-    assert_equal TrailsService::BUSY, error.message
+    assert_equal OverpassService::BUSY, error.message
     release.set
 
     slow = Concurrent::Event.new

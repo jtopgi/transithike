@@ -122,7 +122,8 @@ available under the ODbL. The public Overpass server is shared infrastructure:
 follow its [usage guidance](https://dev.overpass-api.de/overpass-doc/en/preface/commons.html).
 For significant traffic, arrange dedicated capacity and suitable caching rather
 than relying on this public instance. Each server process sends it at most two
-queries at a time, the number of slots it gives each client. When it is busy, searches use the public
+queries at a time, the number of slots it gives each client: other queries wait up
+to 30 seconds for a slot, and highlights are skipped when none is free. When it is busy, searches use the public
 [VK Maps mirror](https://wiki.openstreetmap.org/wiki/Overpass_API#Public_Overpass_API_instances)
 instead, and prefer it for five minutes. Provider calls have bounded timeouts and
 result limits. An area's routes are cached for **a day** for origins rounded to

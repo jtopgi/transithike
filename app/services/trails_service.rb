@@ -29,10 +29,8 @@ module TrailsService
   # them once every batch is checked. Slower lookups finish in the background
   # and are cached for later searches.
   HIGHLIGHT_WAIT_SECONDS = 5
-  # Hiking-route lookups run on the Overpass pool, and searches give up on one
-  # that hasn't finished after this long, queue included.
+  # Searches give up on the area's routes after this long, waiting for a query slot included.
   OVERPASS_WAIT_SECONDS = 90
-  BUSY = "The hiking route provider is busy. Please try again later.".freeze
 
   # origin is text to look up, or a Place chosen from suggestions or the device's
   # location. The block, if any, is called as the search goes: with :place and
@@ -94,17 +92,12 @@ module TrailsService
     def check_batch(ids)
       @checked.merge(ids)
       @on_found&.call(:checking, ids.size)
-      trails = TrailsService.finished(TrailsService.start(TrailsService.overpass_pool) do
-        @hiking.trails_for(ids, lat: @place.latitude, lon: @place.longitude, access: @access)
-      end).value!
+      trails = @hiking.trails_for(ids, lat: @place.latitude, lon: @place.longitude, access: @access)
       found = TrailsService.round_trips(@place, trails, @result, @transit, @budget)
       return if found.empty?
 
       found.each { |trail| trail.score = TrailsService.score(trail).round(2) }
-      # Highlights are skipped while route lookups wait, which matter more.
-      if TrailsService.overpass_pool.queue_length.zero?
-        @lookups << [found, TrailsService.start(TrailsService.overpass_pool) { @hiking.highlights(found) }]
-      end
+      @lookups << [found, TrailsService.start(TrailsService.overpass_pool) { @hiking.highlights(found) }]
       @result.trails.concat(found)
       @on_found&.call(:trails, found)
     rescue SearchErrors::UpstreamError => error
@@ -259,7 +252,7 @@ module TrailsService
   # The hiking-route lookup's future once it has finished, or raises when the provider is too busy.
   def self.finished(future)
     settle([future], timeout: OVERPASS_WAIT_SECONDS)
-    raise SearchErrors::UpstreamError, BUSY unless future.resolved?
+    raise SearchErrors::ProviderBusy, OverpassService::BUSY unless future.resolved?
 
     future
   end

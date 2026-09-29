@@ -39,6 +39,11 @@ module OverpassService
   # After an instance fails, searches start with the other one for a while.
   FAILOVER_KEY = "overpass:failover:v1"
   FAILOVER_TTL = 5.minutes
+  # Queries wait this long for one of the process's Overpass slots.
+  SLOT_WAIT_SECONDS = 30
+  # Highlights only refine a search: they are looked up when a slot is free, and briefly.
+  HIGHLIGHT_TIMEOUT_SECONDS = 15
+  BUSY = "The hiking route provider is busy. Please try again later.".freeze
   PREVIEW_POINTS = 150
   # Mapped features worth a detour, found within 150 m of a route.
   HIGHLIGHT_TAGS = { "waterfall" => %w[waterway waterfall], "peak" => %w[natural peak],
@@ -263,7 +268,8 @@ module OverpassService
     if missing.any?
       filters = HIGHLIGHT_TAGS.values.map { |key, value| %(node(around.ways:#{HIGHLIGHT_METERS})["#{key}"="#{value}"];) }
       query = "[out:json][timeout:20];relation(id:#{missing.map(&:osm_id).join(',')});way(r)->.ways;(#{filters.join});out;"
-      points = elements(query, connections, cache).filter_map { |element| highlight_point(element) }
+      connections ||= [SearchHttp.connection(urls(cache).first, timeout: HIGHLIGHT_TIMEOUT_SECONDS)]
+      points = elements(query, connections, cache, wait: 0).filter_map { |element| highlight_point(element) }
       missing.each do |trail|
         found[keys[trail.osm_id]] = highlights_near(trail.path, points)
         cache.write(keys[trail.osm_id], found[keys[trail.osm_id]], expires_in: ROUTE_CACHE_TTL)
@@ -369,14 +375,22 @@ module OverpassService
     [latitudes.min, longitudes.min, latitudes.max, longitudes.max]
   end
 
-  # The response's elements, from the preferred instance or else the other one.
-  def self.elements(query, connections, cache)
-    connections ||= urls(cache).map { |url| SearchHttp.connection(url, timeout: 25) }
-    connections.each_with_index do |connection, index|
-      return request(connection, query)
-    rescue SearchErrors::UpstreamError
-      cache.write(FAILOVER_KEY, !cache.read(FAILOVER_KEY), expires_in: FAILOVER_TTL) if index.zero?
-      raise if index == connections.size - 1
+  # The response's elements, from the preferred instance or else the other one,
+  # once one of the process's query slots is free, waiting at most wait seconds.
+  def self.elements(query, connections, cache, wait: SLOT_WAIT_SECONDS)
+    slots = Rails.configuration.x.overpass_slots
+    raise SearchErrors::ProviderBusy, BUSY unless slots.try_acquire(1, wait)
+
+    begin
+      connections ||= urls(cache).map { |url| SearchHttp.connection(url, timeout: 25) }
+      connections.each_with_index do |connection, index|
+        return request(connection, query)
+      rescue SearchErrors::UpstreamError
+        cache.write(FAILOVER_KEY, !cache.read(FAILOVER_KEY), expires_in: FAILOVER_TTL) if index.zero?
+        raise if index == connections.size - 1
+      end
+    ensure
+      slots.release
     end
   end
 
