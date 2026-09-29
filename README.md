@@ -315,7 +315,9 @@ from GitHub Actions:
   serves traffic, loads the site twice with its session cookie, and runs one
   real Saturday search from Grand Central Terminal; a provider outage there only
   produces a warning. Deployments and
-  the app URL appear under the repository's `production` environment.
+  the app URL appear under the repository's `production` environment. If GitHub
+  ever skips the run for a push to `master`, run the CI workflow on `master` from
+  the Actions tab ("Run workflow"), which tests and deploys it the same way.
 - Images are built by GitHub Actions because Azure free-credit subscriptions
   cannot use Container Registry build tasks.
 - A Linux B1 plan keeps one instance always on, so there are no cold starts.
