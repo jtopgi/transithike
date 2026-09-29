@@ -3,6 +3,8 @@ name: CI
 on:
   push:
   pull_request:
+  # Runs from the Actions tab, as when GitHub drops a push's event, deploy master too.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -110,7 +112,7 @@ jobs:
 
   deploy:
     needs: [test, security, image]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
