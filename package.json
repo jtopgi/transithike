@@ -6,11 +6,12 @@
   },
   "packageManager": "yarn@1.22.22",
   "scripts": {
-    "build": "esbuild app/javascript/application.js --bundle --sourcemap --outdir=app/assets/builds --public-path=/assets"
+    "build": "esbuild app/javascript/application.js --bundle --minify --sourcemap --outdir=app/assets/builds --public-path=/assets --external:*.png"
   },
   "dependencies": {
     "@popperjs/core": "^2.11.8",
-    "bootstrap": "^5.3.8"
+    "bootstrap": "^5.3.8",
+    "leaflet": "^1.9.4"
   },
   "version": "0.1.0",
   "devDependencies": {

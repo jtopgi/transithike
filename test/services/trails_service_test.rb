@@ -1,25 +1,42 @@
 require "test_helper"
 
 class TrailsServiceTest < ActiveSupport::TestCase
+  class FakePlaces
+    attr_reader :queries
+
+    def initialize(place = Place.new(name: "Seattle, Washington", latitude: 47, longitude: -122))
+      @place, @queries = place, []
+    end
+
+    def geocode(query)
+      @queries << query
+      @place
+    end
+  end
+
   class FakeTransit
-    attr_reader :calls, :arrival_times
+    attr_reader :departures, :planned
 
-    def initialize(durations, location: FakeTransit.location_in("America/Los_Angeles"))
-      @durations, @location, @calls, @arrival_times = durations, location, [], []
+    def initialize(trips: nil, area: { time_zone: "America/Los_Angeles", area: "Seattle, Washington" })
+      @trips, @area, @departures, @planned = trips, area, [], []
     end
 
-    def self.location_in(time_zone)
-      TransitousService::Location.new(latitude: 47, longitude: -122, name: "Seattle", time_zone: time_zone)
+    def area(latitude, longitude)
+      raise @area if @area.is_a?(Exception)
+
+      @area
     end
 
-    def geocode(origin)
-      @location
+    def trips(origin:, destinations:, departure_time:)
+      @departures << departure_time
+      raise @trips if @trips.is_a?(Exception)
+
+      destinations.map { |destination| @trips.fetch(destination.name) }
     end
 
-    def transit_duration(origin:, destination:, arrival_time:)
-      @calls << destination
-      @arrival_times << arrival_time
-      @durations.fetch(destination.name)
+    def trip(origin:, destination:, departure_time:)
+      @planned << destination.name
+      { duration: 1200, transfers: 0 }
     end
   end
 
@@ -32,80 +49,92 @@ class TrailsServiceTest < ActiveSupport::TestCase
 
     def get_trails(**arguments)
       @arguments = arguments
+      raise @trails if @trails.is_a?(Exception)
+
       @trails
     end
   end
 
-  # It is 05:00 PDT on September 22.
-  setup { travel_to Time.utc(2026, 9, 22, 12) }
+  # It is 10:02 PDT on September 22.
+  setup { travel_to Time.utc(2026, 9, 22, 17, 2) }
   teardown { travel_back }
 
   def trail(name)
-    OverpassService::Trail.new(name: name, latitude: 47.1, longitude: -122.1)
+    OverpassService::Trail.new(name: name, latitude: 47.1, longitude: -122.1, length: 2.0, distance: 3.0)
   end
 
-  def search(transit:, hiking: FakeHiking.new([]), arrival: [2026, 9, 23, 12, 30])
-    TrailsService.search(origin: "A & B / 東京", arrival: arrival, maximum_length: 3, transit: transit, hiking: hiking)
+  def search(origin: "Seattle", places: FakePlaces.new, transit: FakeTransit.new(trips: {}), hiking: FakeHiking.new([]))
+    TrailsService.search(origin: origin, places: places, transit: transit, hiking: hiking)
   end
 
-  test "sorts transit durations when every route is reachable without destructive selection nil" do
-    transit = FakeTransit.new({ "slow" => 900, "fast" => 100 })
-    hiking = FakeHiking.new([trail("slow"), trail("fast")])
-    result = search(transit: transit, hiking: hiking)
+  test "looks up a typed place and lists reachable routes by travel time" do
+    places = FakePlaces.new
+    transit = FakeTransit.new(trips: { "slow" => { duration: 3000, transfers: 1 }, "fast" => { duration: 1200, transfers: nil }, "far" => nil })
+    hiking = FakeHiking.new([trail("slow"), trail("far"), trail("fast")])
+    result = search(origin: "A & B / 東京", places: places, transit: transit, hiking: hiking)
+
+    assert_equal ["A & B / 東京"], places.queries
+    assert_equal({ lat: 47, lon: -122 }, hiking.arguments)
     assert_equal %w[fast slow], result.trails.map(&:name)
-    assert_equal "Seattle", result.location.name
-    assert_equal({ lat: 47, lon: -122, maximum_length: 3 }, hiking.arguments)
-    assert_equal "A & B / 東京", result.trails.first.origin
+    assert_equal [1200, nil], [result.trails.first.duration, result.trails.first.transfers]
+    assert_equal "Seattle, Washington", result.trails.first.origin
+    assert_equal "Seattle, Washington", result.area
   end
 
-  test "filters unreachable routes and returns empty arrays consistently" do
-    transit = FakeTransit.new({ "reachable" => 600, "unreachable" => nil })
-    assert_equal ["reachable"], search(transit: transit, hiking: FakeHiking.new([trail("unreachable"), trail("reachable")])).trails.map(&:name)
-    assert_empty search(transit: transit, hiking: FakeHiking.new([trail("unreachable")])).trails
-    assert_empty search(transit: transit, hiking: FakeHiking.new([])).trails
+  test "a chosen place needs no lookup and keeps its name" do
+    places = FakePlaces.new
+    chosen = Place.new(name: "Pike Place Market", latitude: 47.6, longitude: -122.3)
+    result = search(origin: chosen, places: places)
+    assert_empty places.queries
+    assert_same chosen, result.place
   end
 
-  test "missing geocode is actionable validation failure" do
-    transit = FakeTransit.new({}, location: nil)
+  test "an unknown place is actionable before any route search" do
     hiking = FakeHiking.new([])
-    assert_raises(SearchErrors::InvalidInput) { search(transit: transit, hiking: hiking) }
+    assert_raises(SearchErrors::InvalidInput) { search(places: FakePlaces.new(nil), hiking: hiking) }
     assert_nil hiking.arguments
-    assert_empty transit.calls
   end
 
-  test "never performs more than ten transit calls" do
-    trails = (1..30).map { |index| trail(index.to_s) }
-    transit = FakeTransit.new(trails.to_h { |item| [item.name, 600] })
-    assert_equal 10, search(transit: transit, hiking: FakeHiking.new(trails)).trails.length
-    assert_equal 10, transit.calls.size
-  end
-
-  test "reads the arrival time on the clock at the origin" do
-    transit = FakeTransit.new({ "loop" => 600 })
+  test "departs now in the origin's time zone during the day" do
+    transit = FakeTransit.new(trips: { "loop" => { duration: 600, transfers: 0 } })
     result = search(transit: transit, hiking: FakeHiking.new([trail("loop")]))
-    assert_equal Time.utc(2026, 9, 23, 19, 30), result.arrival_time
-    assert_equal "PDT", result.arrival_time.zone
-    assert_equal [Time.utc(2026, 9, 23, 19, 30)], transit.arrival_times
+    assert_equal Time.utc(2026, 9, 22, 17, 15), result.departure_time
+    assert_equal "PDT", result.departure_time.zone
+    assert_equal [result.departure_time], transit.departures
   end
 
-  test "falls back to UTC when the origin's time zone is unknown" do
-    [nil, "Not/AZone"].each do |time_zone|
-      result = search(transit: FakeTransit.new({}, location: FakeTransit.location_in(time_zone)))
-      assert_equal Time.utc(2026, 9, 23, 12, 30), result.arrival_time
-      assert_equal "UTC", result.arrival_time.zone
-    end
+  test "departure times plan for the next morning after mid-afternoon" do
+    zone = "America/Los_Angeles"
+    assert_equal Time.utc(2026, 9, 22, 21, 45), TrailsService.departure_time(zone, now: Time.utc(2026, 9, 22, 21, 31))
+    assert_equal Time.utc(2026, 9, 23, 15), TrailsService.departure_time(zone, now: Time.utc(2026, 9, 22, 22, 0))
+    assert_equal Time.utc(2026, 9, 23, 15), TrailsService.departure_time(zone, now: Time.utc(2026, 9, 23, 11, 0))
+    assert_equal Time.utc(2026, 9, 22, 17, 0), TrailsService.departure_time(zone, now: Time.utc(2026, 9, 22, 17, 0, 30))
   end
 
-  test "accepts arrivals from now until seven days ahead" do
-    transit = FakeTransit.new({})
-    [[2026, 9, 22, 5, 1], [2026, 9, 29, 5, 0]].each do |arrival|
-      assert_empty search(transit: transit, arrival: arrival).trails
+  test "an unknown time zone falls back to UTC" do
+    [nil, "Not/AZone"].each do |zone|
+      assert_equal "UTC", TrailsService.departure_time(zone).zone
     end
-    [[2026, 9, 22, 5, 0], [2026, 9, 29, 5, 1]].each do |arrival|
-      hiking = FakeHiking.new([])
-      error = assert_raises(SearchErrors::InvalidInput) { search(transit: transit, hiking: hiking, arrival: arrival) }
-      assert_includes error.message, "(PDT)"
-      assert_nil hiking.arguments
+    result = search(transit: FakeTransit.new(trips: {}, area: { time_zone: nil, area: nil }))
+    assert_equal "UTC", result.departure_time.zone
+  end
+
+  test "the search goes ahead when the area lookup fails" do
+    result = search(transit: FakeTransit.new(trips: {}, area: SearchErrors::UpstreamError.new("down")))
+    assert_equal "UTC", result.departure_time.zone
+    assert_nil result.area
+  end
+
+  test "falls back to planning each route when the one-request API fails" do
+    transit = FakeTransit.new(trips: SearchErrors::UpstreamError.new("changed"))
+    result = search(transit: transit, hiking: FakeHiking.new([trail("a"), trail("b")]))
+    assert_equal %w[a b], transit.planned
+    assert_equal [1200, 1200], result.trails.map(&:duration)
+  end
+
+  test "route provider failures fail the search" do
+    assert_raises(SearchErrors::UpstreamError) do
+      search(hiking: FakeHiking.new(SearchErrors::UpstreamError.new("Overpass is down")))
     end
   end
 end

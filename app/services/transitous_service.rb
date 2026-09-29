@@ -1,82 +1,113 @@
+require "digest"
 require "time"
 
-# Place search and public-transit routing from Transitous (https://transitous.org),
-# a free, community-run MOTIS instance. Its usage policy requires an identifying
+# Public-transit routing from Transitous (https://transitous.org), a free,
+# community-run MOTIS instance. Its usage policy requires an identifying
 # User-Agent (see SearchHttp), attribution, open-source non-commercial use, and
 # contacting the maintainers before sending heavier routing traffic.
 module TransitousService
-  GEOCODE_URL = "https://api.transitous.org/api/v1/geocode"
+  ONE_TO_MANY_URL = "https://api.transitous.org/api/experimental/one-to-many-intermodal"
   PLAN_URL = "https://api.transitous.org/api/v6/plan"
+  REVERSE_GEOCODE_URL = "https://api.transitous.org/api/v1/reverse-geocode"
   SOURCES_URL = "https://transitous.org/sources/"
   # Route starts are often farther than the default 15-minute walk from a stop.
   MAX_POST_TRANSIT_SECONDS = 30 * 60
-  GEOCODE_CACHE_TTL = 1.day
-  PLAN_CACHE_TTL = 15.minutes
+  MAX_TRAVEL_MINUTES = 4 * 60
+  TRIP_CACHE_TTL = 15.minutes
+  AREA_CACHE_TTL = 30.days
   TIME_ZONE_FORMAT = %r{\A[A-Za-z]+(?:/[A-Za-z0-9_+-]+)*\z}
-  Location = Struct.new(:latitude, :longitude, :name, :time_zone, keyword_init: true)
+  INVALID_RESPONSE = "The transit provider returned an invalid response."
 
-  def self.geocode(origin, connection: nil, cache: Rails.cache)
-    # Cache plain attributes rather than app classes, which reload in development.
-    attributes = cache.fetch("transitous:geocode:v2:#{origin.downcase.squish}", expires_in: GEOCODE_CACHE_TTL) do
-      connection ||= SearchHttp.connection(GEOCODE_URL)
+  # The time zone and a readable area for coordinates, e.g.
+  # { time_zone: "America/Los_Angeles", area: "Seattle, Washington, United States" }.
+  def self.area(latitude, longitude, connection: nil, cache: Rails.cache)
+    cache.fetch("transitous:area:v1:#{latitude.round(2)}:#{longitude.round(2)}", expires_in: AREA_CACHE_TTL) do
+      connection ||= SearchHttp.connection(REVERSE_GEOCODE_URL)
       matches = SearchHttp.json(Array) do
-        connection.get { |request| request.params = { text: origin, numResults: 1, language: "en" } }
+        connection.get { |request| request.params = { place: format("%.5f,%.5f", latitude, longitude) } }
       end
-      location(matches.first).to_h unless matches.empty?
+      match = matches.find { |candidate| candidate.is_a?(Hash) } || {}
+      zone = match["tz"]
+      { time_zone: zone.is_a?(String) && zone.match?(TIME_ZONE_FORMAT) ? zone : nil, area: area_label(match["areas"]) }
     end
-    Location.new(**attributes) if attributes
   end
 
-  def self.transit_duration(origin:, destination:, arrival_time:, connection: nil, cache: Rails.cache)
+  # The fastest trip to each destination, in one request: { duration: seconds,
+  # transfers: count, or nil for walking the whole way }, or nil when unreachable.
+  def self.trips(origin:, destinations:, departure_time:, connection: nil, cache: Rails.cache)
+    return [] if destinations.empty?
+
     params = {
-      fromPlace: place(origin), toPlace: place(destination), time: arrival_time.utc.iso8601,
-      arriveBy: true, timetableView: false, detailedLegs: false,
+      one: place(origin, ";"), many: destinations.map { |destination| place(destination, ";") }.join(","),
+      time: departure_time.utc.iso8601, maxTravelTime: MAX_TRAVEL_MINUTES, maxPostTransitTime: MAX_POST_TRANSIT_SECONDS
+    }
+    cache.fetch("transitous:trips:v1:#{Digest::SHA256.hexdigest(params.to_json)}", expires_in: TRIP_CACHE_TTL) do
+      connection ||= SearchHttp.connection(ONE_TO_MANY_URL, timeout: 20)
+      data = SearchHttp.json { connection.get { |request| request.params = params } }
+      transit, walking = data.values_at("transit_durations", "street_durations")
+      unless transit.is_a?(Array) && transit.size == destinations.size &&
+          transit.all? { |options| options.is_a?(Array) && options.all? { |option| valid_trip?(option, "transfers") } }
+        raise SearchErrors::UpstreamError, INVALID_RESPONSE
+      end
+
+      walking = [] unless walking.is_a?(Array)
+      transit.each_with_index.map do |options, index|
+        walk = walking[index] if walking[index].is_a?(Hash) && valid_trip?(walking[index])
+        fastest([*options.map { |option| travel(option["duration"], option["transfers"]) }, (travel(walk["duration"]) if walk)])
+      end
+    end
+  end
+
+  # The fastest trip to one destination; slower, but uses the stable planning API.
+  def self.trip(origin:, destination:, departure_time:, connection: nil, cache: Rails.cache)
+    params = {
+      fromPlace: place(origin), toPlace: place(destination), time: departure_time.utc.iso8601,
+      arriveBy: false, timetableView: false, detailedLegs: false,
       maxPostTransitTime: MAX_POST_TRANSIT_SECONDS
     }
-    cache_key = "transitous:plan:v1:#{params.values_at(:fromPlace, :toPlace, :time).join(':')}"
-    cache.fetch(cache_key, expires_in: PLAN_CACHE_TTL) do
+    cache_key = "transitous:plan:v3:#{params.values_at(:fromPlace, :toPlace, :time).join(':')}"
+    cache.fetch(cache_key, expires_in: TRIP_CACHE_TTL) do
       connection ||= SearchHttp.connection(PLAN_URL, timeout: 10)
       data = SearchHttp.json { connection.get { |request| request.params = params } }
-      journeys = data.values_at("itineraries", "direct")
-      unless journeys.all? { |list| list.is_a?(Array) && list.all? { |journey| valid_journey?(journey) } }
-        raise SearchErrors::UpstreamError, "The transit provider returned an invalid response."
+      itineraries, walks = data.values_at("itineraries", "direct")
+      unless [itineraries, walks].all? { |list| list.is_a?(Array) && list.all? { |journey| valid_trip?(journey) } } &&
+          itineraries.all? { |itinerary| itinerary["transfers"].is_a?(Integer) }
+        raise SearchErrors::UpstreamError, INVALID_RESPONSE
       end
 
       # Direct walks count too: transit slower than the fastest walk is omitted.
-      journeys.flatten(1).map { |journey| journey["duration"] }.min
+      fastest(itineraries.map { |itinerary| travel(itinerary["duration"], itinerary["transfers"]) } +
+        walks.map { |walk| travel(walk["duration"]) })
     end
   end
 
-  def self.location(match)
-    unless match.is_a?(Hash) && SearchHttp.coordinates?(match["lat"], match["lon"])
-      raise SearchErrors::UpstreamError, "The location provider returned invalid coordinates."
-    end
-
-    Location.new(
-      latitude: match["lat"], longitude: match["lon"], name: label(match),
-      # IANA name such as "America/Los_Angeles", used to read arrival times as local time.
-      time_zone: match["tz"].is_a?(String) && match["tz"].match?(TIME_ZONE_FORMAT) ? match["tz"] : nil
-    )
+  # For example "Seattle, Washington, United States", from the most local area up.
+  def self.area_label(areas)
+    names = Array(areas).select { |area| area.is_a?(Hash) && area["name"].is_a?(String) }
+    local = names.find { |area| area["default"] == true }
+    parts = [local, *[4, 2].map { |level| names.find { |area| area["adminLevel"] == level } }]
+    parts.compact.map { |area| area["name"].strip }.reject(&:empty?).uniq.join(", ").presence
   end
 
-  # For example "Pike Place Fish Market, Seattle, Washington, United States".
-  def self.label(match)
-    areas = Array(match["areas"]).select { |area| area.is_a?(Hash) && area["name"].is_a?(String) }
-    names = [match["name"], areas.find { |area| area["default"] == true }&.fetch("name")] +
-      [4, 2].map { |level| areas.find { |area| area["adminLevel"] == level }&.fetch("name") }
-    names.grep(String).map(&:strip).reject(&:empty?).uniq.join(", ").presence
-  end
-
-  def self.place(location)
+  def self.place(location, separator = ",")
     unless SearchHttp.coordinates?(location.latitude, location.longitude)
       raise SearchErrors::InvalidInput, "The route does not have valid coordinates."
     end
 
-    format("%.7f,%.7f", location.latitude, location.longitude)
+    format("%.7f#{separator}%.7f", location.latitude, location.longitude)
   end
 
-  def self.valid_journey?(journey)
-    duration = journey.is_a?(Hash) ? journey["duration"] : nil
-    duration.is_a?(Numeric) && duration.finite? && duration >= 0
+  def self.travel(duration, transfers = nil)
+    { duration: duration, transfers: transfers }
+  end
+
+  def self.fastest(trips)
+    trips.compact.min_by { |candidate| candidate[:duration] }
+  end
+
+  def self.valid_trip?(value, transfers_key = nil)
+    duration = value.is_a?(Hash) ? value["duration"] : nil
+    duration.is_a?(Numeric) && duration.finite? && duration >= 0 &&
+      (transfers_key.nil? || (value[transfers_key].is_a?(Integer) && !value[transfers_key].negative?))
   end
 end

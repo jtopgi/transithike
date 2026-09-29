@@ -1,15 +1,26 @@
-<% content_for :title, @location&.name ? "Hikes near #{@location.name}" : "Hiking routes" %>
+<% content_for :title, @result ? "Hikes near #{place_label(@result)}" : "Hiking routes" %>
 <section class="results-hero text-white">
   <div class="container py-4">
-    <%= link_to "← Change search", root_path(@search), class: "btn btn-sm btn-outline-light mb-3" %>
-    <h1 class="h2 fw-bold mb-1">Hiking routes</h1>
-    <% if @location&.name %>
-      <p class="mb-0">
-        Showing routes near <strong><%= @location.name %></strong>, arriving by
-        <strong><%= @arrival_time.strftime("%a, %b %-d at %-I:%M %p %Z") %></strong>.
-        Not the place you meant? Try a more specific starting point.
-      </p>
-    <% end %>
+    <div class="row g-4 align-items-center">
+      <div class="col-lg-6">
+        <% if @result %>
+          <h1 class="h2 fw-bold mb-1">Hikes near <%= place_label(@result) %></h1>
+          <p class="mb-0 results-subtitle">
+            Travel times for <%= departure_phrase(@result.departure_time) %>.
+            Not the place you meant? Try a more specific starting point.
+          </p>
+        <% else %>
+          <h1 class="h2 fw-bold mb-0">Hiking routes</h1>
+        <% end %>
+      </div>
+      <div class="col-lg-6">
+        <div class="card search-card border-0 shadow">
+          <div class="card-body p-3">
+            <%= render "search_box", origin: @origin %>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -20,20 +31,38 @@
     <div class="empty-state text-center py-5">
       <div class="display-6 mb-3" aria-hidden="true">🧭</div>
       <p class="lead mb-2" role="status">No hiking routes with transit directions were found for this search.</p>
-      <p class="text-body-secondary mb-0">Try a different starting point, a daytime arrival, or a longer hike.</p>
+      <p class="text-body-secondary mb-0">Try a different starting point, such as a nearby town or a transit station.</p>
     </div>
   <% else %>
-    <p class="text-body-secondary">
-      <%= pluralize(@trails.size, "route") %>, sorted by travel time on public transit (or on foot, when walking is
-      faster). Lengths are approximate, calculated from OpenStreetMap geometry. Directions lead to the first mapped
-      point of each route, not a verified trailhead or public access point.
-    </p>
-    <div class="row row-cols-1 row-cols-md-2 g-4">
+    <div class="results-toolbar d-flex flex-wrap align-items-center gap-3 mb-4" data-results-toolbar hidden>
+      <div class="d-flex align-items-center gap-2">
+        <label for="sort" class="form-label small fw-semibold mb-0">Sort by</label>
+        <select id="sort" class="form-select form-select-sm w-auto" data-sort>
+          <option value="duration">Fastest to reach</option>
+          <option value="distance">Closest</option>
+          <option value="length-asc">Shortest hike</option>
+          <option value="length-desc">Longest hike</option>
+        </select>
+      </div>
+      <div class="btn-group btn-group-sm" role="group" aria-label="Hike length" data-length-filter>
+        <% { "any" => "Any length", "short" => "Under 3 mi", "medium" => "3–6 mi", "long" => "Over 6 mi" }.each do |value, label| %>
+          <input type="radio" class="btn-check" name="length" id="length-<%= value %>" value="<%= value %>" <%= "checked" if value == "any" %>>
+          <label class="btn btn-outline-success" for="length-<%= value %>"><%= label %></label>
+        <% end %>
+      </div>
+      <span class="small text-body-secondary ms-lg-auto" data-results-count aria-live="polite"></span>
+    </div>
+    <div class="row row-cols-1 row-cols-md-2 g-4" data-trails>
       <%= render partial: "trail", collection: @trails %>
     </div>
+    <p class="text-center text-body-secondary py-5" data-no-matches hidden>No routes of that length. Try another length.</p>
+    <p class="small text-body-secondary mt-4 mb-0">
+      Routes are sorted by travel time on public transit, or on foot when walking is faster. Lengths are approximate,
+      calculated from OpenStreetMap geometry. Directions lead to the first mapped point of each route,
+      not a verified trailhead or public access point. Photos show a nearby park or natural area, not necessarily the route.
+    </p>
   <% end %>
-  <p class="small text-body-secondary mt-4 mb-0">
-    Each search covers up to 100 mapped hiking routes within 25 km and checks transit for the 10 nearest eligible
-    routes. Photos and elevation data are not available.
+  <p class="small text-body-secondary mt-2 mb-0">
+    Each search checks transit for the <%= OverpassService::MAX_TRANSIT_ROUTES %> nearest mapped hiking routes within 25 km that are under <%= OverpassService::MAX_LENGTH_MILES %> miles long.
   </p>
 </div>

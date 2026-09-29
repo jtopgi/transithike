@@ -1,3 +1,5 @@
 import "bootstrap/dist/css/bootstrap.min.css"
+import "leaflet/dist/leaflet.css"
 import "./theme.css"
-import "./search_form"
+import "./place_search"
+import "./results"

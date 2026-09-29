@@ -1,0 +1,24 @@
+<%# locals: (origin: nil) %>
+<%= form_with url: search_path, method: :get, class: "place-search",
+      data: { place_search: "", current_location: SearchesController::CURRENT_LOCATION } do |f| %>
+  <%= f.label :origin, "Starting point", class: "form-label fw-semibold" %>
+  <div class="place-search-field">
+    <%= f.text_field :origin, value: origin, class: "form-control form-control-lg", required: true, maxlength: 200,
+          autocomplete: "off", spellcheck: false, placeholder: "City, neighborhood, station, or address",
+          role: "combobox", aria: { autocomplete: "list", expanded: false, controls: "origin-suggestions" } %>
+    <ul id="origin-suggestions" class="place-suggestions list-unstyled" role="listbox" aria-label="Suggested places" hidden></ul>
+  </div>
+  <%# Filled in when a suggestion or the device's location is chosen. %>
+  <%= hidden_field_tag :lat, coordinates&.first, id: nil, disabled: coordinates.nil? %>
+  <%= hidden_field_tag :lon, coordinates&.last, id: nil, disabled: coordinates.nil? %>
+  <div class="d-flex flex-wrap gap-2 mt-3">
+    <button type="submit" class="btn btn-success btn-lg flex-grow-1" data-search-submit>
+      <span class="spinner-border spinner-border-sm me-2 d-none" aria-hidden="true"></span>
+      <span data-search-label>Find hikes</span>
+    </button>
+    <button type="button" class="btn btn-outline-secondary btn-lg" data-use-location hidden>
+      <span aria-hidden="true">📍</span> Use my location
+    </button>
+  </div>
+  <p class="form-text mt-2 mb-0" data-search-status aria-live="polite"></p>
+<% end %>

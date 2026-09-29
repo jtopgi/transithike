@@ -1,27 +1,22 @@
 class SearchesController < ApplicationController
-  # The value of an <input type="datetime-local">, e.g. "2026-10-03T10:00".
-  ARRIVAL_FORMAT = /\A(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::\d{2}(?:\.\d{1,3})?)?\z/
+  # The origin text the page sends with the device's coordinates.
+  CURRENT_LOCATION = "Current location"
+
+  rate_limit to: 20, within: 1.minute, only: :show, with: :too_many_searches
 
   def new
-    @search = search_params
+    @origin = params[:origin] if params[:origin].is_a?(String)
   end
 
   def show
-    @search = search_params
     @trails = []
-    origin = params[:origin]
-    unless origin.is_a?(String) && origin.strip.present? && origin.length <= 200
-      raise SearchErrors::InvalidInput, "Enter an origin of at most 200 characters."
-    end
-    maximum_length = params[:maximum_length]
-    unless maximum_length.is_a?(String) && maximum_length.match?(/\A(?:[1-9]|[12]\d|30)\z/)
-      raise SearchErrors::InvalidInput, "Choose a maximum length between 1 and 30 miles."
+    @origin = params[:origin] if params[:origin].is_a?(String)
+    unless @origin.present? && @origin.strip.present? && @origin.length <= 200
+      raise SearchErrors::InvalidInput, "Enter a starting point of at most 200 characters."
     end
 
-    result = TrailsService.search(
-      origin: origin.strip, arrival: arrival, maximum_length: maximum_length.to_i
-    )
-    @location, @arrival_time, @trails = result.location, result.arrival_time, result.trails
+    @result = TrailsService.search(origin: requested_origin(@origin.strip))
+    @trails = @result.trails
   rescue SearchErrors::InvalidInput => error
     @error = error.message
     render :show, status: :unprocessable_content
@@ -32,19 +27,23 @@ class SearchesController < ApplicationController
 
   private
 
-  # Wall-clock parts; TrailsService reads them in the origin's time zone.
-  def arrival
-    value = params[:arrival_time]
-    parts = value.is_a?(String) ? ARRIVAL_FORMAT.match(value)&.captures&.map(&:to_i) : nil
-    unless parts && Date.valid_date?(*parts.first(3)) && parts[3].between?(0, 23) && parts[4].between?(0, 59)
-      raise SearchErrors::InvalidInput, "Choose a valid arrival date and time."
-    end
+  # Suggestions and the device's location send coordinates, so no lookup is needed.
+  def requested_origin(text)
+    latitude, longitude = coordinates
+    return text unless latitude
 
-    parts
+    Place.new(name: (text unless text == CURRENT_LOCATION), latitude: latitude, longitude: longitude)
   end
 
-  # Scalar values used to refill the search form.
-  def search_params
-    params.permit(:origin, :arrival_time, :maximum_length).to_h.symbolize_keys
+  def coordinates
+    values = [params[:lat], params[:lon]].map { |value| Float(value, exception: false) if value.is_a?(String) }
+    values if SearchHttp.coordinates?(*values)
+  end
+  helper_method :coordinates
+
+  def too_many_searches
+    @trails = []
+    @error = "Too many searches in a short time. Please wait a minute and try again."
+    render :show, status: :too_many_requests
   end
 end

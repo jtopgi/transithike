@@ -18,8 +18,14 @@
       <div class="container">
         <%= link_to root_path, class: "navbar-brand fw-bold d-flex align-items-center gap-2" do %>
           <span class="brand-mark" aria-hidden="true">🥾</span> TransitHike
+          <span class="badge rounded-pill text-bg-light text-success fw-semibold">Beta</span>
         <% end %>
-        <%= link_to "GitHub", "https://github.com/jtopgi/transithike", class: "nav-link link-light link-opacity-75 link-opacity-100-hover small" %>
+        <div class="d-flex gap-3">
+          <%= link_to "Send feedback", "https://github.com/jtopgi/transithike/issues/new?labels=feedback&title=Feedback%3A+",
+                class: "nav-link link-light link-opacity-75 link-opacity-100-hover small" %>
+          <%= link_to "GitHub", "https://github.com/jtopgi/transithike",
+                class: "nav-link link-light link-opacity-75 link-opacity-100-hover small d-none d-sm-block" %>
+        </div>
       </div>
     </nav>
 
@@ -30,9 +36,11 @@
     <footer class="site-footer py-4 mt-5">
       <div class="container small">
         <p class="mb-1">
-          Place search and transit travel times by <%= link_to "Transitous", "https://transitous.org" %>
-          (<%= link_to "data sources", TransitousService::SOURCES_URL %>).
-          Hiking routes © <%= link_to "OpenStreetMap contributors", "https://www.openstreetmap.org/copyright" %>.
+          Transit travel times by <%= link_to "Transitous", "https://transitous.org" %>
+          (<%= link_to "data sources", TransitousService::SOURCES_URL %>). Place search by
+          <%= link_to "Photon", "https://photon.komoot.io" %>. Hiking routes and maps ©
+          <%= link_to "OpenStreetMap contributors", "https://www.openstreetmap.org/copyright" %>. Photos from
+          <%= link_to "Wikipedia", "https://www.wikipedia.org" %>, credited on each photo.
         </p>
         <p class="mb-0">
           Routes start at their first mapped point, which may not be an official trailhead, so check the route and

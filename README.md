@@ -3,8 +3,10 @@
 [![CI](https://github.com/jtopgi/transithike/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/jtopgi/transithike/actions/workflows/ci.yml)
 
 Find nearby hiking routes reachable by public transit, ordered by estimated
-travel time. The application is Rails-rendered: a single search form and a page
-of route cards styled with Bootstrap.
+travel time. The application is Rails-rendered with Bootstrap: a starting-point
+box that suggests places as you type (or uses the device's location), and a
+results page of route cards with map previews and nearby photos that can be
+sorted by travel time, distance, or length and filtered by length.
 
 ## Requirements
 
@@ -12,8 +14,9 @@ of route cards styled with Bootstrap.
 - Node.js **22 LTS**, Yarn **1.22.22**, and PostgreSQL **16** or newer.
 - Chrome/Chromium for the browser test. Selenium manages the driver.
 - Internet access for searches. No API keys or paid accounts are needed: place
-  search and transit routing use [Transitous](https://transitous.org) and route
-  data comes from OpenStreetMap.
+  suggestions come from [Photon](https://photon.komoot.io), transit routing from
+  [Transitous](https://transitous.org), routes and map tiles from OpenStreetMap,
+  and photos from Wikipedia.
 
 The application uses Rails 8.1, Puma 8, Propshaft, esbuild, and Bootstrap 5.
 Webpacker, jQuery, Spring, and the obsolete Google Maps Ruby wrapper are removed.
@@ -49,20 +52,23 @@ Current Hiking Project availability could not be confirmed. Live probes of both
 trail providers were blocked by DNS restrictions in the modernization environment;
 test Overpass connectivity from your deployment before launching.
 
-- Searches cover routes intersecting a **25 km** radius around the geocoded origin.
-- Up to **100** relations are read; the nearest **10** matching route starts are
-  checked for transit access. Results are not an exhaustive trail inventory.
+- Searches cover routes intersecting a **25 km** radius around the origin.
+- Up to **100** relations are read; routes longer than **30 miles** (multi-day
+  trails) are left out, and the nearest **15** route starts are checked for
+  transit access. Results are not an exhaustive trail inventory.
 - Lengths are approximate, calculated from deduplicated mapped way geometry.
   Nested or incomplete routes are skipped. A mapped route start is not necessarily
   an official or accessible trailhead: check the route and local conditions.
-- The **1–30 mile** filter applies to the hiking route, not the transit journey.
-- Only routes reachable by public transit, or by a direct walk of up to 30
-  minutes, are displayed, sorted by travel time. Journeys may include up to
-  15 minutes' walk to the first stop and 30 minutes from the last stop.
-  Arrival is local time at the origin, using the time zone Transitous reports
-  for the matched place (UTC when it reports none), and must be in the future
-  and within **7 days**. The form suggests an hour from now on the visitor's clock.
-- Missing photos and elevation are omitted rather than fabricated.
+- Only routes reachable by public transit (within 4 hours), or on foot, are
+  displayed, sorted by travel time; the page can re-sort them and filter by length
+  without another search. Journeys may include up to 15 minutes' walk to the
+  first stop and 30 minutes from the last stop.
+- There is no time to choose: trips leave now (rounded to the next quarter hour)
+  between 5 AM and 3 PM at the origin, and otherwise at 8 AM the next morning,
+  using the time zone Transitous reports for the origin (UTC when unknown).
+- Photos show the lead image of the nearest Wikipedia article about a park or
+  natural area within 2 km of a route start, which is not necessarily the route.
+  Elevation is not shown.
 - Provider failures produce a friendly error, not misleading empty results.
 
 Route data is © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright),
@@ -70,26 +76,36 @@ available under the ODbL. The public Overpass server is shared infrastructure:
 follow its [usage guidance](https://dev.overpass-api.de/overpass-doc/en/preface/commons.html).
 For significant traffic, arrange dedicated capacity and suitable caching rather
 than relying on this public instance. Provider calls have bounded timeouts and
-result limits, but searches involve multiple HTTP requests. Validated OSM responses
-are cached by coordinates for **15 minutes** using Rails' cache; production uses
-a bounded, process-local memory store. Processes do not share that cache.
-Failures are never cached.
+result limits. Validated routes are cached for **6 hours** for origins rounded to
+about 1 km, so nearby searches share them; production uses a bounded,
+process-local memory store. Failures are never cached.
 
-Place search and transit travel times come from [Transitous](https://transitous.org),
-a free, community-run [MOTIS](https://github.com/motis-project/motis) service
-built on open timetable feeds and OpenStreetMap. It needs no API key, but its
+Transit travel times come from [Transitous](https://transitous.org), a free,
+community-run [MOTIS](https://github.com/motis-project/motis) service built on
+open timetable feeds and OpenStreetMap. It needs no API key, but its
 [usage policy](https://transitous.org/api/) applies: the code must stay open
-source (this repository is MIT-licensed), use must be non-commercial, results
-link to its [data sources](https://transitous.org/sources/), and requests identify
-the app with `SearchHttp::USER_AGENT` (change it if you fork). Contact the
-maintainers in their [Matrix room](https://matrix.to/#/%23transitous:matrix.spline.de)
-before sending substantial routing traffic. Each search makes one place search
-and up to ten routing requests; place results are cached for a day and routing
-results for 15 minutes. Transit coverage depends on the feeds Transitous has for
-a region. The results page names the matched origin so users can refine
-ambiguous searches. The Directions link opens Google Maps' public directions
-page, which needs no API key. Provider outages cannot be validated by offline
-tests; perform a real search before launching.
+source (this repository is MIT-licensed), use must be non-commercial, pages link
+to its [data sources](https://transitous.org/sources/), and requests identify the
+app with `SearchHttp::USER_AGENT` (change it if you fork). Contact the maintainers
+in their [Matrix room](https://matrix.to/#/%23transitous:matrix.spline.de) before
+sending substantial routing traffic. Each search asks for every route's trip in
+one request to the experimental one-to-many API, cached for 15 minutes, and falls
+back to planning routes one at a time if that API fails. Transitous serializes
+concurrent requests from one client, so requests are never sent in parallel. It
+also supplies each origin's time zone and area name, cached for 30 days. Transit
+coverage depends on the feeds Transitous has for a region.
+
+Place suggestions and typed searches use [Photon](https://photon.komoot.io),
+whose public instance asks for fair use: the page waits for three characters
+and a pause in typing, suggestions are cached for a day, and they favor places
+near the visitor's time zone without asking for their location. Map previews
+load [OpenStreetMap tiles](https://operations.osmfoundation.org/policies/tiles/)
+only as cards scroll into view, and photos come from the
+[Wikipedia API](https://www.mediawiki.org/wiki/API:Etiquette) with each
+author and license credited, cached for a week. Suggestions, photos, and
+searches are rate limited per visitor. The Directions link opens Google Maps'
+public directions page, which needs no API key. Provider outages cannot be
+validated by offline tests; perform a real search before launching.
 
 ## Tests and security checks
 
@@ -104,12 +120,14 @@ yarn audit
 RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1 bin/rails assets:precompile
 ```
 
-Service, request, and browser tests use deterministic provider doubles: no
-external API traffic is required. Tests cover input validation, time zones, route
-filtering, sorting, empty results, malformed responses, and upstream failures.
-Request tests also check that the form sends the parameters the search reads and
-that pages still render when a browser returns its session cookie with forgery
-protection on, as in production. The browser tests submit the real form.
+Service, request, and browser tests use deterministic provider doubles, so no
+API traffic is required apart from the browser tests' map tiles. Tests cover
+input validation, departure times and time zones, route filtering, sorting,
+empty results, malformed responses, fallbacks, and upstream failures. Request
+tests also check that the form sends the parameters the search reads and that
+pages still render when a browser returns its session cookie with forgery
+protection on, as in production. The browser tests choose a suggested starting
+point and sort and filter the results.
 
 [GitHub Actions](.github/workflows/ci.yml) runs these checks against PostgreSQL
 on every push and pull request. It also builds the production container image
