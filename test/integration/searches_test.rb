@@ -177,17 +177,20 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_equal "America/Los_Angeles", place["time_zone"]
     assert_equal [{ "count" => 1 }], data_for("checking")
 
-    card = cards.at_css("[data-trail][data-osm-id='123'][data-duration='5400'][data-length='1.38'][data-distance='20.73']" \
-      "[data-popularity='0'][data-scenic='0']")
+    # Coming back the same way takes as long as going until the card's trips are planned.
+    card = cards.at_css("[data-trail][data-osm-id='123'][data-travel='10800'][data-length='1.38'][data-distance='20.73']" \
+      "[data-popularity='0'][data-scenic='0'][data-required='5400']")
     assert card
     # Arriving at 9:30 AM with the last trip back at 9 PM leaves 11 hours 30 minutes.
     assert_equal "41400", card["data-stay"]
     assert card.at_css(".trail-map[data-path='[[[47.3,-122.0],[47.32,-122.0]]]'][data-start='[47.3,-122.0]']")
     assert card.at_css("a[data-photo-url='#{photo_path(lat: 47.32, lon: -122.0)}'][hidden]")
-    assert_match(/90 min\s+1 transfer/, card.at_css(".trail-stats").text)
+    assert_match(/Round trip\s+≈ 3 h\s+≈ 1 h 30 min each way · 1 transfer/, card.at_css(".trail-stats").text.squish)
     assert_match(/Last trip back 9:00 PM\s+· up to 11 h there/, card.at_css(".trail-return").text.squish)
     trip_url = card.at_css("[data-trip-url]")["data-trip-url"]
-    assert_equal trip_path(from: "47.0,-122.0", to: "47.3,-122.0", leave: "2026-09-26T15:00:00Z", back_by: "2026-09-27T06:00:00Z"), trip_url
+    # The way back is planned from after the 1½ hours the search requires for hiking.
+    assert_equal trip_path(from: "47.0,-122.0", to: "47.3,-122.0", leave: "2026-09-26T15:00:00Z", back_by: "2026-09-27T06:00:00Z",
+      hike: 90), trip_url
     assert card.at_css("a[href='https://www.openstreetmap.org/relation/123'][target=_blank]")
     query = URI.decode_www_form(URI(card.at_css("a[href^='https://www.google.com/maps/dir/?']")["href"]).query).to_h
     assert_equal ["Seattle, Washington, United States", "47.3,-122.0", "transit"], query.values_at("origin", "destination", "travelmode")
@@ -269,7 +272,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     search_all(origin: SearchesController::CURRENT_LOCATION, lat: "47.0", lon: "-122.0")
 
     assert_equal "Day hikes by train from your location in Seattle", data_for("place").sole["heading"]
-    assert_match(/67 min\s+direct/, cards.at_css(".trail-stats").text)
+    assert_match(/≈ 2 h 15 min\s+≈ 1 h 5 min each way · direct/, cards.at_css(".trail-stats").text.squish)
     href = cards.at_css("a[href^='https://www.google.com/maps/dir/?']")["href"]
     refute_includes URI.decode_www_form(URI(href).query).to_h, "origin"
   end
@@ -294,7 +297,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     wikipedia
     search_all(origin: "Seattle")
 
-    assert_match(/80 min\s+2 transfers/, cards.at_css(".trail-stats").text)
+    assert_match(/≈ 2 h 40 min\s+≈ 1 h 20 min each way · 2 transfers/, cards.at_css(".trail-stats").text.squish)
     assert_match(/couldn't check the way back/, cards.at_css(".trail-return").text)
     assert_equal ["We couldn't check the way back for some hikes. Check the last trip back before you go."],
       data_for("done").sole["notices"]
@@ -366,40 +369,60 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_equal 2, @requests[URI(TransitousService::ONE_TO_ALL_URL).path].size
   end
 
-  def leg(mode, name, start, finish)
-    { mode: mode, routeShortName: name, agencyName: "Metro", headsign: "Downtown", startTime: start, endTime: finish }
+  def leg(mode, name, start, finish, from: nil, to: nil)
+    { mode: mode, routeShortName: name, agencyName: "Metro", headsign: "Downtown", startTime: start, endTime: finish,
+      from: { stopId: from }.compact, to: { stopId: to }.compact }
   end
 
   def journey(start, finish, legs)
     { duration: (Time.iso8601(finish) - Time.iso8601(start)).to_i, transfers: 0, startTime: start, endTime: finish, legs: legs }
   end
 
-  test "a trip lists the trains, buses, and ferries there and the last ones back" do
+  # The same trains back, leaving and arriving at these UTC times: in the
+  # afternoon or evening of September 23, or early on September 24.
+  def train_back(leave, home)
+    leave, home = [leave, home].map { |time| "2026-09-#{time >= '12:00' ? 23 : 24}T#{time}:00Z" }
+    journey(leave, home, [leg("REGIONAL_RAIL", "Cascades", leave, home, from: "mount-vernon", to: "seattle")])
+  end
+
+  test "a trip lists the trains there and the same trains back: home soonest after the hike, and the last ones" do
     stub_get(TransitousService::PLAN_URL) do |env|
       body = if env.params["arriveBy"] == "true"
-        { itineraries: [journey("2026-09-24T01:23:00Z", "2026-09-24T04:21:00Z", [leg("BUS", "206", "2026-09-24T01:23:00Z", "2026-09-24T01:40:00Z")])], direct: [] }
+        { itineraries: [train_back("20:00", "21:30"), train_back("21:00", "22:35"), train_back("23:00", "00:20"),
+          train_back("03:30", "05:15")], direct: [] }
       else
-        { itineraries: [journey("2026-09-23T15:19:00Z", "2026-09-23T17:31:00Z", [leg("REGIONAL_RAIL", "Cascades", "2026-09-23T15:30:00Z", "2026-09-23T17:02:00Z")])], direct: [] }
+        { itineraries: [journey("2026-09-23T15:19:00Z", "2026-09-23T17:31:00Z", [
+          leg("BUS", "7", "2026-09-23T15:19:00Z", "2026-09-23T15:30:00Z", from: "home-stop", to: "king-street"),
+          leg("REGIONAL_RAIL", "Cascades", "2026-09-23T15:40:00Z", "2026-09-23T17:20:00Z", from: "seattle", to: "mount-vernon")
+        ])], direct: [] }
       end
       [200, {}, JSON.generate(body)]
     end
-    get trip_path(from: "47.6,-122.3", to: "48.4,-122.3", leave: "2026-09-23T15:00:00Z", back_by: "2026-09-24T06:00:00Z")
+    # Hiking for three hours after arriving at 5:31 PM UTC.
+    get trip_path(from: "47.6,-122.3", to: "48.4,-122.3", leave: "2026-09-23T15:00:00Z", back_by: "2026-09-24T06:00:00Z", hike: "180")
 
     assert_response :success
-    there, back = response.parsed_body.values_at("there", "back")
+    there, back, last, same_way = response.parsed_body.values_at("there", "back", "last", "same_way")
     assert_equal ["2026-09-23T15:19:00Z", "2026-09-23T17:31:00Z"], there.values_at("departure", "arrival")
-    assert_equal [{ "mode" => "REGIONAL_RAIL", "name" => "Cascades", "agency" => "Metro", "headsign" => "Downtown" }], there["legs"]
-    assert_equal ["2026-09-24T01:23:00Z", "206"], [back["departure"], back["legs"].sole["name"]]
+    assert_equal({ "mode" => "REGIONAL_RAIL", "name" => "Cascades", "agency" => "Metro", "headsign" => "Downtown" }, there["legs"].last)
+    assert_equal ["2026-09-23T21:00:00Z", "2026-09-23T22:35:00Z"], back.values_at("departure", "arrival")
+    assert_equal ["2026-09-24T03:30:00Z", "Cascades"], [last["departure"], last["legs"].sole["name"]]
+    assert same_way
     there_request, back_request = @requests[URI(TransitousService::PLAN_URL).path].map(&:params)
     assert_equal ["47.6000000,-122.3000000", "48.4000000,-122.3000000", "false"], there_request.values_at("fromPlace", "toPlace", "arriveBy")
-    assert_equal ["48.4000000,-122.3000000", "47.6000000,-122.3000000", "true"], back_request.values_at("fromPlace", "toPlace", "arriveBy")
+    assert_equal ["48.4000000,-122.3000000", "47.6000000,-122.3000000", "true", "2026-09-24T06:00:00Z"],
+      back_request.values_at("fromPlace", "toPlace", "arriveBy", "time")
+    # Back from the station the train stopped at to the one it started from, from the end of the hike on.
+    assert_equal ["mount-vernon,seattle", "BUS,REGIONAL_RAIL,SUBWAY,TRAM", "34140"],
+      back_request.values_at("via", "transitModes", "searchWindow")
     assert_equal "private", response.headers["Cache-Control"].split(", ").find { |part| part.start_with?("private") }
   end
 
-  test "trips need two points and times on one day, and provider failures say so" do
+  test "trips need two points, times on one day, and at most 12 hours of hiking, and provider failures say so" do
     valid = { from: "47.6,-122.3", to: "48.4,-122.3", leave: "2026-09-23T15:00:00Z", back_by: "2026-09-24T06:00:00Z" }
     [{ from: "91,0" }, { to: "north" }, { from: nil }, { leave: "tomorrow" }, { back_by: "2026-09-23T14:00:00Z" },
-      { back_by: "2026-09-26T06:00:00Z" }, { leave: "2026-10-30T15:00:00Z", back_by: "2026-10-31T06:00:00Z" }].each do |change|
+      { back_by: "2026-09-26T06:00:00Z" }, { leave: "2026-10-30T15:00:00Z", back_by: "2026-10-31T06:00:00Z" },
+      { hike: "three hours" }, { hike: "-5" }, { hike: "721" }, { hike: "0x10" }, { hike: "" }].each do |change|
       get trip_path(valid.merge(change).compact)
       assert_response :bad_request
     end

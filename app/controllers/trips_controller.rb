@@ -1,26 +1,39 @@
-# The trains and other transit to a route and back, and when they leave.
+# The trains and other transit to a route and back the same way, and when they leave.
 class TripsController < ApplicationController
   rate_limit to: 60, within: 1.minute, with: -> { head :too_many_requests }
 
+  # Hikes shorter or longer than this aren't planned for.
+  MAX_HIKE_MINUTES = 12 * 60
+
   # from and to are "latitude,longitude"; leave is when the trip there starts,
-  # and back_by is when the trip back must arrive.
+  # back_by is when the trip back must arrive, and hike is the minutes to hike
+  # before heading back. back is the first trip home after the hike and last is
+  # the last one, both the same way as the trip there where it runs in time.
   def show
     origin, route = [params[:from], params[:to]].map { |value| point(value) }
     leave, back_by = [params[:leave], params[:back_by]].map { |value| time(value) }
-    unless origin && route && leave && back_by && leave.between?(1.day.ago, 8.days.from_now) &&
-        back_by.between?(leave, leave + 1.day)
+    hike = params.key?(:hike) ? minutes(params[:hike]) : 0
+    unless origin && route && leave && back_by && hike&.between?(0, MAX_HIKE_MINUTES) &&
+        leave.between?(1.day.ago, 8.days.from_now) && back_by.between?(leave, leave + 1.day)
       return head(:bad_request)
     end
 
     there = TransitousService.journey(origin: origin, destination: route, time: leave)
-    back = TransitousService.journey(origin: route, destination: origin, time: back_by, arrive_by: true)
+    arrival = there ? Time.iso8601(there[:arrival]) : leave
+    ways = TransitousService.ways_back(origin: route, destination: origin, like: there,
+      earliest: arrival + hike.minutes, deadline: back_by)
     expires_in TransitousService::TRIP_CACHE_TTL
-    render json: { there: there, back: back }
+    render json: { there: shown(there), back: shown(ways[:back]), last: shown(ways[:last]), same_way: ways[:same_way] }
   rescue SearchErrors::UpstreamError
     head :service_unavailable
   end
 
   private
+
+  # What the page shows of a trip: when it leaves and arrives, and its rides.
+  def shown(trip)
+    trip&.merge(legs: trip[:legs].map { |leg| leg.slice(:mode, :name, :agency, :headsign) })
+  end
 
   def point(value)
     latitude, longitude = value.split(",", 2).map { |part| Float(part, exception: false) } if value.is_a?(String)
@@ -31,5 +44,9 @@ class TripsController < ApplicationController
     Time.iso8601(value) if value.is_a?(String)
   rescue ArgumentError
     nil
+  end
+
+  def minutes(value)
+    Integer(value, 10, exception: false) if value.is_a?(String)
   end
 end

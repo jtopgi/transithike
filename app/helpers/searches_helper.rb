@@ -43,21 +43,32 @@ module SearchesHelper
     time.in_time_zone(result.departure_time.time_zone).strftime("%-I:%M %p")
   end
 
-  # How long there is between arriving and the last trip back, such as "2 h 30 min" or "9 h".
+  # How long there is between arriving and the last trip back, such as "2 h 30 min", "45 min", or "9 h".
   def stay_label(trail)
-    hours, minutes = (stay_seconds(trail) / 60).divmod(60)
-    minutes.zero? || hours >= 4 ? "#{hours} h" : "#{hours} h #{minutes} min"
+    seconds = stay_seconds(trail)
+    seconds >= 4.hours ? "#{seconds / 1.hour} h" : duration_label(seconds)
   end
 
   def stay_seconds(trail)
     trail.last_return ? [(trail.last_return - trail.arrival).floor, 0].max : 0
   end
 
-  # Where the page looks up the trains there and back, and when they leave.
+  # Where the page looks up the trains there and back, and when they leave:
+  # the way back is the first after hiking for the time the search requires.
   def trip_lookup_path(trail, result)
     place = result.place
     trip_path(from: "#{place.latitude.to_f},#{place.longitude.to_f}", to: "#{trail.latitude.to_f},#{trail.longitude.to_f}",
-      leave: result.departure_time.utc.iso8601, back_by: result.return_by.utc.iso8601)
+      leave: result.departure_time.utc.iso8601, back_by: result.return_by.utc.iso8601,
+      hike: (TrailsService.required_hours(trail) * 60).round)
+  end
+
+  # A length of time such as "4 h 35 min", "2 h", or "50 min", in steps of five
+  # minutes when approximate.
+  def duration_label(seconds, approximate: false)
+    minutes = (seconds / 60.0).round
+    minutes = (minutes / 5.0).round * 5 if approximate
+    hours, minutes = minutes.divmod(60)
+    [("#{hours} h" if hours.positive?), ("#{minutes} min" if minutes.positive? || hours.zero?)].compact.join(" ")
   end
 
   # For example "today, leaving now" or "Saturday, October 3, leaving at 8:00 AM EDT".

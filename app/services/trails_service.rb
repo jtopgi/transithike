@@ -177,6 +177,12 @@ module TrailsService
     end
   end
 
+  # Seconds on transit there and back. Coming back the same way takes about as
+  # long as going; each card shows the planned trips once they're looked up.
+  def self.round_trip_seconds(trail)
+    trail.duration * 2
+  end
+
   # About how long hiking the whole route takes.
   def self.hike_hours(trail)
     ((trail.loop ? trail.length : trail.length * 2) / HIKE_MPH).clamp(HIKE_HOURS)
@@ -217,7 +223,8 @@ module TrailsService
   end
 
   # Higher is better: unpaved routes of day-hike length, with highlights on the
-  # way, in well-known areas, with time to enjoy them, and not too far to go.
+  # way, in well-known areas, with time to enjoy them, and not too long a trip
+  # there and back.
   def self.score(trail)
     length = case trail.length
     when 3..12 then 1.5
@@ -227,9 +234,9 @@ module TrailsService
     end
     views = trail.area&.dig(:monthly_views).to_i
     popularity = [Math.log10(views + 1) - 2, 0].max * 0.75
-    # Day trips by train often take an hour or two each way; longer ones count against a hike.
-    hours = trail.duration / 3600.0
-    travel = [hours - 1.5, 0].max * 0.5 + [hours - 3, 0].max
+    # Day trips by train often take up to three hours there and back; longer ones count against a hike.
+    hours = round_trip_seconds(trail) / 3600.0
+    travel = [hours - 3, 0].max * 0.25 + [hours - 6, 0].max * 0.5
     rushed = trail.last_return && trail.last_return - trail.arrival < hike_hours(trail).hours ? 0.5 : 0
     length + [scenic(trail), 4].min * 0.5 + popularity + (trail.notable ? 0.5 : 0) - trail.paved.to_f * 2.5 -
       (OverpassService.generic_name?(trail.name) ? 1 : 0) - travel - trail.transfers.to_i * 0.1 - rushed

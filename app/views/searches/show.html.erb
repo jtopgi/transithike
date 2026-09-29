@@ -43,7 +43,7 @@
         <label for="sort" class="form-label small fw-semibold mb-0">Sort by</label>
         <select id="sort" class="form-select form-select-sm w-auto" data-sort>
           <option value="recommended">Recommended</option>
-          <option value="duration">Fastest to reach</option>
+          <option value="travel">Least travel</option>
           <option value="stay">Most time there</option>
           <option value="distance">Closest</option>
           <option value="popular">Most popular</option>
@@ -53,13 +53,13 @@
         </select>
       </div>
       <div class="d-flex align-items-center gap-2">
-        <label for="trip" class="form-label small fw-semibold mb-0">Trip</label>
+        <label for="trip" class="form-label small fw-semibold mb-0">Round trip</label>
         <select id="trip" class="form-select form-select-sm w-auto" data-max-trip>
           <option value="">Any travel time</option>
-          <option value="90">Up to 1½ hours</option>
-          <option value="120">Up to 2 hours</option>
-          <option value="150">Up to 2½ hours</option>
           <option value="180">Up to 3 hours</option>
+          <option value="240">Up to 4 hours</option>
+          <option value="300">Up to 5 hours</option>
+          <option value="360">Up to 6 hours</option>
         </select>
       </div>
       <div class="btn-group btn-group-sm" role="group" aria-label="Hike length" data-length-filter>
@@ -97,8 +97,11 @@
       Trips leave at 8 AM on the day you choose, from the timetables Transitous has for the region: the subway or bus
       to the station if you need them, then commuter rail, Amtrak, or other trains. Hikes are near stations
       at least <%= min_km %> km (<%= min_miles %> miles) away, and hikes the subway or light rail reaches are left out,
-      since you likely know them already. Every hike shown has a way back by 11 PM that leaves time to hike it. Recommended hikes are unpaved and of day-hike length,
-      pass waterfalls, summits, or viewpoints, are in well-known parks, and aren't too far to go. Popularity comes from
+      since you likely know them already. Every hike shown has a way back by 11 PM that leaves time to hike it. Once
+      each card's trips are looked up, the way back rides the same trains back, home soonest after the hike, and the
+      last trip back is the last that way; the round trip adds the rides there and back. Recommended hikes are unpaved
+      and of day-hike length, pass waterfalls, summits, or viewpoints, are in well-known parks, and aren't too long a
+      trip there and back. Popularity comes from
       Wikipedia page views of the nearest park or natural area, not of the route itself. Lengths are approximate,
       calculated from OpenStreetMap geometry. Directions lead to where the train reaches each route soonest, not to a
       verified trailhead or public access point. Photos show a nearby park or natural area, not necessarily the route.

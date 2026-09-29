@@ -4,12 +4,12 @@ import * as L from "leaflet"
 const TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 const LENGTHS = { any: [0, Infinity], short: [0, 3], medium: [3, 6], long: [6, Infinity] }
 // Ties keep the recommended order.
-const byScore = (a, b) => b.dataset.score - a.dataset.score || a.dataset.duration - b.dataset.duration
+const byScore = (a, b) => b.dataset.score - a.dataset.score || a.dataset.travel - b.dataset.travel
 const ascending = (key) => (a, b) => a.dataset[key] - b.dataset[key] || byScore(a, b)
 const descending = (key) => (a, b) => b.dataset[key] - a.dataset[key] || byScore(a, b)
 const ORDERS = {
   recommended: byScore,
-  duration: ascending("duration"),
+  travel: ascending("travel"),
   stay: descending("stay"),
   distance: ascending("distance"),
   popular: descending("popularity"),
@@ -23,6 +23,14 @@ const MODE_ICONS = {
 }
 // Transitous's METRO is an old name for suburban trains.
 const modeIcon = (mode) => MODE_ICONS[mode] || (/RAIL|SUBURBAN|LONG_DISTANCE|METRO/.test(mode) ? "🚆" : "🚏")
+const rideMinutes = (trip) => Math.round((new Date(trip.arrival) - new Date(trip.departure)) / 60000)
+// Like the server's labels: "4 h 35 min", "2 h", or "50 min", and whole hours from four hours on for time there.
+const duration = (minutes) => {
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  return [hours > 0 && `${hours} h`, (rest > 0 || hours === 0) && `${rest} min`].filter(Boolean).join(" ")
+}
+const stayLabel = (minutes) => minutes >= 240 ? `${Math.floor(minutes / 60)} h` : duration(minutes)
 
 class Results {
   constructor(page) {
@@ -135,7 +143,7 @@ class Results {
     let shown = 0
     cards.sort(ORDERS[this.toolbar.querySelector("[data-sort]").value]).forEach((card) => {
       const length = Number(card.dataset.length)
-      card.hidden = !(length >= min && length < max && Number(card.dataset.duration) <= maxTrip)
+      card.hidden = !(length >= min && length < max && Number(card.dataset.travel) <= maxTrip)
       if (!card.hidden) shown += 1
       this.list.append(card)
     })
@@ -163,19 +171,52 @@ class Results {
     const response = await fetch(box.dataset.tripUrl, { headers: { Accept: "application/json" } })
     if (!response.ok) return
 
-    const { there, back } = await response.json()
+    const { there, back, last, same_way: sameWay } = await response.json()
     // The planned trips are exact to the minute, unlike the search's estimates,
     // whose travel times include waiting for the train.
-    if (there) {
-      const minutes = Math.ceil((new Date(there.arrival) - new Date(there.departure)) / 60000)
-      card.querySelector("[data-travel-time]")?.replaceChildren(`${minutes} min`)
-    }
-    if (back) card.querySelector(".trail-return strong")?.replaceChildren(this.clock(back.departure))
-    const lines = [["There", there, "arrive"], ["Back", back, "home by"]]
+    if (there && back) this.showTravel(card, rideMinutes(there), rideMinutes(back))
+    if (last) this.showLast(card, last, there)
+    const lines = [["There", there, "arrive"], ["Back", back, "home"]]
       .filter(([, trip]) => trip)
       .map(([label, trip, end]) => this.tripLine(label, trip, end))
+    if (back && sameWay === false) {
+      lines.push(Object.assign(document.createElement("p"), {
+        className: "trail-trip-line text-body-secondary",
+        textContent: "The same way back doesn't run after the hike, or takes much longer, so this goes another way."
+      }))
+    }
     box.replaceChildren(...lines)
     box.hidden = lines.length === 0
+  }
+
+  // The rides there and back. Sorting and filtering use them from the next change,
+  // so cards don't move while they're read.
+  showTravel(card, there, back) {
+    card.querySelector("[data-travel-time]").textContent = duration(there + back)
+    card.querySelector("[data-travel-detail]").textContent = `${duration(there)} there · ${duration(back)} back`
+    card.dataset.travel = (there + back) * 60
+  }
+
+  // The last trip back the same way, and the time that leaves there.
+  showLast(card, last, there) {
+    const line = card.querySelector(".trail-return")
+    if (!line.querySelector("strong")) {
+      // The search couldn't check the way back, but the planner could.
+      line.replaceChildren(
+        Object.assign(document.createElement("span"), { ariaHidden: "true", textContent: "↩️" }), " Last trip back ",
+        document.createElement("strong"), " ", Object.assign(document.createElement("span"), { className: "text-body-secondary" })
+      )
+      line.firstChild.dataset.returnIcon = ""
+      line.lastChild.dataset.stayLabel = ""
+    }
+    line.querySelector("strong").textContent = this.clock(last.departure)
+    if (!there) return
+
+    const stay = Math.max(Math.floor((new Date(last.departure) - new Date(there.arrival)) / 60000), 0)
+    const tight = stay * 60 < Number(card.dataset.required)
+    card.dataset.stay = stay * 60
+    line.querySelector("[data-stay-label]").textContent = `· ${tight ? "only" : "up to"} ${stayLabel(stay)} there`
+    line.querySelector("[data-return-icon]").textContent = tight ? "⚠️" : "↩️"
   }
 
   tripLine(label, trip, end) {

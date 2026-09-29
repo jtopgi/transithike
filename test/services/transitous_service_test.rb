@@ -258,8 +258,10 @@ class TransitousServiceTest < ActiveSupport::TestCase
 
   test "a journey there lists the legs on transit of the soonest arrival, trains by their lines' names" do
     amtrak = leg("REGIONAL_RAIL", "routeShortName" => "", "routeLongName" => "Amtrak Cascades", "displayName" => "516",
-      "agencyName" => "Amtrak", "headsign" => "Vancouver")
-    commuter = leg("SUBURBAN", "routeShortName" => "MNBNP", "routeLongName" => "Port Jervis Line", "agencyName" => "NJ Transit")
+      "agencyName" => "Amtrak", "headsign" => "Vancouver", "from" => { "stopId" => "king-street" },
+      "to" => { "stopId" => "mount-vernon" })
+    commuter = leg("SUBURBAN", "routeShortName" => "MNBNP", "routeLongName" => "Port Jervis Line", "agencyName" => "NJ Transit",
+      "from" => { "stopId" => "a,b" }, "to" => { "name" => "No id" })
     unnamed = leg("RAIL", "routeShortName" => "", "routeLongName" => " ", "displayName" => "8811")
     bus = leg("BUS", "routeShortName" => "206", "routeLongName" => "Route 206", "agencyName" => "Skagit  Transit", "headsign" => nil)
     body = { "itineraries" => [
@@ -273,25 +275,128 @@ class TransitousServiceTest < ActiveSupport::TestCase
       assert_nil request.params["maxPreTransitTime"]
     end
     assert_equal({ departure: "2026-09-23T15:19:00Z", arrival: "2026-09-23T17:31:00Z", legs: [
-      { mode: "REGIONAL_RAIL", name: "Amtrak Cascades", agency: "Amtrak", headsign: "Vancouver" },
-      { mode: "SUBURBAN", name: "Port Jervis Line", agency: "NJ Transit", headsign: nil },
-      { mode: "RAIL", name: "8811", agency: nil, headsign: nil },
-      { mode: "BUS", name: "206", agency: "Skagit Transit", headsign: nil }
+      { mode: "REGIONAL_RAIL", name: "Amtrak Cascades", agency: "Amtrak", headsign: "Vancouver",
+        from: "king-street", to: "mount-vernon" },
+      # Stop ids that couldn't be sent back to the planner are left out.
+      { mode: "SUBURBAN", name: "Port Jervis Line", agency: "NJ Transit", headsign: nil, from: nil, to: nil },
+      { mode: "RAIL", name: "8811", agency: nil, headsign: nil, from: nil, to: nil },
+      { mode: "BUS", name: "206", agency: "Skagit Transit", headsign: nil, from: nil, to: nil }
     ] }, TransitousService.journey(origin: origin, destination: destination, time: DEPARTURE, connection: connection))
   end
 
-  test "a journey back leaves as late as possible and arrives by the deadline" do
-    deadline = Time.iso8601("2026-09-23T23:00:00-07:00")
+  # A trip back, leaving and arriving at these UTC times on September 24, on a bus or a train between two stops.
+  def trip_back(leave, home, mode: "BUS", name: "206", from: nil, to: nil)
+    itinerary("2026-09-24T#{leave}:00Z", "2026-09-24T#{home}:00Z", [leg(mode, "routeShortName" => name,
+      "from" => { "stopId" => from }.compact, "to" => { "stopId" => to }.compact)])
+  end
+
+  # A journey there riding 2 h 20 min: the city bus to the station, then two trains.
+  def journey_there
+    { departure: "2026-09-23T15:10:00Z", arrival: "2026-09-23T17:30:00Z", legs: [
+      { mode: "BUS", name: "7", from: "home-stop", to: "downtown" },
+      { mode: "REGIONAL_RAIL", name: "Sounder", from: "king-street", to: "tacoma" },
+      { mode: "SUBURBAN", name: "Link", from: "tacoma", to: "lakewood" }
+    ] }
+  end
+
+  def ways_back(connection, like: journey_there, earliest: Time.utc(2026, 9, 23, 21), cache: ActiveSupport::Cache::MemoryStore.new)
+    TransitousService.ways_back(origin: destination, destination: origin, like: like, earliest: earliest,
+      deadline: Time.iso8601("2026-09-23T23:00:00-07:00"), connection: connection, cache: cache)
+  end
+
+  test "the way back rides the journey's trains back from where they stopped to where they started, home soonest after the hike" do
     body = { "itineraries" => [
-      itinerary("2026-09-24T01:23:00Z", "2026-09-24T04:21:00Z", [leg("BUS", "routeShortName" => "206")]),
-      itinerary("2026-09-24T02:30:00Z", "2026-09-24T06:05:00Z", [leg("BUS", "routeShortName" => "late")]),
-      itinerary("2026-09-23T23:00:00Z", "2026-09-24T02:00:00Z", [leg("BUS", "routeShortName" => "early")])
+      trip_back("00:10", "02:00", name: "after the hike"),
+      trip_back("00:40", "02:00", name: "later, just as soon home"),
+      # Home soonest, but leaving before the hike is over.
+      trip_back("00:00", "01:50", name: "before the hike ends"),
+      trip_back("04:00", "05:50", name: "the last one"),
+      trip_back("04:00", "05:30", name: "the last one, sooner home"),
+      trip_back("05:00", "06:30", name: "too late")
     ], "direct" => [] }
-    connection = stub_connection(:get, body) do |request|
-      assert_equal ["2026-09-24T06:00:00Z", "true", "1800"], request.params.values_at("time", "arriveBy", "maxPreTransitTime")
+    requests = []
+    connection = stub_connection(:get, body) { |request| requests << request.params }
+    ways = ways_back(connection, earliest: Time.utc(2026, 9, 24, 0, 5))
+
+    assert_equal ["later, just as soon home", "the last one, sooner home", true],
+      [ways[:back][:legs].sole[:name], ways[:last][:legs].sole[:name], ways[:same_way]]
+    params = requests.sole
+    assert_equal ["47.5000000,-122.0000000", "47.6000000,-122.3000000", "2026-09-24T06:00:00Z", "true", "true"],
+      params.values_at("fromPlace", "toPlace", "time", "arriveBy", "timetableView")
+    # From the end of the hike until the deadline, and walks of up to half an hour at either end.
+    assert_equal ["21300", "1800", "1800"], params.values_at("searchWindow", "maxPreTransitTime", "maxPostTransitTime")
+    assert_equal "lakewood,king-street", params["via"]
+    assert_equal "BUS,REGIONAL_RAIL,SUBURBAN,SUBWAY,TRAM", params["transitModes"]
+  end
+
+  test "without a train there, only the kinds of transit keep the way back, and without a journey there, it's any way" do
+    # Buses stop across the street on the way back, so their stops aren't kept.
+    ferry = { departure: "2026-09-23T15:10:00Z", arrival: "2026-09-23T17:30:00Z", legs: [
+      { mode: "BUS", name: "7", from: "home-stop", to: "pier" }, { mode: "FERRY", name: "Bainbridge", from: "pier", to: "island" }
+    ] }
+    requests = []
+    connection = stub_connection(:get, { "itineraries" => [trip_back("01:00", "03:00")], "direct" => [] }) do |request|
+      requests << request.params.slice("via", "transitModes")
     end
-    journey = TransitousService.journey(origin: destination, destination: origin, time: deadline, arrive_by: true, connection: connection)
-    assert_equal ["2026-09-24T01:23:00Z", "2026-09-24T04:21:00Z", "206"], [journey[:departure], journey[:arrival], journey[:legs].sole[:name]]
+    assert ways_back(connection, like: ferry)[:same_way]
+    walk = { departure: "2026-09-23T15:10:00Z", arrival: "2026-09-23T15:40:00Z", legs: [] }
+    assert_nil ways_back(connection, like: walk)[:same_way]
+    assert_nil ways_back(connection, like: nil)[:same_way]
+    assert_equal [{ "transitModes" => "BUS,FERRY,SUBWAY,TRAM" }, {}, {}], requests
+  end
+
+  test "trips back that ride much longer than the trip there don't count, so a slow same way gives way to a quicker one" do
+    # 2 h 20 min there allows up to 3 h 10 min back.
+    requests = []
+    connection = stub_connection(:get, lambda { |request|
+      requests << request.params["via"]
+      itineraries = if request.params["via"]
+        [trip_back("00:10", "03:30", name: "slow bus the same way"), trip_back("22:00", "00:00", name: "before the hike")]
+      else
+        [trip_back("01:00", "03:10", name: "quicker another way"), trip_back("02:00", "05:20", name: "slow and last")]
+      end
+      { "itineraries" => itineraries, "direct" => [] }
+    })
+    ways = ways_back(connection, earliest: Time.utc(2026, 9, 24, 0, 5))
+    assert_equal ["quicker another way", "quicker another way", false],
+      [ways[:back][:legs].sole[:name], ways[:last][:legs].sole[:name], ways[:same_way]]
+    assert_equal ["lakewood,king-street", nil], requests
+
+    # When every way back is slow, the quickest of them still shows.
+    slow = stub_connection(:get, { "itineraries" => [trip_back("00:30", "05:00", name: "slow")], "direct" => [] })
+    assert_equal "slow", ways_back(slow, earliest: Time.utc(2026, 9, 24, 0, 5))[:back][:legs].sole[:name]
+  end
+
+  test "where the same way doesn't get home in time, or the planner doesn't know its stops, any way back does" do
+    [{ "itineraries" => [], "direct" => [] }, nil].each do |same_way|
+      requests = []
+      connection = stub_connection(:get, lambda { |request|
+        requests << request.params["via"]
+        raise Faraday::BadRequestError, "unknown stop" if request.params["via"] && same_way.nil?
+
+        request.params["via"] ? same_way : { "itineraries" => [trip_back("03:00", "05:00", name: "another way")], "direct" => [] }
+      })
+      ways = ways_back(connection)
+      assert_equal ["another way", "another way", false], [ways[:back][:legs].sole[:name], ways[:last][:legs].sole[:name], ways[:same_way]]
+      assert_equal ["lakewood,king-street", nil], requests
+    end
+
+    nothing = ways_back(stub_connection(:get, { "itineraries" => [], "direct" => [] }))
+    assert_equal({ back: nil, last: nil, same_way: false }, nothing)
+    assert_raises(SearchErrors::UpstreamError) { ways_back(stub_connection(:get, {}, status: 503)) }
+  end
+
+  test "when no way back leaves after the hike, the way back is the last one the same way, and ways back are cached" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    calls = 0
+    connection = stub_connection(:get, { "itineraries" => [trip_back("01:00", "03:00")], "direct" => [] }) { calls += 1 }
+    2.times do
+      ways = ways_back(connection, earliest: Time.utc(2026, 9, 24, 2), cache: cache)
+      assert_equal [ways[:last], true], [ways[:back], ways[:same_way]]
+      assert_equal "2026-09-24T01:00:00Z", ways[:back][:departure]
+    end
+    # The same way, then any way, each asked once.
+    assert_equal 2, calls
   end
 
   test "walking the whole way is a journey without legs, and no journey is nil" do
