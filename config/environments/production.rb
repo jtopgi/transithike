@@ -24,7 +24,8 @@ Rails.application.configure do
   # Asset file names change with their content, so browsers can keep them for a year.
   config.public_file_server.headers = { "cache-control" => "public, max-age=#{1.year.to_i}, immutable" }
   # Compress pages and assets; the bundled map and styles are several hundred kilobytes.
-  config.middleware.insert_before ActionDispatch::Static, Rack::Deflater
+  # First in the stack, so it also covers assets served by ActionDispatch::Static.
+  config.middleware.insert_before 0, Rack::Deflater
 
   # Compress CSS using a preprocessor.
   # config.assets.css_compressor = :sass
