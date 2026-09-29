@@ -100,6 +100,8 @@ test Overpass connectivity from your deployment before launching.
   route, which is not necessarily the route. Elevation is not shown.
 - Provider failures produce a friendly error, not misleading empty results. Stops,
   highlights, and popularity only refine a search, which goes ahead without them.
+  Highlights not found within 5 seconds of planning trips are left out, and the
+  lookup finishes in the background so later searches have them.
 
 Route data is © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright),
 available under the ODbL. The public Overpass server is shared infrastructure:

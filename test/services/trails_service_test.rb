@@ -50,8 +50,9 @@ class TrailsServiceTest < ActiveSupport::TestCase
   class FakeHiking
     attr_reader :arguments, :access
 
-    def initialize(trails, highlights: {})
-      @trails, @highlights = trails, highlights
+    # With a release event, highlights wait for it before answering.
+    def initialize(trails, highlights: {}, release: nil)
+      @trails, @highlights, @release = trails, highlights, release
     end
 
     def candidates(**arguments)
@@ -67,6 +68,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
     end
 
     def highlights(trails)
+      @release&.wait(5)
       raise @highlights if @highlights.is_a?(Exception)
 
       @highlights
@@ -231,6 +233,17 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal [{ kind: "waterfall", name: "Falls" }], result.trails.third.highlights
     rest = result.trails[2..-2].map(&:score)
     assert_equal rest.sort.reverse, rest
+  end
+
+  test "a slow highlights lookup does not hold up the search" do
+    release = Concurrent::Event.new
+    route = trail("loop")
+    transit = FakeTransit.new(trips: { "loop" => { duration: 600, transfers: 0 } })
+    hiking = FakeHiking.new([route], highlights: { route.osm_id => [{ kind: "peak", name: "Knob" }] }, release: release)
+    result = stub_const(TrailsService, :HIGHLIGHT_WAIT_SECONDS, 0.05) { search(transit: transit, hiking: hiking) }
+    assert_equal [[]], result.trails.map(&:highlights)
+  ensure
+    release.set
   end
 
   test "routes are shown without highlights when they cannot be looked up" do
