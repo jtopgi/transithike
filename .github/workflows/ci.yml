@@ -175,7 +175,7 @@ jobs:
       - name: Run a real search
         run: |
           read -r status first total < <(curl --silent --show-error --no-buffer --max-time 150 --output search.txt \
-            --write-out '%{http_code} %{time_starttransfer} %{time_total}' \
+            --write-out '%{http_code} %{time_starttransfer} %{time_total}\n' \
             --get "$URL/search/stream" --data-urlencode "origin=Seattle, WA")
           echo "HTTP $status: first event after ${first}s, done after ${total}s."
           if [ "$status" != 200 ]; then echo "::error::The search stream returned HTTP $status."; exit 1; fi
