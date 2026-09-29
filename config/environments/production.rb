@@ -45,6 +45,8 @@ Rails.application.configure do
   config.force_ssl = true
   # Container health probes reach the app over plain HTTP, so don't redirect them.
   config.ssl_options = { redirect: { exclude: ->(request) { request.path == "/up" } } }
+  # Lets deployments confirm which build is serving traffic.
+  config.action_dispatch.default_headers["X-App-Revision"] = ENV["APP_REVISION"] if ENV["APP_REVISION"].present?
 
   # Use the lowest log level to ensure availability of diagnostic information
   # when problems arise.

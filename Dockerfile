@@ -5,7 +5,7 @@
 #   docker build -t transithike .
 #   docker run -p 3000:3000 -e SECRET_KEY_BASE=$(openssl rand -hex 64) transithike
 # Production forces HTTPS, so run it behind a TLS-terminating proxy that sets
-# X-Forwarded-Proto (Azure Container Apps ingress does).
+# X-Forwarded-Proto (Azure App Service does).
 
 # Keep in sync with .ruby-version and .node-version.
 ARG RUBY_VERSION=3.4.10
@@ -67,6 +67,10 @@ COPY --chown=rails:rails --from=build /rails /rails
 ENV PORT="3000" \
     RAILS_LOG_TO_STDOUT="1" \
     RAILS_SERVE_STATIC_FILES="1"
+
+# The commit this image was built from, reported in an X-App-Revision header.
+ARG APP_REVISION
+ENV APP_REVISION="${APP_REVISION}"
 
 EXPOSE 3000
 CMD ["bundle", "exec", "puma", "-C", "config/puma.rb"]
