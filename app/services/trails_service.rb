@@ -10,6 +10,10 @@ module TrailsService
   MAX_PLANNED_ROUTES = 15
   # Points toward the scenic score for each highlight on the way.
   SCENIC_POINTS = { "waterfall" => 2, "peak" => 2, "viewpoint" => 1 }.freeze
+  # Highlights only refine the ranking, so searches wait at most this long for
+  # them once trips are planned. Slower lookups finish in the background and
+  # are cached for later searches.
+  HIGHLIGHT_WAIT_SECONDS = 5
 
   # origin is text to look up, or a Place chosen from suggestions or the device's location.
   def self.search(origin:, places: PhotonService, transit: TransitousService, hiking: OverpassService,
@@ -27,13 +31,12 @@ module TrailsService
     access = TransitAccess.new(place.latitude, place.longitude, stops) if stops
     trails = hiking.trails(candidates.value!, lat: place.latitude, lon: place.longitude, access: access)
 
-    trips, highlights = run_all([
-      -> { trips(place, trails, departure_time, transit) },
-      -> { hiking.highlights(trails) }
-    ])
-    # Routes are shown without highlights when they cannot be looked up.
+    highlights = start { hiking.highlights(trails) }
+    trips = settle([start { trips(place, trails, departure_time, transit) }]).first.value!
+    settle([highlights], timeout: HIGHLIGHT_WAIT_SECONDS)
+    # Routes are shown without highlights when they cannot be looked up in time.
     highlights = (highlights.value if highlights.fulfilled?) || {}
-    reachable = trails.zip(trips.value!).filter_map do |trail, trip|
+    reachable = trails.zip(trips).filter_map do |trail, trip|
       next unless trip
 
       trail.duration, trail.transfers = trip.values_at(:duration, :transfers)
@@ -123,12 +126,23 @@ module TrailsService
 
   # Runs each block on the shared provider pool and returns the settled futures.
   def self.run_all(blocks)
-    pool = Rails.configuration.x.provider_pool
-    futures = blocks.map do |block|
-      Concurrent::Promises.future_on(pool) { Rails.application.executor.wrap { block.call } }
+    settle(blocks.map { |block| start(&block) })
+  end
+
+  # A future for the block, run on the shared provider pool.
+  def self.start(&block)
+    Concurrent::Promises.future_on(Rails.configuration.x.provider_pool) do
+      Rails.application.executor.wrap(&block)
     end
+  end
+
+  # Waits for the futures, or until timeout seconds have passed, and returns them.
+  def self.settle(futures, timeout: nil)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout if timeout
     # Pool threads may need to load code while this request thread waits.
-    ActiveSupport::Dependencies.interlock.permit_concurrent_loads { futures.each(&:wait) }
+    ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
+      futures.each { |future| future.wait(deadline && [deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max) }
+    end
     futures
   end
 end
