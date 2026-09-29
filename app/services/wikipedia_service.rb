@@ -1,6 +1,6 @@
-# Photos of the scenery near a route, served from Wikimedia Commons under free
+# Photos of nature along a route, served from Wikimedia Commons under free
 # licenses that require crediting the author: the lead image of the nearest
-# Wikipedia article about a park or natural area, then photos taken nearby.
+# Wikipedia article about a park or natural area, then photos taken along it.
 module WikipediaService
   API_URL = "https://en.wikipedia.org/w/api.php"
   COMMONS_URL = "https://commons.wikimedia.org/w/api.php"
@@ -9,12 +9,30 @@ module WikipediaService
   CACHE_TTL = 7.days
   CREDIT_CACHE_TTL = 30.days
   MAX_PHOTOS = 8
+  # Photos in a series, such as "Sugarloaf Mountain in summer 2" and "3", look alike, so few of each are shown.
+  MAX_PER_SERIES = 2
+  # Commons is asked for this many files near each point, and each point keeps this many photos.
+  FILES_PER_POINT = 50
+  PHOTOS_PER_POINT = 16
   # Photos smaller than this, or wider than this many times their height, don't show the scenery well.
   MIN_PHOTO_WIDTH = 800
   MAX_ASPECT = 3
-  # Titles of files near a route that aren't of its scenery, and of the ones that likely are.
-  NOT_SCENERY = /\b(?:maps?|logos?|diagrams?|signs?|signposts?|plaques?|seals?|flags?|coat of arms|charts?|graphs?|locator|stamps?|collections?|bldg|buildings?|offices?|schools?|hospitals?|churche?s?|hotels?|motels?|lodges?|restaurants?|museums?|stations?|parking|town hall|city hall|village hall|courthouses?|post offices?|librar(?:y|ies)|stores?|shops?|diners?|caf[eé]s?|pubs?|vehicles?|motorcycles?|interiors?|portraits?|paintings?|drawings?|engravings?|lithographs?|postcards?|posters?|documents?|cars?|trucks?|buses)\b/i
-  SCENERY = /\b(?:views?|vistas?|overlooks?|lookouts?|lakes?|ponds?|reservoirs?|rivers?|falls|waterfalls?|mountains?|mount|mt|hills?|ridges?|trails?|summits?|peaks?|forests?|woods|panorama|autumn|foliage|creeks?|brooks?|gorges?|cliffs?|rocks?|sunsets?|sunrises?|landscapes?|hik(?:e|es|ing)|preserve|reservation|valleys?|meadows?|beach|shore|state park)\b/i
+  # Photos are of nature when their title or a Commons category names a natural feature...
+  NATURE = /\b(?:mountains?|mount|mt|hills?|ridges?|peaks?|summits?|cliffs?|bluffs?|ledges?|rocks?|boulders?|knobs?|notch|gorges?|canyons?|ravines?|valleys?|glens?|highlands|palisades|escarpments?|lakes?|ponds?|reservoirs?|rivers?|creeks?|brooks?|streams?|kill|falls|waterfalls?|cascades?|rapids|shores?|coasts?|beach(?:es)?|islands?|marsh(?:es)?|swamps?|wetlands?|bogs?|forests?|woods|woodlands?|trees?|foliage|autumn|meadows?|grasslands?|prairies?|trails?|hik(?:e|es|ing)|hikers?|state parks?|national parks?|state forests?|preserves?|reservations?|wilderness|nature|landscapes?|scenery|overlooks?|lookouts?|glaciers?|alps?|piz)\b/i
+  # ...and neither names anything built, vehicles, people, close-ups of wildlife, maps or artworks, or views from space.
+  NOT_NATURE = /\b(?:buildings?|bldg|houses?|homes?|churche?s?|chapels?|temples?|synagogues?|mosques?|schools?|schoolhouses?|colleges?|universit(?:y|ies)|campus(?:es)?|hospitals?|offices?|halls?|courthouses?|post offices?|pavilions?|restrooms?|toilets?|cottages?|cabins?|sheds?|ruins?|furnaces?|cent(?:er|re)s?|historic (?:sites?|districts?)|national register of historic places|nrhp|condominiums?|apartments?|stations?|railways?|railroads?|rail(?!\s*trails?\b)|trains?|locomotives?|tracks|level crossings?|metro-north|lirr|nj transit|amtrak|septa|subways?|(?<!carriage )roads?|streets?|ave|avenues?|drives?|highways?|interstates? (?:\d+|highways?)|turnpikes?|parkways?|expressways?|(?:state|county|u\.?\s?s\.?|interstate) routes?|routes? \d+|interchanges?|exits?|intersections?|traffic|signs?|signposts?|shields?|markers?|plaques?|kiosks?|entrances?|gates?|fences?|bridges?|tunnels?|viaducts?|aqueducts?(?!\s+(?:trails?|state)\b)|dams?|piers?|docks?|marinas?|harbou?rs?|boathouses?|cars?|vehicles?|trucks?|buses|motorcycles?|bicycles?|aircraft|airplanes?|helicopters?|ships?|boats?|barges?|tugboats?|vessels?|ferr(?:y|ies)|construction|equipment|machinery|downtown|main street|neighbou?rhoods?|skylines?|cityscapes?|urban|aerial|hotels?|motels?|lodges?|restaurants?|shops?|stores?|malls?|markets?|diners?|caf[eé]s?|pubs?|museums?|galleries|librar(?:y|ies)|collections?|monuments?|memorials?|statues?|sculptures?|graves?|cemeter(?:y|ies)|forts?|castles?(?!\s+(?:point|rocks?|hills?|peaks?|crags?|mountains?))|mansions?|estates?|barns?|farms?|gardening|lighthouses?|towers?|power lines?|factor(?:y|ies)|grandstands?|racetracks?|stadiums?|playgrounds?|golf(?:ers?)?|pga|championships?|tournaments?|sports?|parking|inside|indoors?|interiors?|exhibits?|aquariums?|zoos?|hatcher(?:y|ies)|people|men|women|boys?|girls?|children|kids|portraits?|selfies?|given names?|surnames?|families|weddings?|politicians?|musicians?|actors?|actresses?|athletes?|players?|directors?|staff|employees?|volunteers?|rangers?|officials?|officers?|biologists?|scientists?|students?|workers?|crews?|visitors?|tourists?|hunters?|anglers?|fishermen|soldiers?|military|army|police|firefighters?|events?|celebrat(?:es?|ed|ing|ions?)|anniversar(?:y|ies)|awards?|receiving|dedications?|secretar(?:y|ies)|friends|damage|hurricanes?|disasters?|parades?|festivals?|concerts?|protests?|press conferences?|ceremon(?:y|ies)|animals?|wildlife(?!\s+(?:refuges?|management|sanctuar(?:y|ies)|preserves?))|birds?(?!\s+(?:sanctuar(?:y|ies)|refuges?))|mammals?|reptiles?|amphibians?|insects?|butterfl(?:y|ies)|moths?|spiders?|fungi|mushrooms?|lichens?|fauna|flora|flowers|wildflowers|inaturalist|unidentified|(?:turtles|snakes|frogs|toads|salamanders|deer|foxes|squirrels|beavers|owls|hawks|eagles|herons|egrets|ducks|geese|swans|woodpeckers|warblers|dragonflies|bees|beetles) (?:of|in)|maps?|diagrams?|logos?|flags?|seals?|coats? of arms|charts?|graphs?|locator|stamps?|documents?|postcards?|posters?|paintings?|drawings?|engravings?|lithographs?|prints?|stereo|albumen|illustrations?|films?|fortifications?|mapillary|wiki loves monuments|wlm|astronauts?|iss \d+|of earth|satellites?)\b/i
+  # Taxonomic names mark close-ups of wildlife: families, as in "Parulidae", and species, as in
+  # "Setophaga virens", "Cyanocitta cristata bromia", or "Phytolacca americana in July".
+  FAMILY = /\b[A-Z][a-z]+(?:idae|aceae)\b/
+  # Species named in parentheses, as in "Serviceberry (Amelanchier sp.)" or "Snapping Turtle (Chelydra serpentina)".
+  SPECIES_NOTE = /\([A-Z][a-z]+ (?:[a-z]+|spp?\.)\)/
+  # Clouds have Latin names too, as in "Cumulus humilis", and are skies over landscapes.
+  SPECIES_NAME = /\A(?!(?:Cirro|Alto|Strato|Nimbo)?(?:[Cc]umulus|[Ss]tratus)\b|Cirrus\b|Cumulonimbus\b)[A-Z][a-z]+ [a-z]+(?:a|ae|i|is|us|um|ens|ans|ex|ix)(?: [a-z]+)?(?: (?:in|at|on|from) .+)?\z/
+  # Artworks, named for their artist, as in "Alexander Hamilton by Franklin Simmons", unlike "Photographs by ..." or "Trees damaged by fire".
+  ARTWORK = /\A(?!(?i:photo(?:graph)?s|images|pictures|media|files|uploads)\b).+ by [[:upper:]][[:alpha:]]+(?: [[:upper:]][[:alpha:].]*)+\z/
+  # Train lines, as in "Hudson Line" or "Danbury Branch", but not rivers, as in "South Branch Raritan River",
+  # or state lines, as in "State Line Lookout".
+  RAIL_LINE = /\b(?!State\b)[A-Z][\w-]* (?:Line|Branch)\b(?!(?: [A-Z][\w-]*)* (?:River|Creek|Brook|Kill|Run)\b)/
   # Inns named for a place, as in "Bear Mountain Inn", but not the river Inn, as in
   # "Inn in Samedan", "Madulain - Inn", or "Blick auf den Inn".
   HOTEL_INN = /(?<=\w )(?<!der |des |den |dem |am |im |river )inns?\b(?! river| valley)/i
@@ -22,11 +40,15 @@ module WikipediaService
   VEHICLE = /\b(?:19|20)\d\d (?:Acura|Audi|BMW|Buick|Cadillac|Chevrolet|Chrysler|Dodge|Fiat|Ford|GMC|Honda|Hyundai|Infiniti|Jaguar|Jeep|Kia|Land Rover|Lexus|Lincoln|Mazda|Mercedes|Mini|Mitsubishi|Nissan|Pontiac|Porsche|Ram|Range Rover|Saturn|Scion|Subaru|Suzuki|Tesla|Toyota|Volkswagen|Volvo)\b/i
   # Uploads from nature-observation apps, named for the species and an observation number.
   SPECIES = /\A[A-Z][a-z]+ [a-z]+(?: [a-z]+)? \d{5,}\.jpe?g\z/
-  NOT_SCENERY_TITLES = [NOT_SCENERY, HOTEL_INN, VEHICLE, SPECIES].freeze
+  # Places named for nature, as in "Cold Spring, New York" or "Long Island", aren't nature.
+  PLACE = /\A[^,]+, [^,]+\z/
+  URBAN_ISLAND = /\b(?:long|staten|rhode|coney|roosevelt|city|randalls|governors|ellis|liberty) island\b/i
+  # Views and waterfalls lead the photos.
+  SCENERY = /\b(?:views?|vistas?|overlooks?|lookouts?|panoramas?|landscapes?|scenery|summits?|peaks?|waterfalls?|falls)\b/i
   NATURAL = /\b(?:parks?|trails?|lakes?|mount(?:ain)?s?|forests?|creeks?|falls|waterfalls?|preserve|reserve|natural area|wilderness|peaks?|summits?|rivers?|beach(?:es)?|woods|gardens?|arboretum|canyons?|gorge|ridges?|hills?|bay|ponds?|marsh|wetlands?|greenway|valley|islands?|glacier|nature|headland|cape|bluffs?|cliffs?|dunes?|meadows?|prairie)\b/i
   # Short descriptions name the kind of thing first, as in "Fort on the Hudson River", then where it is.
   # "Of" is left in, since it's often part of the kind, as in "Range of hills" or "Tributary of the Wallkill River".
-  DESCRIPTION_PLACE = /\s(?:in|on|at|near|along|within|during|between|from|by|off|outside|overlooking)\s.*/im
+  DESCRIPTION_PLACE = /\s(?:in|on|at|near|along|within|during|between|from|by|off|outside|overlooking|across|over|under|through|around|beside|above|below)\s.*/im
   # Places people live, as in "Mountain village" or "Suburb of Blue Mountains", aren't natural areas.
   SETTLEMENT = /\b(?:suburbs?|towns?|townships?|villages?|hamlets?|settlements?|communit(?:y|ies)|neighbou?rhoods?)\b/i
   BUILT = /\b(?:schools?|station|university|college|church|hospital|airport|mall|stadium|library|museum|company|corporation|district|building|tower|bridge|hotel|apartments?|condominiums?|highway|interchange|railway|railroad|zoo|cemetery|memorial|monument)\b/i
@@ -47,36 +69,49 @@ module WikipediaService
     end
   end
 
-  # Photos of the scenery near a point, as { title:, article_url:, photos:
-  # [{ image_url:, file_url:, credit:, caption: }] } with the nearest park or
+  # Photos of nature along a route, as { title:, article_url:, photos: [{
+  # image_url:, file_url:, credit:, caption: }] } with the nearest park or
   # natural area's title and article (nil when there is none) and up to
-  # MAX_PHOTOS photos: its lead image, then photos taken nearby, scenery first.
-  # nil when there are none.
-  def self.photos_near(latitude, longitude, connection: nil, commons: nil, cache: Rails.cache)
+  # MAX_PHOTOS photos: its lead image, then photos taken within RADIUS_METERS
+  # of the points, [latitude, longitude] pairs along the route with its middle
+  # first, views and waterfalls first and then the nearest. nil when there are none.
+  def self.photos_near(points, connection: nil, commons: nil, cache: Rails.cache)
     connection ||= SearchHttp.connection(API_URL)
-    area = nearby_area(latitude, longitude, connection: connection, cache: cache)
-    lead = if area&.dig(:image)
-      credit = cache.fetch("wikipedia:credit:v2:#{area[:image]}", expires_in: CREDIT_CACHE_TTL) { credit(area[:image], connection) }
-      { image_url: area[:image_url], caption: "Near #{area[:title]}" }.merge(credit) if credit
-    end
-    photos = [lead, *commons_photos(latitude, longitude, commons, cache)].compact
-      .uniq { |photo| photo[:file_url] }.first(MAX_PHOTOS)
+    area = nearby_area(*points.first, connection: connection, cache: cache)
+    lead = lead_photo(area, connection, cache)
+    taken = points.flat_map { |latitude, longitude| commons_photos(latitude, longitude, commons, cache) }
+      .sort_by { |photo| [photo[:scenery] ? 0 : 1, photo[:meters]] }
+    shown = Hash.new(0)
+    photos = [lead, *taken].compact.uniq { |photo| photo[:file_url] }
+      .select { |photo| (shown[series(photo[:caption])] += 1) <= MAX_PER_SERIES }
+      .first(MAX_PHOTOS).map { |photo| photo.except(:scenery, :meters) }
     { title: area&.dig(:title), article_url: area&.dig(:article_url), photos: photos } if photos.any?
   end
 
-  # Credited photos taken within RADIUS_METERS of a point, on Wikimedia
-  # Commons, leaving out maps, signs, buildings, cars, and close-ups of species.
+  # The lead image of the park or natural area's article, when it's a photo of nature.
+  def self.lead_photo(area, connection, cache)
+    return unless area&.dig(:image)
+
+    file = cache.fetch("wikipedia:lead:v1:#{area[:image]}", expires_in: CREDIT_CACHE_TTL) { lead_file(area[:image], connection) }
+    return unless file && nature?(caption(area[:image]), file[:categories])
+
+    { image_url: area[:image_url], caption: "Near #{area[:title]}", file_url: file[:file_url], credit: file[:credit] }
+  end
+
+  # Credited photos of nature taken within RADIUS_METERS of a point, on
+  # Wikimedia Commons, with how far away each was taken and whether it's of a
+  # view or waterfall. Each point's photos are shared by routes within about 1 km.
   def self.commons_photos(latitude, longitude, connection, cache)
     latitude, longitude = latitude.round(2), longitude.round(2)
-    cache.fetch("wikipedia:commons:v2:#{latitude}:#{longitude}", expires_in: CACHE_TTL) do
+    cache.fetch("wikipedia:commons:v3:#{latitude}:#{longitude}", expires_in: CACHE_TTL) do
       connection ||= SearchHttp.connection(COMMONS_URL)
       files = query(connection,
         generator: "geosearch", ggscoord: "#{latitude}|#{longitude}", ggsradius: RADIUS_METERS, ggsnamespace: 6,
-        ggslimit: 40, prop: "imageinfo|coordinates", iiprop: "url|extmetadata|mime|size", iiurlwidth: THUMBNAIL_WIDTH,
-        iiextmetadatafilter: "Artist|LicenseShortName", colimit: "max")
+        ggslimit: FILES_PER_POINT, prop: "imageinfo|coordinates|categories", iiprop: "url|extmetadata|mime|size",
+        iiurlwidth: THUMBNAIL_WIDTH, iiextmetadatafilter: "Artist|LicenseShortName", colimit: "max",
+        clshow: "!hidden", cllimit: "max")
       files.filter_map { |file| commons_photo(file, latitude, longitude) }
-        .sort_by { |photo| [photo[:scenery] ? 0 : 1, photo[:meters]] }.first(MAX_PHOTOS)
-        .map { |photo| photo.except(:scenery, :meters) }
+        .sort_by { |photo| [photo[:scenery] ? 0 : 1, photo[:meters]] }.first(PHOTOS_PER_POINT)
     end
   end
 
@@ -84,18 +119,68 @@ module WikipediaService
     title = file["title"].delete_prefix("File:") if file["title"].is_a?(String)
     info = value_at(file, "imageinfo", 0)
     point = value_at(file, "coordinates", 0)
-    return unless title && info.is_a?(Hash) && info["mime"] == "image/jpeg" &&
-      NOT_SCENERY_TITLES.none? { |pattern| title.match?(pattern) } && info["width"].is_a?(Integer) && info["height"].is_a?(Integer) &&
+    return unless title && info.is_a?(Hash) && info["mime"] == "image/jpeg" && !title.match?(SPECIES) &&
+      info["width"].is_a?(Integer) && info["height"].is_a?(Integer) &&
       info["width"] >= MIN_PHOTO_WIDTH && info["height"].positive? && info["width"] <= info["height"] * MAX_ASPECT &&
       point.is_a?(Hash) && SearchHttp.coordinates?(point["lat"], point["lon"]) &&
       wikimedia_url?(info["thumburl"]) && wikimedia_url?(info["descriptionurl"])
 
+    caption, categories = caption(title), categories(file)
     credit = credit_from(info)
-    return unless credit
+    return unless credit && nature?(caption, categories)
 
-    caption = title.sub(/\.jpe?g\z/i, "").tr("_", " ").squish.truncate(80)
-    { image_url: info["thumburl"], file_url: info["descriptionurl"], credit: credit, caption: caption,
-      scenery: caption.match?(SCENERY), meters: OverpassService.distance(latitude, longitude, point["lat"], point["lon"]) }
+    { image_url: info["thumburl"], file_url: info["descriptionurl"], credit: credit, caption: caption.truncate(80),
+      scenery: [caption, *categories].any? { |text| text.match?(SCENERY) },
+      meters: OverpassService.distance(latitude, longitude, point["lat"], point["lon"]) }
+  end
+
+  # Whether a photo is of nature: its title or a category names a natural
+  # feature, and neither names anything built, vehicles, people, close-ups of
+  # wildlife, maps or artworks.
+  def self.nature?(caption, categories)
+    texts = [caption, *categories]
+    texts.none? { |text| unnatural?(text) } && texts.any? { |text| natural_name?(text) }
+  end
+
+  def self.unnatural?(text)
+    words = spaced(text)
+    [NOT_NATURE, RAIL_LINE, HOTEL_INN, VEHICLE].any? { |pattern| words.match?(pattern) } ||
+      text.match?(FAMILY) || text.match?(ARTWORK) || text.match?(SPECIES_NOTE) || (text.gsub(/\s*\([^)]*\)/, "").match?(SPECIES_NAME) && !text.match?(NATURE))
+  end
+
+  # Words apart from the numbers they run into, as "Bethpage-golf1" names golf.
+  def self.spaced(text)
+    text.gsub(/(?<=[[:alpha:]])(?=[[:digit:]])|(?<=[[:digit:]])(?=[[:alpha:]])/, " ")
+  end
+
+  # Names a natural feature, and isn't a place named for one, as "Cold Spring, New York" or "Long Island" are.
+  def self.natural_name?(text)
+    name = spaced(without_places(text)).gsub(URBAN_ISLAND, "").squish
+    !name.match?(PLACE) && name.match?(NATURE)
+  end
+
+  # A name without the places and numbers in parentheses, as in "Bear Mountain (New York)" or
+  # "Harriman (6020446359)", which keeps kinds, as in "Inn (river)", or an upload site, as in "Lake - panoramio".
+  def self.without_places(text)
+    text.gsub(/\s*\((?=[[:upper:][:digit:]])[^)]*\)/, "").sub(/\s+-\s+panoramio\z/i, "")
+  end
+
+  # The title of a series of photos, such as "Sugarloaf Mountain in summer" for "... in summer 2" and "... 3",
+  # or "Grimm Forest" for "Grimm Forest I" and "Grimm Forest II - Letterboxing".
+  def self.series(caption)
+    name = caption.split(/\s+[-–]\s+/).first.to_s.sub(/[\s\-–_]*\(?\d[\d\s\-–_()]*[[:alpha:]]?\)?\z/, "")
+    without_places(name).sub(/\s+[IVX]+\z/, "").downcase.presence || caption.downcase
+  end
+
+  def self.caption(title)
+    title.sub(/\.jpe?g\z/i, "").tr("_", " ").squish
+  end
+
+  # A Commons file's visible categories, without "Category:".
+  def self.categories(file)
+    Array(value_at(file, "categories")).filter_map do |category|
+      category["title"].delete_prefix("Category:") if category.is_a?(Hash) && category["title"].is_a?(String)
+    end
   end
 
   def self.nearest_natural_page(latitude, longitude, connection)
@@ -109,14 +194,14 @@ module WikipediaService
     end
   end
 
-  # { file_url:, credit: }, or nil when the image has no license to credit.
-  def self.credit(image, connection)
+  # { file_url:, credit:, categories: } for a lead image that's a photo with a license to credit, or nil.
+  def self.lead_file(image, connection)
     file = query(connection,
-      titles: "File:#{image}", prop: "imageinfo", iiprop: "extmetadata|url",
-      iiextmetadatafilter: "Artist|LicenseShortName").first
+      titles: "File:#{image}", prop: "imageinfo|categories", iiprop: "extmetadata|url|mime",
+      iiextmetadatafilter: "Artist|LicenseShortName", clshow: "!hidden", cllimit: "max").first
     info = value_at(file, "imageinfo", 0)
-    credit = credit_from(info) if info.is_a?(Hash)
-    { file_url: info["descriptionurl"], credit: credit } if credit
+    credit = credit_from(info) if info.is_a?(Hash) && info["mime"] == "image/jpeg"
+    { file_url: info["descriptionurl"], credit: credit, categories: categories(file) } if credit
   end
 
   # "Author · License" for a file's image info, or nil when it has no license to credit.
@@ -160,9 +245,9 @@ module WikipediaService
     point = page["coordinates"].first if page["coordinates"].is_a?(Array)
     return false unless title.is_a?(String) && !title.match?(BUILT) && wikipedia_url?(page["fullurl"]) &&
       point.is_a?(Hash) && SearchHttp.coordinates?(point["lat"], point["lon"])
-    return title.match?(NATURAL) unless description.is_a?(String) && description.strip.present?
+    return title.gsub(URBAN_ISLAND, "").match?(NATURAL) unless description.is_a?(String) && description.strip.present?
 
-    kind = description.sub(DESCRIPTION_PLACE, "")
+    kind = description.sub(DESCRIPTION_PLACE, "").gsub(URBAN_ISLAND, "")
     kind.match?(NATURAL) && !kind.match?(BUILT) && !kind.match?(SETTLEMENT)
   end
 

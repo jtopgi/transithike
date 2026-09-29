@@ -309,6 +309,19 @@ body {
   pointer-events: auto;
 }
 
+/* The round-trip slider's track fills up to its handle, as the length slider's fills between its handles. */
+.form-range.range-fill {
+  --fill: 100%;
+}
+
+.form-range.range-fill::-webkit-slider-runnable-track {
+  background: linear-gradient(to right, var(--th-moss) var(--fill), var(--bs-secondary-bg) var(--fill));
+}
+
+.form-range.range-fill::-moz-range-track {
+  background: linear-gradient(to right, var(--th-moss) var(--fill), var(--bs-secondary-bg) var(--fill));
+}
+
 .form-range::-webkit-slider-thumb {
   background-color: var(--th-moss);
 }

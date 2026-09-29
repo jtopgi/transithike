@@ -148,7 +148,23 @@ class Results {
     box.hidden = messages.length === 0
   }
 
+  // The round-trip slider spans the hikes found, from the quickest to the longest,
+  // so every step shows some hikes. Its right end still means any round trip.
+  fitTrips() {
+    const minutes = [...this.list.querySelectorAll("[data-trail]")].map((card) => Number(card.dataset.travel) / 60)
+    if (minutes.length === 0) return
+
+    const step = Number(this.maxTrip.step)
+    const quickest = Math.ceil(Math.min(...minutes) / step) * step
+    const longest = Math.max(Math.ceil(Math.max(...minutes) / step) * step, quickest + step)
+    const any = this.maxTrip.value === this.maxTrip.max
+    this.maxTrip.min = quickest
+    this.maxTrip.max = longest
+    if (any) this.maxTrip.value = longest
+  }
+
   update() {
+    this.fitTrips()
     const anyTrip = this.maxTrip.value === this.maxTrip.max
     const maxTrip = anyTrip ? Infinity : Number(this.maxTrip.value) * 60
     const min = this.shortest.value === this.shortest.min ? 0 : Number(this.shortest.value)
@@ -158,6 +174,7 @@ class Results {
       : max === Infinity ? `${miles(min)} or more` : min === 0 ? `up to ${miles(max)}` : `${Number(min)}–${miles(max)}`
     const range = this.toolbar.querySelector("[data-length-range]")
     const percent = (input) => `${(input.value - input.min) / (input.max - input.min) * 100}%`
+    this.maxTrip.style.setProperty("--fill", percent(this.maxTrip))
     range.style.setProperty("--low", percent(this.shortest))
     range.style.setProperty("--high", percent(this.longest))
     const cards = [...this.list.querySelectorAll("[data-trail]")]

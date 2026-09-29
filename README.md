@@ -13,7 +13,8 @@ preview, photos taken nearby, highlights, how far the hike climbs, the round
 trip's travel time, the last trip back and how long that leaves there, and the
 trains and other transit to take each way, coming back the same way. Hikes can
 also be sorted by recommendation, round trip, time there, or length, and
-filtered with sliders for the longest round trip and a range of lengths.
+filtered with sliders for the longest round trip (spanning the hikes found, from
+the quickest to any) and a range of lengths.
 
 ## Requirements
 
@@ -163,18 +164,25 @@ test Overpass connectivity from your deployment before launching.
   other at a time, and cached for 30 days per route; each server process keeps up
   to 200 decoded tiles (128 KB each). The footer credits the data's sources, linking
   to their [attribution](https://github.com/tilezen/joerd/blob/master/docs/attribution.md).
-- **Photos.** Each card shows photos from within 2 km of the middle of the route,
-  which are not necessarily of the route: the lead image of the nearest park or
-  natural area's Wikipedia article, then photos taken nearby from Wikimedia
-  Commons, up to eight, in a gallery of thumbnails. Articles count as natural
-  areas by the kind of thing their short description names first ("State park in
-  New York" or "Range of hills in central England", but not "Fort on the Hudson
-  River" or "Mountain village in Switzerland"), or by their title when they have
-  none. Commons photos are JPEGs at least 800 px wide and at most three times
-  wider than tall, leaving out titles that suggest maps, signs, buildings, shops,
-  cars, artworks, or observation-app close-ups of species; titles that suggest
-  scenery come first, then the nearest. Credits leave out the names Commons
-  repeats in hidden elements.
+- **Photos** are only of nature. Each card shows up to eight in a gallery of
+  thumbnails, taken within 2 km of three points along the route (its middle and
+  a sixth of the way from each end), which are not necessarily of the route: the
+  lead image of the nearest park or natural area's Wikipedia article, then photos
+  taken along the route from Wikimedia Commons, views and waterfalls first, then
+  the nearest, with at most two from a series (such as "Sugarloaf Mountain in
+  summer 2" and "3"). Articles count as natural areas by the kind of thing their
+  short description names first ("State park in New York" or "Range of hills in
+  central England", but not "Fort on the Hudson River", "Mountain village in
+  Switzerland", or "Series of chains across the Hudson River"), or by their title
+  when they have none. Photos are JPEGs at least 800 px wide and at most three
+  times wider than tall, whose title or a visible Commons category names a
+  natural feature (a mountain, ridge, lake, river, waterfall, forest, trail,
+  preserve, and so on), and neither names anything built, vehicles, people,
+  close-ups of wildlife (including species' scientific names), maps, or artworks
+  ("Alexander Hamilton by Franklin Simmons"). Places named like nature, such as
+  "Cold Spring, New York", "Long Island", or a place in parentheses, don't count.
+  Some hikes have no photos of nature nearby, and then show only the map. Credits
+  leave out the names Commons repeats in hidden elements.
 - Provider failures produce a friendly error, not misleading empty results. The
   origin's area, the tiles after the first four, highlights, terrain, and photos
   only refine a search, which goes ahead without them. Highlights not found within

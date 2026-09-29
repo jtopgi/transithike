@@ -175,6 +175,14 @@ class SearchesTest < ApplicationSystemTestCase
       assert_equal names, route_names, order
     end
 
+    # The round-trip slider spans the hikes found, from 2 h 20 min to 3 h 20 min as estimated, or
+    # 2 h 10 min to 3 h 10 min as planned, so even its quickest end shows the quickest hike.
+    trip = find("[data-max-trip]")
+    assert_includes [135, 150], trip["min"].to_i
+    assert_includes [195, 210], trip["max"].to_i
+    slide "[data-max-trip]", 0
+    assert_text "Showing 1 of 3 hikes"
+    assert_equal ["Ridge Trail"], route_names
     slide "[data-max-trip]", 180
     assert_text "Round trip: up to 3 h"
     assert_text "Showing 2 of 3 hikes"

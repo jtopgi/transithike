@@ -6,7 +6,7 @@
     <div class="trail-media">
       <div class="trail-map" role="img" aria-label="Map of <%= trail.name %>"
            data-path="<%= trail.path.to_json %>" data-start="<%= [trail.latitude, trail.longitude].to_json %>"></div>
-      <a class="trail-photo" data-photos-url="<%= photos_path(lat: trail.midpoint.first, lon: trail.midpoint.last) %>" hidden
+      <a class="trail-photo" data-photos-url="<%= photos_path(points: photo_points(trail)) %>" hidden
          target="_blank" rel="noopener">
         <img alt="" decoding="async">
         <span class="trail-photo-caption"></span>
