@@ -144,7 +144,15 @@ class WikipediaServiceTest < ActiveSupport::TestCase
       "Grimm Forest I" => ["Bethpage State Park", "Forests"],
       "Wallkill Valley Rail Trail in autumn" => [], "Old Croton Aqueduct Trail" => [],
       # Kinds in parentheses count, and places don't.
-      "Inn in Samedan" => ["Inn (river)"], "Massapequa preserve - panoramio (3)" => ["Massapequa Park, New York"]
+      "Inn in Samedan" => ["Inn (river)"], "Massapequa preserve - panoramio (3)" => ["Massapequa Park, New York"],
+      # Rivers and state lines named like train lines, skies with Latin names, and things done "by" something.
+      "Ken Lockwood Gorge" => ["South Branch Raritan River"], "State Line Lookout" => ["Palisades Interstate Park"],
+      "Parallel Hills" => ["Cumulus humilis clouds in the United States", "Stratocumulus floccus clouds"],
+      "Sunrise by the lake" => ["Trees damaged by fire in the United States"],
+      # Parks, refuges, and paths named like what's left out.
+      "Great Swamp" => ["Great Swamp National Wildlife Refuge"], "Castle Point view" => ["Minnewaska State Park Preserve"],
+      "Carriage road in autumn" => ["Carriage roads of Mohonk Preserve"], "Crane Mountain" => [],
+      "Eagle Rock" => ["Harriman State Park (New York)"], "Bear Mountain from the Hudson" => [], "Hawk Mountain" => []
     }
     left_out = {
       # Nothing names a natural feature, or only a place named like one.
@@ -152,7 +160,14 @@ class WikipediaServiceTest < ActiveSupport::TestCase
       "Greenwoods" => ["Greenwood Gardens (Short Hills, New Jersey)"], "Massapequa 1" => ["Long Island"],
       # Roads, train lines, people, wildlife, and views from space.
       "NY 9D approaching Breakneck Ridge" => ["Breakneck Ridge", "Road tunnels in New York (state)"],
-      "Hudson view" => ["Hudson Line", "Hudson River"], "Croton Aqueduct high bridge" => [],
+      "Hudson view" => ["Hudson Line", "Hudson River"], "Danbury Branch by the river" => [], "Croton Aqueduct high bridge" => [],
+      "Interstate 87 through the mountains" => [], "Old road by the lake" => [], "Bannerman Castle from the river" => [],
+      "USFWS Northeast Regional Director at the refuge" => ["Great Swamp National Wildlife Refuge"],
+      "Assessing damage in the swamp" => ["Hurricane Sandy"],
+      "Celebrating 50 years of wilderness" => ["Great Swamp National Wildlife Refuge", "Wilderness Act"],
+      "Wood Turtle nest mound" => ["Great Swamp National Wildlife Refuge", "Turtles of New Jersey"],
+      "Serviceberry (Amelanchier sp.) - Great Swamp" => ["Great Swamp National Wildlife Refuge", "Unidentified Amelanchier"],
+      "ISS043-E-243761" => ["Hudson River"],
       "Finn Andersen 2021 in New Jersey" => ["Men in forests"], "Brooks Koepka" => ["2019 PGA Championship", "Bethpage State Park"],
       "Blue Jay (210140531)" => ["Cyanocitta cristata"], "Black-throated Green Warbler" => ["Parulidae of New Jersey"],
       "Pokeweed of Massapequa Preserve" => ["Phytolacca americana"], "ISS043-E-243761 - View of Earth" => [],
@@ -161,10 +176,13 @@ class WikipediaServiceTest < ActiveSupport::TestCase
       "GreatFalls20240707 125616" => ["Alexander Hamilton by Franklin Simmons", "Great Falls (Passaic River)"],
       "Grimm Forest II - Letterboxing" => ["Forests", "Letterboxing (film)"], "Bethpage-golf1" => ["Bethpage State Park"]
     }
-    files = kept.merge(left_out).each_with_index.map do |(title, categories), index|
+    kept.each { |title, categories| assert WikipediaService.nature?(title, categories), title }
+    left_out.each { |title, categories| refute WikipediaService.nature?(title, categories), title }
+    # Photos taken nearby are shown the same way.
+    files = kept.first(4).to_h.merge(left_out.first(4).to_h).each_with_index.map do |(title, categories), index|
       commons_file("#{title}.jpg", lat: index * 0.0001, categories: categories)
     end
-    assert_equal kept.keys.sort, photos([], files: files)[:photos].pluck(:caption).sort
+    assert_equal kept.keys.first(4).sort, photos([], files: files)[:photos].pluck(:caption).sort
   end
 
   test "photos are looked for along the route, and a series shows at most two" do
