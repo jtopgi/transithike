@@ -13,11 +13,15 @@ module WikipediaService
   MIN_PHOTO_WIDTH = 800
   MAX_ASPECT = 3
   # Titles of files near a route that aren't of its scenery, and of the ones that likely are.
-  NOT_SCENERY = /\b(?:maps?|logos?|diagrams?|signs?|signposts?|plaques?|seals?|flags?|coat of arms|charts?|graphs?|locator|stamps?|collections?|bldg|buildings?|offices?|schools?|hospitals?|churche?s?|interiors?|portraits?|paintings?|drawings?|engravings?|lithographs?|postcards?|posters?|documents?|cars?|trucks?|buses)\b/i
+  NOT_SCENERY = /\b(?:maps?|logos?|diagrams?|signs?|signposts?|plaques?|seals?|flags?|coat of arms|charts?|graphs?|locator|stamps?|collections?|bldg|buildings?|offices?|schools?|hospitals?|churche?s?|inns?|hotels?|motels?|lodges?|restaurants?|museums?|stations?|parking|town hall|city hall|village hall|courthouses?|post offices?|librar(?:y|ies)|stores?|shops?|diners?|caf[eé]s?|pubs?|vehicles?|motorcycles?|interiors?|portraits?|paintings?|drawings?|engravings?|lithographs?|postcards?|posters?|documents?|cars?|trucks?|buses)\b/i
   SCENERY = /\b(?:views?|vistas?|overlooks?|lookouts?|lakes?|ponds?|reservoirs?|rivers?|falls|waterfalls?|mountains?|mount|mt|hills?|ridges?|trails?|summits?|peaks?|forests?|woods|panorama|autumn|foliage|creeks?|brooks?|gorges?|cliffs?|rocks?|sunsets?|sunrises?|landscapes?|hik(?:e|es|ing)|preserve|reservation|valleys?|meadows?|beach|shore|state park)\b/i
+  # Photos of cars, named for their model year and make, as in "2015 Ford Explorer".
+  VEHICLE = /\b(?:19|20)\d\d (?:Acura|Audi|BMW|Buick|Cadillac|Chevrolet|Chrysler|Dodge|Fiat|Ford|GMC|Honda|Hyundai|Infiniti|Jaguar|Jeep|Kia|Land Rover|Lexus|Lincoln|Mazda|Mercedes|Mini|Mitsubishi|Nissan|Pontiac|Porsche|Ram|Range Rover|Saturn|Scion|Subaru|Suzuki|Tesla|Toyota|Volkswagen|Volvo)\b/i
   # Uploads from nature-observation apps, named for the species and an observation number.
   SPECIES = /\A[A-Z][a-z]+ [a-z]+(?: [a-z]+)? \d{5,}\.jpe?g\z/
   NATURAL = /\b(?:parks?|trails?|lakes?|mount(?:ain)?s?|forests?|creeks?|falls|waterfalls?|preserve|reserve|natural area|wilderness|peaks?|summits?|rivers?|beach(?:es)?|woods|gardens?|arboretum|canyons?|gorge|ridges?|hills?|bay|ponds?|marsh|wetlands?|greenway|valley|islands?|glacier|nature|headland|cape|bluffs?|cliffs?|dunes?|meadows?|prairie)\b/i
+  # Short descriptions name the kind of thing first, as in "Fort on the Hudson River", then where it is.
+  DESCRIPTION_PLACE = /\s(?:in|on|of|at|near|along|within|during|between|from|by|off|outside|overlooking)\s.*/im
   BUILT = /\b(?:schools?|station|university|college|church|hospital|airport|mall|stadium|library|museum|company|corporation|district|building|tower|bridge|hotel|apartments?|condominiums?|highway|interchange|railway|railroad|zoo|cemetery|memorial|monument)\b/i
 
   # { title:, article_url:, image:, image_url: }, or nil when no park or
@@ -25,7 +29,7 @@ module WikipediaService
   def self.nearby_area(latitude, longitude, connection: nil, cache: Rails.cache)
     # Routes joined within about 1 km of each other share one lookup.
     latitude, longitude = latitude.round(2), longitude.round(2)
-    cache.fetch("wikipedia:area:v2:#{latitude}:#{longitude}", expires_in: CACHE_TTL) do
+    cache.fetch("wikipedia:area:v3:#{latitude}:#{longitude}", expires_in: CACHE_TTL) do
       connection ||= SearchHttp.connection(API_URL)
       page = nearest_natural_page(latitude, longitude, connection)
       next unless page
@@ -45,7 +49,7 @@ module WikipediaService
     connection ||= SearchHttp.connection(API_URL)
     area = nearby_area(latitude, longitude, connection: connection, cache: cache)
     lead = if area&.dig(:image)
-      credit = cache.fetch("wikipedia:credit:v1:#{area[:image]}", expires_in: CREDIT_CACHE_TTL) { credit(area[:image], connection) }
+      credit = cache.fetch("wikipedia:credit:v2:#{area[:image]}", expires_in: CREDIT_CACHE_TTL) { credit(area[:image], connection) }
       { image_url: area[:image_url], caption: "Near #{area[:title]}" }.merge(credit) if credit
     end
     photos = [lead, *commons_photos(latitude, longitude, commons, cache)].compact
@@ -54,10 +58,10 @@ module WikipediaService
   end
 
   # Credited photos taken within RADIUS_METERS of a point, on Wikimedia
-  # Commons, leaving out maps, signs, buildings, and close-ups of species.
+  # Commons, leaving out maps, signs, buildings, cars, and close-ups of species.
   def self.commons_photos(latitude, longitude, connection, cache)
     latitude, longitude = latitude.round(2), longitude.round(2)
-    cache.fetch("wikipedia:commons:v1:#{latitude}:#{longitude}", expires_in: CACHE_TTL) do
+    cache.fetch("wikipedia:commons:v2:#{latitude}:#{longitude}", expires_in: CACHE_TTL) do
       connection ||= SearchHttp.connection(COMMONS_URL)
       files = query(connection,
         generator: "geosearch", ggscoord: "#{latitude}|#{longitude}", ggsradius: RADIUS_METERS, ggsnamespace: 6,
@@ -73,7 +77,7 @@ module WikipediaService
     title = file["title"].delete_prefix("File:") if file["title"].is_a?(String)
     info = value_at(file, "imageinfo", 0)
     point = value_at(file, "coordinates", 0)
-    return unless title && info.is_a?(Hash) && info["mime"] == "image/jpeg" && !title.match?(NOT_SCENERY) &&
+    return unless title && info.is_a?(Hash) && info["mime"] == "image/jpeg" && !title.match?(NOT_SCENERY) && !title.match?(VEHICLE) &&
       !title.match?(SPECIES) && info["width"].is_a?(Integer) && info["height"].is_a?(Integer) &&
       info["width"] >= MIN_PHOTO_WIDTH && info["height"].positive? && info["width"] <= info["height"] * MAX_ASPECT &&
       point.is_a?(Hash) && SearchHttp.coordinates?(point["lat"], point["lon"]) &&
@@ -114,7 +118,12 @@ module WikipediaService
     return unless license.is_a?(String) && license.strip.present? && wikimedia_url?(info["descriptionurl"])
 
     author = value_at(info, "extmetadata", "Artist", "value")
-    author = Nokogiri::HTML5.fragment(author).text.squish.truncate(60) if author.is_a?(String)
+    if author.is_a?(String)
+      html = Nokogiri::HTML5.fragment(author)
+      # Commons repeats some names in hidden elements for machine readers.
+      html.css("[style]").each { |node| node.remove if node["style"].match?(/display\s*:\s*none/i) }
+      author = html.text.squish.truncate(60)
+    end
     [author.presence, license.strip].compact.join(" · ")
   end
 
@@ -138,9 +147,10 @@ module WikipediaService
 
   # Short descriptions such as "Park in Seattle" or "Heritage streetcar in Washington"
   # tell natural areas apart better than titles, which are used when there is none.
+  # Only the kind of thing counts, not where it is, so a fort on a river isn't a natural area.
   def self.natural?(page)
     title, description = page.values_at("title", "description")
-    kind = description.is_a?(String) && description.strip.present? ? description : title
+    kind = description.is_a?(String) && description.strip.present? ? description.sub(DESCRIPTION_PLACE, "") : title
     point = page["coordinates"].first if page["coordinates"].is_a?(Array)
     title.is_a?(String) && kind.match?(NATURAL) && !kind.match?(BUILT) && !title.match?(BUILT) &&
       wikipedia_url?(page["fullurl"]) && point.is_a?(Hash) && SearchHttp.coordinates?(point["lat"], point["lon"])

@@ -73,6 +73,11 @@ class WikipediaServiceTest < ActiveSupport::TestCase
       page("Tiger Mountain State Forest", lat: 47.662), page("Twin Peaks", lat: 47.663, description: "Two prominent hills")]
     assert_equal "Tiger Mountain State Forest", area(pages)[:title]
     assert_equal "Twin Peaks", area([pages.first, pages.last])[:title]
+    # A description names the kind of thing first, and then where it is, which may be a natural area.
+    fort = page("Fort Clinton", lat: 47.66, description: "Fort on the Hudson River during the American Revolutionary War")
+    island = page("Iona Island", lat: 47.661, description: "Island of the Hudson River in the town of Stony Point, New York")
+    assert_equal "Iona Island", area([fort, island])[:title]
+    assert_nil area([fort, page("Doodletown", lat: 47.661, description: "Isolated settlement in the Hudson Highlands")])
   end
 
   test "the photos near a route start with the nearest park's lead image, credited to its author and license" do
@@ -98,7 +103,8 @@ class WikipediaServiceTest < ActiveSupport::TestCase
       commons_file("Lake at sunset.jpg", lat: 0.005), commons_file("Summit_view_from_the_top.JPEG", lat: 0.002),
       # Maps, signs, buildings, species close-ups, drawings, small or very wide images, and other files.
       commons_file("Park map.jpg"), commons_file("Trailhead signpost.jpg"), commons_file("New office bldg.jpg"),
-      commons_file("Clavaria zollingeri 302990109.jpg"), commons_file("Lake painting.jpg"),
+      commons_file("Clavaria zollingeri 302990109.jpg"), commons_file("Lake painting.jpg"), commons_file("Bear Mountain Inn NY1.jpg"),
+      commons_file("Philipstown, NY, town hall.jpg"), commons_file("2015 Ford Explorer XLT 4WD in Oxford White, rear right.jpg"),
       commons_file("Tiny lake.jpg", width: 640), commons_file("Wide lake panorama.jpg", width: 24_000, height: 3_800),
       commons_file("Lake diagram.png", mime: "image/png"), commons_file("Unlicensed lake.jpg", license: nil),
       commons_file("Lake with no place.jpg").except("coordinates")
@@ -132,6 +138,12 @@ class WikipediaServiceTest < ActiveSupport::TestCase
   test "an unknown author still credits the license" do
     lead = photos([page("Discovery Park", lat: 47.66)], image_info(license: "Public domain", artist: nil))[:photos].first
     assert_equal "Public domain", lead[:credit]
+  end
+
+  test "names Commons hides for machine readers are credited once" do
+    artist = %(<div class="fn value">\nUnknown author<span style="display: none;">Unknown author</span></div>)
+    lead = photos([page("Discovery Park", lat: 47.66)], image_info(license: "Public domain", artist: artist))[:photos].first
+    assert_equal "Unknown author · Public domain", lead[:credit]
   end
 
   test "areas and photos taken nearby are shared within about 1 km, credits are cached, and failures surface" do

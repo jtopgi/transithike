@@ -166,10 +166,14 @@ test Overpass connectivity from your deployment before launching.
 - **Photos.** Each card shows photos from within 2 km of the middle of the route,
   which are not necessarily of the route: the lead image of the nearest park or
   natural area's Wikipedia article, then photos taken nearby from Wikimedia
-  Commons, up to eight, in a gallery of thumbnails. Commons photos are JPEGs at
-  least 800 px wide and at most three times wider than tall, leaving out titles
-  that suggest maps, signs, buildings, artworks, or observation-app close-ups of
-  species; titles that suggest scenery come first, then the nearest.
+  Commons, up to eight, in a gallery of thumbnails. Articles count as natural
+  areas by the kind of thing their short description names first ("State park in
+  New York", but not "Fort on the Hudson River"), or by their title when they have
+  none. Commons photos are JPEGs at least 800 px wide and at most three times
+  wider than tall, leaving out titles that suggest maps, signs, buildings, shops,
+  cars, artworks, or observation-app close-ups of species; titles that suggest
+  scenery come first, then the nearest. Credits leave out the names Commons
+  repeats in hidden elements.
 - Provider failures produce a friendly error, not misleading empty results. The
   origin's area, the tiles after the first four, highlights, terrain, and photos
   only refine a search, which goes ahead without them. Highlights not found within
