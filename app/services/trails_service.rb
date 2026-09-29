@@ -15,7 +15,7 @@ module TrailsService
   # Stations closer than this are in or next to the city, so hikes near them aren't day trips.
   MIN_DISTANCE_METERS = 20_000
   # Routes in the tiles with the quickest stations are checked first, while the rest are found.
-  FIRST_TILES = OverpassService::TILES_PER_QUERY
+  FIRST_TILES = 4
   # Routes are checked in batches, most promising first, so results show as they are found.
   BATCH_SIZE = 40
   # Hiking at 2 mph with breaks. Routes that don't loop are hiked out and back,
@@ -26,12 +26,19 @@ module TrailsService
   REQUIRED_HOURS = 1.5..4
   # Without the one-request API, only this many of the nearest routes are planned one by one.
   MAX_PLANNED_ROUTES = 15
-  # Popularity is looked up for the most promising routes.
-  MAX_AREA_LOOKUPS = 40
-  # Routes beyond this many in one park or natural area rank lower, for variety.
+  # Terrain is looked up for up to this many of the most promising routes, a
+  # few near each other at a time so they share elevation tiles, and searches
+  # wait at most TERRAIN_WAIT_SECONDS for it.
+  MAX_TERRAIN_LOOKUPS = 100
+  TERRAIN_CHUNK = 6
+  TERRAIN_WAIT_SECONDS = 8
+  # Routes in cells this many degrees across are near enough to share tiles.
+  TERRAIN_CELL_DEGREES = 0.125
+  # Routes beyond this many within AREA_METERS of each other rank lower, for variety.
   MAX_PER_AREA = 2
-  # Points toward the scenic score for each highlight on the way.
-  SCENIC_POINTS = { "waterfall" => 2, "peak" => 2, "viewpoint" => 1 }.freeze
+  AREA_METERS = 3_000
+  # Scenery counts most toward the recommended order.
+  SCENIC_WEIGHT = 0.6
   # Highlights only refine the ranking, so searches wait at most this long for
   # them once every batch is checked. Slower lookups finish in the background
   # and are cached for later searches.
@@ -48,7 +55,7 @@ module TrailsService
   # once every batch is checked, and with :update and every route once
   # highlights and popularity rank them. Returns the result.
   def self.search(origin:, day: nil, near: nil, places: PhotonService, transit: TransitousService,
-    hiking: OverpassService, wiki: WikipediaService, &on_found)
+    hiking: OverpassService, elevation: ElevationService, &on_found)
     place = origin.is_a?(String) ? places.geocode(origin, near: near) : origin
     unless place
       raise SearchErrors::InvalidInput, "We could not find that starting point. Try a city, neighborhood, or address."
@@ -81,7 +88,7 @@ module TrailsService
     return result if result.trails.empty?
 
     on_found&.call(:ranking, result.trails.size)
-    enrich(result, search.lookups, wiki)
+    enrich(result, search.lookups, elevation)
     on_found&.call(:update, result.trails)
     result
   end
@@ -192,39 +199,48 @@ module TrailsService
     hike_hours(trail).clamp(REQUIRED_HOURS)
   end
 
-  # Adds the highlights found in time and the popularity of the most promising
-  # routes' areas, then scores and orders every route.
-  def self.enrich(result, lookups, wiki)
+  # Adds the highlights found in time and the terrain of the most promising
+  # routes, then scores and orders every route.
+  def self.enrich(result, lookups, elevation)
     settle(lookups.map(&:last), timeout: HIGHLIGHT_WAIT_SECONDS)
     lookups.each do |trails, lookup|
       # Routes are shown without highlights when they cannot be looked up in time.
       found = (lookup.value if lookup.fulfilled?) || {}
       trails.each { |trail| trail.highlights = found[trail.osm_id] || [] }
     end
-    add_areas(result.trails.max_by(MAX_AREA_LOOKUPS) { |trail| score(trail) }, wiki)
+    add_terrain(result.trails.max_by(MAX_TERRAIN_LOOKUPS) { |trail| score(trail) }, elevation)
     rank(result.trails)
   end
 
-  # The nearest park or natural area with a Wikipedia article, whose page views
-  # show how well known it is. Routes whose lookup fails are shown without one.
-  def self.add_areas(trails, wiki)
-    run_all(trails.map { |trail| -> { wiki.nearby_area(*trail.midpoint) } }).zip(trails)
-      .each { |lookup, trail| trail.area = (lookup.value if lookup.fulfilled?)&.slice(:title, :article_url, :monthly_views) }
+  # How far the routes climb and how far their high points stand above the land
+  # around them. Routes whose terrain isn't found in time are ranked without it,
+  # and the lookups finish in the background for later searches.
+  def self.add_terrain(trails, elevation)
+    chunks = trails.sort_by { |trail| trail.midpoint.map { |degrees| (degrees.to_f / TERRAIN_CELL_DEGREES).floor } }
+      .each_slice(TERRAIN_CHUNK).to_a
+    lookups = settle(chunks.map { |chunk| start { elevation.terrain(chunk) } }, timeout: TERRAIN_WAIT_SECONDS)
+    lookups.zip(chunks).each do |lookup, chunk|
+      found = (lookup.value if lookup.fulfilled?) || {}
+      chunk.each { |trail| trail.terrain = found[trail.osm_id] }
+    end
   end
 
-  # Scores the trails, ranking routes after the first MAX_PER_AREA in one area lower, and orders them best first.
+  # Scores the trails, ranking routes after the first MAX_PER_AREA within
+  # AREA_METERS of each other lower, and orders them best first.
   def self.rank(trails)
     trails.each { |trail| trail.score = score(trail) }
-    trails.select { |trail| trail.area&.dig(:title) }.group_by { |trail| trail.area[:title] }.each_value do |group|
-      group.sort_by { |trail| [-trail.score, trail.duration] }.drop(MAX_PER_AREA).each { |trail| trail.score -= 1.5 }
+    ranked = []
+    trails.sort_by { |trail| [-trail.score, trail.duration] }.each do |trail|
+      nearby = ranked.count { |other| OverpassService.distance(*trail.midpoint, *other.midpoint) < AREA_METERS }
+      trail.score -= 1.5 if nearby >= MAX_PER_AREA
+      ranked << trail
     end
     trails.each { |trail| trail.score = trail.score.round(2) }
     trails.sort_by! { |trail| [-trail.score, trail.duration] }
   end
 
-  # Higher is better: unpaved routes of day-hike length, with highlights on the
-  # way, in well-known areas, with time to enjoy them, and not too long a trip
-  # there and back.
+  # Higher is better: scenic, unpaved routes of day-hike length, with time to
+  # enjoy them, and not too long a trip there and back.
   def self.score(trail)
     length = case trail.length
     when 3..12 then 1.5
@@ -232,21 +248,38 @@ module TrailsService
     when 1...2 then 0.25
     else 0
     end
-    views = trail.area&.dig(:monthly_views).to_i
-    popularity = [Math.log10(views + 1) - 2, 0].max * 0.75
     # Day trips by train often take up to three hours there and back; longer ones count against a hike.
     hours = round_trip_seconds(trail) / 3600.0
     travel = [hours - 3, 0].max * 0.25 + [hours - 6, 0].max * 0.5
     rushed = trail.last_return && trail.last_return - trail.arrival < hike_hours(trail).hours ? 0.5 : 0
-    length + [scenic(trail), 4].min * 0.5 + popularity + (trail.notable ? 0.5 : 0) - trail.paved.to_f * 2.5 -
+    length + scenic(trail) * SCENIC_WEIGHT + (trail.notable ? 0.5 : 0) - trail.paved.to_f * 2.5 -
       (OverpassService.generic_name?(trail.name) ? 1 : 0) - travel - trail.transfers.to_i * 0.1 - rushed
   end
 
-  # Waterfalls and summits count double viewpoints, and unnamed ones half as much as named ones.
+  # How scenic a route is, from 0 to about 8: the best of its views and
+  # waterfalls counts in full, the next one half, and the one after a quarter,
+  # so one grand view outweighs many small ones.
   def self.scenic(trail)
-    Array(trail.highlights).sum do |highlight|
-      SCENIC_POINTS.fetch(highlight[:kind], 0) * (highlight[:name] ? 1 : 0.5)
-    end
+    waterfalls = Array(trail.highlights).select { |highlight| highlight[:kind] == "waterfall" }
+    features = [views(trail), *waterfalls.map { |highlight| waterfall(highlight) }].sort.reverse
+    features.first(3).each_with_index.sum { |value, index| value / 2**index }.round(2)
+  end
+
+  # Views, from 0 to about 5.75: a point for every 100 m the route climbs or
+  # its high point stands above the land around it, up to four, and more for a
+  # mapped viewpoint, a named summit, and a famous summit or viewpoint.
+  def self.views(trail)
+    terrain = trail.terrain || {}
+    highlights = Array(trail.highlights)
+    [[terrain[:climb].to_i, terrain[:relief].to_i].max / 100.0, 4].min +
+      (highlights.any? { |highlight| highlight[:kind] == "viewpoint" } ? 0.5 : 0) +
+      (highlights.any? { |highlight| highlight[:kind] == "peak" && highlight[:name] } ? 0.25 : 0) +
+      (highlights.any? { |highlight| highlight[:kind] != "waterfall" && highlight[:notable] } ? 1 : 0)
+  end
+
+  # A waterfall, from 1.5 to 4.5: more for a name, a Wikipedia article, and every 20 m of height, up to 1.5.
+  def self.waterfall(highlight)
+    1.5 + (highlight[:name] ? 0.5 : 0) + (highlight[:notable] ? 1 : 0) + [highlight[:height].to_f / 20, 1.5].min
   end
 
   # 8 AM on the day of the trip in the origin's time zone, or now, rounded up to
@@ -268,11 +301,6 @@ module TrailsService
       date = local.to_date + (weekday - local.wday) % 7
       date == local.to_date && local.hour >= LATEST_START_HOUR ? date + 7 : date
     end.min
-  end
-
-  # Runs each block on the shared provider pool and returns the settled futures.
-  def self.run_all(blocks)
-    settle(blocks.map { |block| start(&block) })
   end
 
   # A future for the block, run on the shared provider pool unless another is given.

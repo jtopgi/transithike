@@ -8,12 +8,12 @@ town: hikes near commuter-rail, Amtrak, and other train stations, not the parks
 the subway already reaches. The application is Rails-rendered with Bootstrap: a
 starting-point box that suggests places as you type (or uses the device's
 location) with a Saturday/Sunday choice, and a results page that shows at once
-and streams in hikes as they are found. Each card has a map preview, a nearby
-photo, highlights, popularity, the round trip's travel time, the last trip back
-and how long that leaves there, and the trains and other transit to take each
-way, coming back the same way. Hikes can be sorted by recommendation, round trip,
-time there, distance, popularity, scenery, or length, and filtered by length and
-round trip.
+and streams in hikes as they are found, most scenic first. Each card has a map
+preview, photos taken nearby, highlights, how far the hike climbs, the round
+trip's travel time, the last trip back and how long that leaves there, and the
+trains and other transit to take each way, coming back the same way. Hikes can
+also be sorted by recommendation, round trip, time there, or length, and
+filtered with sliders for the longest round trip and a range of lengths.
 
 ## Requirements
 
@@ -23,7 +23,8 @@ round trip.
 - Internet access for searches. No API keys or paid accounts are needed: place
   suggestions come from [Photon](https://photon.komoot.io), transit routing from
   [Transitous](https://transitous.org), routes and map tiles from OpenStreetMap,
-  and photos from Wikipedia.
+  elevation from [Terrain Tiles on AWS](https://registry.opendata.aws/terrain-tiles/),
+  and photos from Wikipedia and Wikimedia Commons.
 
 The application uses Rails 8.1, Puma 8, Propshaft, esbuild, and Bootstrap 5.
 Webpacker, jQuery, Spring, and the obsolete Google Maps Ruby wrapper are removed.
@@ -67,15 +68,18 @@ test Overpass connectivity from your deployment before launching.
   on the subway, a bus, or on foot. From each, Transitous lists the stations
   reached by commuter, regional, intercity, and suburban trains
   (`TransitousService::TRAIN_MODES`, which leave out Transitous's `RAIL`, since it
-  includes the subway) within **3 hours** of setting out, or within 120 or 80
+  includes the subway) within **3½ hours** of setting out, or within 120 or 80
   minutes of boarding where that list is over 8 MB, as across Switzerland
   (remembered for a day per area). Stations closer than **20 km** to the origin
   are in or next to the city and don't count.
 - **Routes.** Hiking-route relations are found in 0.5° tiles holding routes
-  within a 30-minute walk of a station, up to 16 tiles with the quickest stations
-  first: the first four in one query, the rest four neighbors at a time, each query
-  finding the routes of the region around its tiles once, then keeping those in
-  the tiles (a tile's routes are left out when its query fails). Routes
+  within a 30-minute walk of a station, up to 20 tiles: the 8 with the quickest
+  stations within 2 hours, 7 within 3 hours, and 5 farther, so the scenery
+  farther out is searched as well as the nearest (a band without enough tiles
+  leaves room for more of the quickest). The four quickest are queried first, the
+  rest four neighbors at a time, each query finding the routes of the region
+  around its tiles once, then keeping those in the tiles (a tile's routes are
+  left out when its query fails). Routes
   spanning less than 300 m, under **1 mile** or over **30 miles** long, at least
   half on paved paths or roads, and repeated sections of one named trail (the same
   name within 5 km) are left out: they are walks or multi-day trails rather than
@@ -94,7 +98,7 @@ test Overpass connectivity from your deployment before launching.
   Transitous reports for the origin (UTC when unknown), or now (rounded to the
   next quarter hour) once that morning has begun; from 10 AM it's too late to set
   out, so the trip is for the same day a week later. The search page offers the
-  next weekend day by the device's clock. Only routes reachable within **3½
+  next weekend day by the device's clock. Only routes reachable within **4
   hours** of setting out, waiting included, are shown, and only with a way back
   that arrives by **11 PM** the same day and leaves enough time to hike: the
   route's length at 2 mph, or twice that for routes that don't loop, but at least
@@ -104,7 +108,7 @@ test Overpass connectivity from your deployment before launching.
 - **There and back the same way.** Each card shows the round trip: the rides
   there and back. Until a card's trips are planned, it is twice the trip there
   (waiting for the first train included), since coming back the same way takes
-  about as long; ranking, sorting, and the round-trip filter start from that.
+  about as long; ranking, sorting, and the round-trip slider start from that.
   Once the card scrolls into view, its trips are planned: the soonest trip there,
   then the trips back that ride the same trains back between the same stations
   (via the station where the last train stopped and the one where the first
@@ -119,39 +123,60 @@ test Overpass connectivity from your deployment before launching.
   quickest other way is shown, and the card says so.
 - **Not the city's parks.** Hikes the subway, metro, or light rail
   (`TransitousService::CITY_MODES`: Transitous's `SUBWAY` and `TRAM`; its `METRO`
-  means suburban trains) reach within those 3½ hours are left out, since
+  means suburban trains) reach within those 4 hours are left out, since
   city dwellers likely know them already; when that can't be checked, they stay.
 - Lengths are approximate, calculated from deduplicated mapped way geometry.
   Nested or incomplete routes are skipped. Directions and travel times lead to the
   point on each route that trains reach soonest, estimated from the stations and a
   straight-line walk. That point is not necessarily an official or accessible
   trailhead: check the route and local conditions.
+- **Most scenic**, the default order, scores a hike's best feature in full, the
+  next best half, and the third a quarter, so one grand view outranks many small
+  ones. Its views score a point for every 100 m it climbs or its high point stands
+  above the land around it, whichever is more, up to four, plus half a point for
+  a mapped viewpoint, a quarter for a named summit, and one for a summit or
+  viewpoint with a Wikipedia article. Each waterfall scores 1.5, plus half a point
+  for a name, one for a Wikipedia article, and one for every 20 m of mapped height,
+  up to 1.5. Cards show "Big views" when the higher of the climb and the relief is
+  at least 300 m (about 1,000 ft), and "Views" from 150 m.
 - **Recommended** adds 1.5 points for routes of 3 to 12 miles (1 for 2 to 3 or 12
-  to 16 miles, a quarter for shorter ones), up to two for highlights, about 0.75
-  per tenfold increase in page views above 100, and half a point for routes with
-  Wikipedia or Wikidata entries. It subtracts up to 1.25 points for partly paved
-  routes, one for generic names such as "Trail 2", a quarter point per hour of
-  round trip beyond three hours plus another half point per hour beyond six hours,
-  0.1 per transfer, half a point when there isn't time to hike the whole route
-  before the last trip back, and 1.5 points for each route after the first two in
-  one park or natural area, for variety.
+  to 16 miles, a quarter for shorter ones), 0.6 per point of scenery, and half a
+  point for routes with Wikipedia or Wikidata entries. It subtracts up to 1.25
+  points for partly paved routes, one for generic names such as "Trail 2", a
+  quarter point per hour of round trip beyond three hours plus another half point
+  per hour beyond six hours, 0.1 per transfer, half a point when there isn't time
+  to hike the whole route before the last trip back, and 1.5 points for a route
+  within 3 km of two that rank higher, for variety.
 - **Highlights** are mapped waterfalls, summits, and viewpoints within 150 m of a
-  route's ways; waterfalls and summits count twice as much as viewpoints, and
-  unnamed ones half as much as named ones. The paved share comes from mapped
-  surfaces, roads, and sidewalks.
-- **Popularity** is Wikipedia page views over the last 30 days of the nearest park
-  or natural area article to the middle of a route, not of the route itself, for
-  the 40 most promising hikes: "Popular" from 300 views and "Very popular" from
-  2,000. Articles count as natural areas by their short description ("Park in
-  Seattle"), or their title when they have none.
-- Photos show the lead image of the same article, within 2 km of the middle of a
-  route, which is not necessarily the route. Elevation is not shown.
+  route's ways, waterfalls first, and famous ones (with a Wikipedia article) and
+  named ones before the others. The paved share comes from mapped surfaces,
+  roads, and sidewalks.
+- **Terrain** comes from [Terrain Tiles on AWS](https://registry.opendata.aws/terrain-tiles/):
+  open elevation data (USGS 3DEP in the US, and SRTM, GMTED2010, EU-DEM, and
+  others elsewhere) in map tiles, free, with no key or rate limit. Zoom-11 tiles,
+  about 15 km across with a height about every 60 m, are fetched as PNG images and
+  decoded in Ruby. A hike's climb runs from the lowest to the highest of up to 64
+  points along it, and its relief is how far that high point stands above the
+  lowest of 16 points 1 and 2 km around it. Heights below sea level count as sea
+  level, since the tiles hold river and sea beds and a few gaps in the data there.
+  Terrain is looked up for up to 100 of the most promising hikes, a few near each
+  other at a time, and cached for 30 days per route; each server process keeps up
+  to 200 decoded tiles (128 KB each). The footer credits the data's sources, linking
+  to their [attribution](https://github.com/tilezen/joerd/blob/master/docs/attribution.md).
+- **Photos.** Each card shows photos from within 2 km of the middle of the route,
+  which are not necessarily of the route: the lead image of the nearest park or
+  natural area's Wikipedia article, then photos taken nearby from Wikimedia
+  Commons, up to eight, in a gallery of thumbnails. Commons photos are JPEGs at
+  least 800 px wide and at most three times wider than tall, leaving out titles
+  that suggest maps, signs, buildings, artworks, or observation-app close-ups of
+  species; titles that suggest scenery come first, then the nearest.
 - Provider failures produce a friendly error, not misleading empty results. The
-  origin's area, the tiles after the first four, highlights, and popularity only
-  refine a search, which goes ahead without them.
-  Highlights not found within 5 seconds of the last batch are left out, and the
-  lookup finishes in the background so later searches have them. When the way back
-  can't be looked up, hikes are shown with a notice saying so.
+  origin's area, the tiles after the first four, highlights, terrain, and photos
+  only refine a search, which goes ahead without them. Highlights not found within
+  5 seconds of the last batch, and terrain not found within 8 seconds after that,
+  are left out, and the lookups finish in the background so later searches have
+  them. When the way back can't be looked up, hikes are shown with a notice saying
+  so.
 
 Route data is © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright),
 available under the ODbL. The public Overpass server is shared infrastructure:
@@ -197,9 +222,9 @@ and a pause in typing, suggestions are cached for a day, and both favor places
 near the visitor's time zone without asking for their location, so a ZIP code
 such as 11101 finds Queens rather than a namesake abroad. Map previews
 load [OpenStreetMap tiles](https://operations.osmfoundation.org/policies/tiles/)
-only as cards scroll into view, and photos and page views come from the
-[Wikipedia API](https://www.mediawiki.org/wiki/API:Etiquette) with each
-author and license credited, cached for a week and shared by routes within about 1 km. Suggestions, photos, trips,
+only as cards scroll into view, and photos come from the
+[Wikipedia and Wikimedia Commons APIs](https://www.mediawiki.org/wiki/API:Etiquette)
+with each author and license credited, cached for a week and shared by routes within about 1 km. Suggestions, photos, trips,
 and searches are rate limited per visitor. The Directions link opens Google Maps'
 public directions page, which needs no API key. Provider outages cannot be
 validated by offline tests; perform a real search before launching.
@@ -224,7 +249,8 @@ empty results, malformed responses, fallbacks, and upstream failures. Request
 tests also check that the form sends the parameters the search reads and that
 pages still render when a browser returns its session cookie with forgery
 protection on, as in production. The browser tests choose a suggested starting
-point and sort and filter the results.
+point, sort the results and filter them with the sliders, and browse a card's
+photos. Elevation tests decode generated tiles that use each of PNG's row filters.
 
 [GitHub Actions](.github/workflows/ci.yml) runs these checks against PostgreSQL
 on every push and pull request. It also builds the production container image

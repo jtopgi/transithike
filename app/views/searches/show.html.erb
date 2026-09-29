@@ -38,35 +38,34 @@
       <span class="spinner-border spinner-border-sm text-success" aria-hidden="true"></span>
       <span data-progress-text>Finding the stations trains reach and the hikes near them…</span>
     </div>
-    <div class="results-toolbar d-flex flex-wrap align-items-center gap-3 mb-4" data-results-toolbar hidden>
+    <div class="results-toolbar d-flex flex-wrap align-items-center gap-3 gap-lg-4 mb-4" data-results-toolbar hidden>
       <div class="d-flex align-items-center gap-2">
         <label for="sort" class="form-label small fw-semibold mb-0">Sort by</label>
         <select id="sort" class="form-select form-select-sm w-auto" data-sort>
+          <option value="scenic">Most scenic</option>
           <option value="recommended">Recommended</option>
           <option value="travel">Least travel</option>
           <option value="stay">Most time there</option>
-          <option value="distance">Closest</option>
-          <option value="popular">Most popular</option>
-          <option value="scenic">Most scenic</option>
           <option value="length-asc">Shortest hike</option>
           <option value="length-desc">Longest hike</option>
         </select>
       </div>
-      <div class="d-flex align-items-center gap-2">
-        <label for="trip" class="form-label small fw-semibold mb-0">Round trip</label>
-        <select id="trip" class="form-select form-select-sm w-auto" data-max-trip>
-          <option value="">Any travel time</option>
-          <option value="180">Up to 3 hours</option>
-          <option value="240">Up to 4 hours</option>
-          <option value="300">Up to 5 hours</option>
-          <option value="360">Up to 6 hours</option>
-        </select>
+      <%# At its right end, the round-trip slider allows any round trip. %>
+      <div class="toolbar-range">
+        <label for="round-trip" class="small fw-semibold">
+          Round trip: <span class="fw-normal" data-max-trip-label>any</span>
+        </label>
+        <input type="range" id="round-trip" class="form-range" min="120" max="480" step="15" value="480" data-max-trip>
       </div>
-      <div class="btn-group btn-group-sm" role="group" aria-label="Hike length" data-length-filter>
-        <% { "any" => "Any length", "short" => "Under 3 mi", "medium" => "3–6 mi", "long" => "Over 6 mi" }.each do |value, text| %>
-          <input type="radio" class="btn-check" name="length" id="length-<%= value %>" value="<%= value %>" <%= "checked" if value == "any" %>>
-          <label class="btn btn-outline-success" for="length-<%= value %>"><%= text %></label>
-        <% end %>
+      <%# At their ends, the length slider's handles allow any length. %>
+      <div class="toolbar-range" role="group" aria-labelledby="length-range-label">
+        <span id="length-range-label" class="small fw-semibold">Length: <span class="fw-normal" data-length-label>any</span></span>
+        <div class="range-dual" data-length-range>
+          <input type="range" class="form-range" min="1" max="20" step="0.5" value="1" aria-label="Shortest length, in miles"
+                 data-length-min>
+          <input type="range" class="form-range" min="1" max="20" step="0.5" value="20" aria-label="Longest length, in miles"
+                 data-length-max>
+        </div>
       </div>
       <span class="small text-body-secondary ms-lg-auto" data-results-count aria-live="polite"></span>
     </div>
@@ -99,17 +98,19 @@
       at least <%= min_km %> km (<%= min_miles %> miles) away, and hikes the subway or light rail reaches are left out,
       since you likely know them already. Every hike shown has a way back by 11 PM that leaves time to hike it. Once
       each card's trips are looked up, the way back rides the same trains back, home soonest after the hike, and the
-      last trip back is the last that way; the round trip adds the rides there and back. Recommended hikes are unpaved
-      and of day-hike length, pass waterfalls, summits, or viewpoints, are in well-known parks, and aren't too long a
-      trip there and back. Popularity comes from
-      Wikipedia page views of the nearest park or natural area, not of the route itself. Lengths are approximate,
-      calculated from OpenStreetMap geometry. Directions lead to where the train reaches each route soonest, not to a
-      verified trailhead or public access point. Photos show a nearby park or natural area, not necessarily the route.
+      last trip back is the last that way; the round trip adds the rides there and back. Most scenic puts the hikes
+      with the grandest view or waterfall first: views count for how far a route climbs and how far its high point
+      stands above the land around it, and more with a mapped viewpoint or a named or famous summit, while waterfalls
+      count more with a name, a Wikipedia article, or height. The best counts in full and the next only half, so one
+      grand view outranks many small ones. Recommended also weighs day-hike length, paving, and the round trip.
+      Lengths are approximate, calculated from OpenStreetMap geometry, and climbs from elevation data. Directions lead
+      to where the train reaches each route soonest, not to a verified trailhead or public access point. Photos show
+      the nearest park or natural area and photos taken nearby, not necessarily the route.
     </p>
   <% end %>
   <p class="small text-body-secondary mt-2 mb-0">
     Each search looks for mapped hiking routes within a <%= TransitAccess::MAX_WALK_MINUTES %>-minute walk of the
-    stations trains reach within <%= TransitousService::STATION_MINUTES / 60 %> hours, then checks trips for up to
+    stations trains reach within <%= duration_label(TransitousService::STATION_MINUTES * 60) %>, then checks trips for up to
     <%= OverpassService::MAX_TRANSIT_ROUTES %> hikes of <%= OverpassService::MIN_LENGTH_MILES.round %> to
     <%= OverpassService::MAX_LENGTH_MILES %> miles that aren't mostly paved.
   </p>

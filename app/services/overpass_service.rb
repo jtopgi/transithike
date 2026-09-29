@@ -8,17 +8,20 @@ module OverpassService
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
   ].freeze
   # Routes are found in tiles this many degrees across that hold routes within
-  # a walk of the stations, checking at most MAX_TILES of those with the
-  # quickest stations. Each tile's routes are shared by every search for days.
+  # a walk of the stations. Each tile's routes are shared by every search for days.
   TILE_DEGREES = 0.5
-  MAX_TILES = 16
+  # At most this many tiles are searched in each band of travel time, the
+  # quickest first, so the scenery farther out is searched as well as the nearest.
+  TILE_BANDS = [[120, 8], [180, 7], [Float::INFINITY, 5]].freeze
+  MAX_TILES = TILE_BANDS.sum(&:last)
   # Where hiking routes are plentiful, as in the Alps, a tile lists a
   # megabyte of them, so a query lists at most this many tiles.
   TILES_PER_QUERY = 4
   TILE_CACHE_TTL = 3.days
   # Regions' routes and routes' geometry take a while to find, especially on the mirror.
   LONG_QUERY_SECONDS = 45
-  # Transitous plans at most 128 destinations in one request.
+  # Trips are checked for at most this many routes per search, in batches; Transitous
+  # plans at most 128 destinations in one request.
   MAX_TRANSIT_ROUTES = 120
   # Routes this close together with the same name are sections of one trail.
   DUPLICATE_METERS = 5_000
@@ -65,9 +68,10 @@ module OverpassService
   # duration is in seconds; transfers is nil when walking the whole way is fastest.
   # paved is the share of the route's length on paved ways or roads, and loop is
   # true for routes that end where they start. arrival and last_return are the
-  # times transit gets there and last leaves for the origin.
+  # times transit gets there and last leaves for the origin. terrain is the
+  # route's { climb:, relief: } in meters, from ElevationService.
   Trail = Struct.new(:name, :summary, :latitude, :longitude, :length, :osm_id, :path, :highlights, :notable,
-    :paved, :loop, :distance, :duration, :transfers, :arrival, :last_return, :origin, :area, :score,
+    :paved, :loop, :distance, :duration, :transfers, :arrival, :last_return, :origin, :terrain, :score,
     keyword_init: true) do
     # A point halfway along the route, in its area even where transit reaches it from town.
     def midpoint
@@ -78,7 +82,7 @@ module OverpassService
 
   # The [south, west] corners of tiles holding routes within a walk of the
   # stations, [latitude, longitude, minutes] from the origin: those with the
-  # quickest stations first, and at most MAX_TILES.
+  # quickest stations first, and at most each TILE_BANDS band's share of them.
   def self.tiles(stations)
     reach = TransitAccess::WALK_METERS / 110_574.0
     quickest = {}
@@ -90,8 +94,16 @@ module OverpassService
         quickest[tile] = [quickest.fetch(tile, minutes), minutes].min
       end
     end
-    quickest.sort_by { |tile, minutes| [minutes, tile] }.first(MAX_TILES)
-      .map { |(row, column), _| [row * TILE_DEGREES, column * TILE_DEGREES] }
+    tiles = quickest.sort_by { |tile, minutes| [minutes, tile] }
+    floor = 0
+    picked = TILE_BANDS.flat_map do |limit, share|
+      band = tiles.select { |_, minutes| minutes >= floor && minutes < limit }.first(share)
+      floor = limit
+      band
+    end
+    # Bands without enough tiles leave room for more of the quickest.
+    picked += (tiles - picked).first(MAX_TILES - picked.size)
+    picked.sort_by { |tile, minutes| [minutes, tile] }.map { |(row, column), _| [row * TILE_DEGREES, column * TILE_DEGREES] }
   end
 
   def self.tile_index(degrees)
@@ -228,13 +240,15 @@ module OverpassService
     end
   end
 
-  # Highlights near each trail, as { osm_id => [{ kind:, name: }] }, waterfalls
-  # first and named ones before unnamed ones. Each route's list is cached, and
-  # only uncached routes are queried.
+  # Highlights near each trail, as { osm_id => [{ kind:, name:, notable:, height: }] }
+  # without the attributes they don't have: waterfalls first, then famous and
+  # named ones before the others. notable is true for highlights with a Wikipedia
+  # article, and height is a waterfall's in meters. Each route's list is cached,
+  # and only uncached routes are queried.
   def self.highlights(trails, connections: nil, cache: Rails.cache)
     return {} if trails.empty?
 
-    keys = trails.to_h { |trail| [trail.osm_id, "overpass:highlights:v2:#{trail.osm_id}"] }
+    keys = trails.to_h { |trail| [trail.osm_id, "overpass:highlights:v3:#{trail.osm_id}"] }
     found = cache.read_multi(*keys.values)
     missing = trails.reject { |trail| found.key?(keys[trail.osm_id]) }
     if missing.any?
@@ -307,15 +321,27 @@ module OverpassService
     return unless tags.is_a?(Hash) && SearchHttp.coordinates?(node["lat"], node["lon"])
 
     kind = HIGHLIGHT_TAGS.find { |_, (key, value)| tags[key] == value }&.first
-    { kind: kind, name: name(tags)&.truncate(60), latitude: node["lat"], longitude: node["lon"] } if kind
+    return unless kind
+
+    # A Wikipedia article, rather than only a Wikidata item, which every named hill has, marks a famous one.
+    { kind: kind, name: name(tags)&.truncate(60), latitude: node["lat"], longitude: node["lon"],
+      notable: tags["wikipedia"].is_a?(String) && tags["wikipedia"].strip.present?, height: (meters(tags["height"]) if kind == "waterfall") }
+  end
+
+  # A height such as "25", "25 m", or "80 ft" in meters, or nil.
+  def self.meters(value)
+    number = Float(value[/\A\s*(\d+(?:\.\d+)?)/, 1], exception: false) if value.is_a?(String)
+    return unless number&.positive? && number < 1_000
+
+    value.match?(/ft|'/i) ? (number * 0.3048).round(1) : number
   end
 
   def self.highlights_near(path, points)
     boxes = path.map { |line| bounding_box(line) }
     points.select { |point| path.each_with_index.any? { |line, index| near_line?(point, line, boxes[index]) } }
       .uniq { |point| [point[:kind], point[:name] || [point[:latitude], point[:longitude]]] }
-      .sort_by { |point| [HIGHLIGHT_TAGS.keys.index(point[:kind]), point[:name] ? 0 : 1] }
-      .first(MAX_HIGHLIGHTS).map { |point| point.slice(:kind, :name) }
+      .sort_by { |point| [HIGHLIGHT_TAGS.keys.index(point[:kind]), point[:notable] ? 0 : 1, point[:name] ? 0 : 1] }
+      .first(MAX_HIGHLIGHTS).map { |point| point.slice(:kind, :name, :notable, :height).compact_blank }
   end
 
   # Whether the point is within PREVIEW_MATCH_METERS of a [[latitude, longitude], ...] line.

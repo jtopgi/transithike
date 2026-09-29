@@ -1,18 +1,18 @@
 <div class="col" data-trail data-osm-id="<%= trail.osm_id %>" data-score="<%= trail.score %>"
-     data-travel="<%= TrailsService.round_trip_seconds(trail).round %>" data-length="<%= trail.length.round(2) %>"
-     data-distance="<%= trail.distance.round(2) %>" data-stay="<%= stay_seconds(trail) %>"
-     data-required="<%= (TrailsService.required_hours(trail) * 3600).round %>"
-     data-popularity="<%= trail.area&.dig(:monthly_views).to_i %>" data-scenic="<%= TrailsService.scenic(trail) %>">
+     data-scenic="<%= TrailsService.scenic(trail) %>" data-travel="<%= TrailsService.round_trip_seconds(trail).round %>"
+     data-length="<%= trail.length.round(2) %>" data-stay="<%= stay_seconds(trail) %>"
+     data-required="<%= (TrailsService.required_hours(trail) * 3600).round %>">
   <article class="card trail-card h-100 border-0 shadow-sm">
     <div class="trail-media">
       <div class="trail-map" role="img" aria-label="Map of <%= trail.name %>"
            data-path="<%= trail.path.to_json %>" data-start="<%= [trail.latitude, trail.longitude].to_json %>"></div>
-      <a class="trail-photo" data-photo-url="<%= photo_path(lat: trail.midpoint.first, lon: trail.midpoint.last) %>" hidden
+      <a class="trail-photo" data-photos-url="<%= photos_path(lat: trail.midpoint.first, lon: trail.midpoint.last) %>" hidden
          target="_blank" rel="noopener">
         <img alt="" decoding="async">
         <span class="trail-photo-caption"></span>
       </a>
     </div>
+    <div class="trail-gallery" role="group" aria-label="Photos near <%= trail.name %>" data-gallery hidden></div>
     <div class="card-body d-flex flex-column p-4">
       <h2 class="card-title h5 mb-3"><%= trail.name %></h2>
       <div data-chips><%= render "searches/chips", trail: trail %></div>
@@ -31,9 +31,10 @@
           <dt><span aria-hidden="true">🥾</span> Length</dt>
           <dd>≈ <%= number_with_precision(trail.length, precision: 1) %> mi</dd>
         </div>
-        <div>
-          <dt><span aria-hidden="true">📍</span> Distance</dt>
-          <dd><%= number_with_precision(trail.distance, precision: 1) %> mi</dd>
+        <%# How far it climbs, once the search has looked up its terrain. %>
+        <div data-climb-stat <%= "hidden" unless trail.terrain %>>
+          <dt><span aria-hidden="true">⛰️</span> Climb</dt>
+          <dd data-climb><%= climb_label(trail) %></dd>
         </div>
       </dl>
       <p class="trail-return">

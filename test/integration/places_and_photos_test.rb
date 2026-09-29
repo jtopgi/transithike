@@ -48,9 +48,15 @@ class PlacesAndPhotosTest < ActionDispatch::IntegrationTest
     assert_equal [], response.parsed_body
   end
 
-  test "returns a credited photo near a route start" do
+  test "returns credited photos of the scenery near a route" do
+    # Wikipedia and Wikimedia Commons answer at the same path, and Commons is asked for files.
     @stubs.get(URI(WikipediaService::API_URL).path) do |env|
-      body = if env.params["generator"] == "geosearch"
+      body = if env.params["ggsnamespace"] == "6"
+        { query: { pages: [{ title: "File:Discovery Park view.jpg", coordinates: [{ lat: 47.661, lon: -122.41 }],
+          imageinfo: [{ mime: "image/jpeg", width: 1600, height: 1200, thumburl: "https://upload.wikimedia.org/view.jpg",
+            descriptionurl: "https://commons.wikimedia.org/wiki/File:Discovery_Park_view.jpg",
+            extmetadata: { Artist: { value: "Bo" }, LicenseShortName: { value: "CC0" } } }] }] } }
+      elsif env.params["generator"] == "geosearch"
         { query: { pages: [{ title: "Discovery Park (Seattle)", pageimage: "Park.jpg", fullurl: "https://en.wikipedia.org/wiki/Discovery_Park",
           thumbnail: { source: "https://upload.wikimedia.org/park.jpg" }, coordinates: [{ lat: 47.66, lon: -122.41 }] }] } }
       else
@@ -59,28 +65,31 @@ class PlacesAndPhotosTest < ActionDispatch::IntegrationTest
       end
       [200, {}, JSON.generate(body)]
     end
-    get photo_path, params: { lat: "47.66", lon: "-122.41" }
+    get photos_path, params: { lat: "47.66", lon: "-122.41" }
 
     assert_response :success
-    assert_equal "Ann · CC BY 4.0", response.parsed_body["credit"]
-    assert_equal "https://upload.wikimedia.org/park.jpg", response.parsed_body["image_url"]
+    assert_equal ["Discovery Park (Seattle)", "https://en.wikipedia.org/wiki/Discovery_Park"],
+      response.parsed_body.values_at("title", "article_url")
+    assert_equal [["Near Discovery Park (Seattle)", "https://upload.wikimedia.org/park.jpg", "Ann · CC BY 4.0"],
+      ["Discovery Park view", "https://upload.wikimedia.org/view.jpg", "Bo · CC0"]],
+      response.parsed_body["photos"].map { |photo| photo.values_at("caption", "image_url", "credit") }
     assert_match(/max-age=86400/, response.headers["Cache-Control"])
   end
 
   test "photos are empty when none is nearby, and invalid or failed requests say so" do
     @stubs.get(URI(WikipediaService::API_URL).path) { [200, {}, "{}"] }
-    get photo_path, params: { lat: "47.66", lon: "-122.41" }
+    get photos_path, params: { lat: "47.66", lon: "-122.41" }
     assert_response :no_content
 
     [{}, { lat: "91", lon: "0" }, { lat: ["1"], lon: "0" }, { lat: "north", lon: "0" }].each do |params|
-      get photo_path, params: params
+      get photos_path, params: params
       assert_response :bad_request
     end
   end
 
   test "photo provider failures are service unavailable" do
     @stubs.get(URI(WikipediaService::API_URL).path) { [503, {}, "{}"] }
-    get photo_path, params: { lat: "47.66", lon: "-122.41" }
+    get photos_path, params: { lat: "47.66", lon: "-122.41" }
     assert_response :service_unavailable
   end
 end

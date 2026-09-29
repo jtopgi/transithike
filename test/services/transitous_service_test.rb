@@ -85,8 +85,8 @@ class TransitousServiceTest < ActiveSupport::TestCase
     trains = TransitousService::TRAIN_MODES.join(",")
     assert_equal [
       { "one" => "47.6000000,-122.3000000", "time" => "2026-09-23T15:00:00Z", "maxTravelTime" => "60" },
-      { "one" => "king-street", "time" => "2026-09-23T15:12:00Z", "maxTravelTime" => "168", "transitModes" => trains },
-      { "one" => "local", "time" => "2026-09-23T15:25:00Z", "maxTravelTime" => "155", "transitModes" => trains }
+      { "one" => "king-street", "time" => "2026-09-23T15:12:00Z", "maxTravelTime" => "198", "transitModes" => trains },
+      { "one" => "local", "time" => "2026-09-23T15:25:00Z", "maxTravelTime" => "185", "transitModes" => trains }
     ], requests
     assert_includes trains.split(","), "REGIONAL_RAIL"
     assert_includes trains.split(","), "SUBURBAN"
@@ -107,13 +107,13 @@ class TransitousServiceTest < ActiveSupport::TestCase
         { "all" => [reached_stop(48.0, -122.0, 70)] }
       })
       assert_equal [[48.0, -122.0, 82]], rail_stations(connection, cache: cache)
-      assert_equal %w[168 120 80], limits
+      assert_equal %w[198 120 80], limits
 
       rail_stations(connection, cache: cache, origin: Place.new(latitude: 47.64, longitude: -122.34))
-      assert_equal %w[168 120 80 80], limits
+      assert_equal %w[198 120 80 80], limits
       travel 1.day + 1.minute
       rail_stations(connection, cache: cache, origin: Place.new(latitude: 47.62, longitude: -122.31))
-      assert_equal %w[168 120 80 80 168 120 80], limits
+      assert_equal %w[198 120 80 80 198 120 80], limits
 
       too_many = rail_connection([reached_stop(47.6, -122.33, 12, id: "hub")], { "hub" => SearchErrors::ResponseTooLarge.new("huge") })
       assert_raises(SearchErrors::UpstreamError) { rail_stations(too_many) }
@@ -146,14 +146,14 @@ class TransitousServiceTest < ActiveSupport::TestCase
         { "all" => [reached_stop(47.6, -122.33, 12, id: "king-street")] }
       })
       assert_equal [[48.5, -121.0, 72]], rail_stations(connection, cache: cache)
-      assert_equal %w[60 40 25 168], requests
+      assert_equal %w[60 40 25 198], requests
 
       # Nearby searches go straight to the list that fits, for a day.
       rail_stations(connection, cache: cache, origin: Place.new(latitude: 47.64, longitude: -122.34))
-      assert_equal %w[60 40 25 168 25 168], requests
+      assert_equal %w[60 40 25 198 25 198], requests
       travel 1.day + 1.minute
       rail_stations(connection, cache: cache)
-      assert_equal %w[60 40 25 168 25 168 60 40 25 168], requests
+      assert_equal %w[60 40 25 198 25 198 60 40 25 198], requests
     end
   end
 
@@ -440,7 +440,7 @@ class TransitousServiceTest < ActiveSupport::TestCase
       assert_equal "47.6000000;-122.3000000", request.params["one"]
       assert_equal "47.5000000;-122.0000000,47.4000000;-122.0000000", request.params["many"]
       assert_equal "2026-09-23T15:00:00Z", request.params["time"]
-      assert_equal "210", request.params["maxTravelTime"]
+      assert_equal "240", request.params["maxTravelTime"]
       assert_equal "1800", request.params["maxPostTransitTime"]
       assert_nil request.params["transitModes"]
     end

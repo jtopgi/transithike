@@ -1,4 +1,5 @@
 require "faraday"
+require "zlib"
 
 module SearchTestSupport
   # body may be a lambda that builds the response body from the request.
@@ -54,6 +55,54 @@ module SearchTestSupport
       queries&.push(query)
       { "elements" => overpass_elements(query, routes: routes, **elements) }
     })
+  end
+
+  # A Terrarium elevation tile whose pixel at [column, row] is height.(column, row)
+  # meters up, its rows filtered by each of PNG's five filters in turn.
+  def terrarium_png(pixels: 256, header: nil, &height)
+    previous = Array.new(pixels * 3, 0)
+    rows = (0...pixels).map do |row|
+      line = (0...pixels).flat_map do |column|
+        value = height.(column, row) + 32_768
+        [value.floor / 256, value.floor % 256, ((value % 1) * 256).floor]
+      end
+      filter = row % 5
+      filtered = line.each_index.map do |index|
+        left, up = index >= 3 ? line[index - 3] : 0, previous[index]
+        corner = index >= 3 ? previous[index - 3] : 0
+        predictor = case filter
+        when 0 then 0
+        when 1 then left
+        when 2 then up
+        when 3 then (left + up) / 2
+        else paeth(left, up, corner)
+        end
+        (line[index] - predictor) & 255
+      end
+      previous = line
+      [filter, *filtered].pack("C*")
+    end
+    "\x89PNG\r\n\x1A\n".b + png_chunk("IHDR", header || [pixels, pixels, 8, 2, 0, 0, 0].pack("NNC5")) +
+      png_chunk("IDAT", Zlib::Deflate.deflate(rows.join)) + png_chunk("IEND", "")
+  end
+
+  def png_chunk(type, data)
+    [data.bytesize].pack("N") + type.b + data.b + [Zlib.crc32(type + data)].pack("N")
+  end
+
+  def paeth(left, up, corner)
+    guess = left + up - corner
+    distances = [left, up, corner].map { |value| (guess - value).abs }
+    [left, up, corner][distances.index(distances.min)]
+  end
+
+  # The elevation tile at a ".../zoom/x/y.png" path, with heights given by each pixel's latitude.
+  def terrain_tile(path)
+    zoom, x, y = path.scan(/\d+/).last(3).map(&:to_i)
+    latitudes = (0...256).map do |row|
+      Math.atan(Math.sinh(Math::PI * (1 - 2 * (y + (row + 0.5) / 256) / 2**zoom))) * 180 / Math::PI
+    end
+    terrarium_png { |_column, row| yield latitudes[row] }
   end
 
   # A route as the tiles query lists it: tags and a bounding box.

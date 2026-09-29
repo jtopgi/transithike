@@ -117,21 +117,22 @@ class TrailsServiceTest < ActiveSupport::TestCase
     end
   end
 
-  # Areas by the latitude of a trail's midpoint, which is its name; a name mapped
-  # to an exception fails its lookup.
-  class FakeWiki
+  # Terrain by route name; a lookup including a name mapped to an exception fails,
+  # and with a release event, lookups wait for it.
+  class FakeElevation
     attr_reader :lookups
 
-    def initialize(areas = {})
-      @areas, @lookups = areas, []
+    def initialize(terrain = {}, release: nil)
+      @terrain, @release, @lookups = terrain, release, Concurrent::Array.new
     end
 
-    def nearby_area(latitude, longitude)
-      name = latitude.to_s
-      @lookups << name
-      raise @areas[name] if @areas[name].is_a?(Exception)
+    def terrain(trails)
+      @release&.wait(5)
+      @lookups.concat(trails.map(&:name))
+      failure = trails.map { |trail| @terrain[trail.name] }.grep(Exception).first
+      raise failure if failure
 
-      @areas[name]
+      trails.to_h { |trail| [trail.osm_id, @terrain[trail.name]] }
     end
   end
 
@@ -141,17 +142,19 @@ class TrailsServiceTest < ActiveSupport::TestCase
 
   SATURDAY = Time.utc(2026, 9, 26, 15)
 
-  # A 3-mile loop, about 1.5 hours to hike. Its midpoint's latitude is its name,
-  # so fake lookups can tell trails apart.
-  def trail(name, length: 3.0, distance: 30.0, loop: true, **attributes)
-    OverpassService::Trail.new(name: name, latitude: 47.5, longitude: -122.1, length: length, distance: distance,
-      osm_id: name.hash, path: [[[name, -122.1]]], loop: loop, paved: 0, **attributes)
+  # A 3-mile loop, about 1.5 hours to hike, in an area of its own about 11 km
+  # from each other trail's, unless placed at a latitude.
+  def trail(name, length: 3.0, distance: 30.0, loop: true, at: nil, **attributes)
+    @trails_made = @trails_made.to_i + 1
+    latitude = at || 47.0 + @trails_made * 0.1
+    OverpassService::Trail.new(name: name, latitude: latitude, longitude: -122.1, length: length, distance: distance,
+      osm_id: name.hash, path: [[[latitude, -122.1], [latitude + 0.01, -122.1]]], loop: loop, paved: 0, **attributes)
   end
 
   def search(origin: "Seattle", day: nil, near: nil, places: FakePlaces.new, transit: FakeTransit.new,
-    hiking: FakeHiking.new([]), wiki: FakeWiki.new, &block)
+    hiking: FakeHiking.new([]), elevation: FakeElevation.new, &block)
     TrailsService.search(origin: origin, day: day, near: near, places: places, transit: transit, hiking: hiking,
-      wiki: wiki, &block)
+      elevation: elevation, &block)
   end
 
   def minutes(count)
@@ -354,22 +357,21 @@ class TrailsServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "highlights, popularity, day-hike lengths and time there rank routes up; paving, generic names and long trips down" do
+  test "scenery, day-hike lengths and time there rank routes up; paving, generic names and long trips down" do
     base = trail("base", length: 5, duration: 3600, transfers: 0, arrival: SATURDAY + 1.hour,
       last_return: Time.utc(2026, 9, 27, 2))
     score = ->(**changes) { TrailsService.score(base.dup.tap { |copy| changes.each { |key, value| copy[key] = value } }) }
     assert_equal 1.5, score.call
 
-    assert_equal 2.5, score.call(highlights: [{ kind: "waterfall", name: "Twin Falls" }])
-    assert_equal 2, score.call(highlights: [{ kind: "peak", name: nil }])
-    assert_equal 3.5, score.call(highlights: [{ kind: "peak", name: "Si" }] * 3)
-    assert_in_delta 2.25, score.call(area: { monthly_views: 999 }), 0.01
+    # Scenery counts 0.6 a point.
+    assert_in_delta 1.5 + 1.2, score.call(highlights: [{ kind: "waterfall", name: "Twin Falls" }]), 0.001
+    assert_in_delta 1.5 + 2.1, score.call(terrain: { climb: 200, relief: 350 }), 0.001
     assert_equal 2, score.call(notable: true)
     assert_equal 1, score.call(length: 2.5)
     assert_equal 0.25, score.call(length: 1.5)
     assert_equal 0.25, score.call(paved: 0.5)
     assert_equal 0.5, score.call(name: "Trail 2")
-    # An hour and a half by train costs nothing, three hours a little, and more much more.
+    # Three hours there and back costs nothing, four a little, and more than six much more.
     assert_equal 1.5, score.call(duration: 5400)
     assert_in_delta 1.5 - 0.25, score.call(duration: 7200), 0.001
     assert_in_delta 1.5 - 0.75, score.call(duration: 10_800), 0.001
@@ -378,32 +380,76 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal 1, score.call(last_return: SATURDAY + 2.hours)
   end
 
-  test "ranks the routes once highlights and their areas' popularity are known, varied across areas" do
-    trails = (1..6).map { |index| trail(index.to_s) }
-    transit = FakeTransit.new(trips: trails.to_h { |trail| [trail.name, minutes(30 + trail.name.to_i)] })
-    wiki = FakeWiki.new("2" => { title: "Big Park", article_url: "https://en.wikipedia.org/wiki/Big_Park", monthly_views: 50_000 },
-      "3" => { title: "Big Park", monthly_views: 50_000 }, "4" => { title: "Big Park", monthly_views: 50_000 },
-      "5" => SearchErrors::UpstreamError.new("down"))
-    hiking = FakeHiking.new(trails, highlights: { trails[5].osm_id => [{ kind: "waterfall", name: "Falls" }] })
-    result = search(transit: transit, hiking: hiking, wiki: wiki)
+  test "views count for how far a route climbs or its high point stands above the land around it, and for mapped vistas" do
+    scenic = ->(terrain: nil, highlights: []) { TrailsService.scenic(trail("route", terrain: terrain, highlights: highlights)) }
+    assert_equal 0, scenic.call
+    assert_equal 3.5, scenic.call(terrain: { climb: 200, relief: 350 })
+    assert_equal 2.5, scenic.call(terrain: { climb: 250, relief: 90 })
+    # Up to four points, however high.
+    assert_equal 4, scenic.call(terrain: { climb: 900, relief: 700 })
+    assert_equal 3.5, scenic.call(terrain: { climb: 100, relief: 300 }, highlights: [{ kind: "viewpoint" }] * 4)
+    assert_equal 0.25, scenic.call(highlights: [{ kind: "peak", name: "Knob" }, { kind: "peak" }])
+    # A famous summit or viewpoint, with a Wikipedia article.
+    assert_equal 1.25, scenic.call(highlights: [{ kind: "peak", name: "Bear Mountain", notable: true }])
+  end
 
-    assert_equal 6, wiki.lookups.size
-    # The third route in Big Park ranks lower, for variety.
+  test "waterfalls count for a name, a Wikipedia article, and their height" do
+    waterfall = ->(**highlight) { TrailsService.scenic(trail("route", highlights: [{ kind: "waterfall", **highlight }])) }
+    assert_equal 1.5, waterfall.call
+    assert_equal 2, waterfall.call(name: "Twin Falls")
+    assert_equal 3.5, waterfall.call(name: "Twin Falls", height: 10.0, notable: true)
+    assert_equal 4.5, waterfall.call(name: "Kaaterskill Falls", height: 79.0, notable: true)
+  end
+
+  test "one grand view outranks many small ones: the best feature counts in full, the next half, and the one after a quarter" do
+    grand = trail("grand", terrain: { climb: 300, relief: 400 })
+    many = trail("many", terrain: { climb: 40, relief: 50 }, highlights: [{ kind: "viewpoint" }] * 10 +
+      [{ kind: "peak", name: "Knob" }, { kind: "peak", name: "Nubble" }] + [{ kind: "waterfall" }] * 2)
+    assert_equal 4, TrailsService.scenic(grand)
+    # 1.5 and 1.5 for two waterfalls, and 1.25 for small views: 1.5 + 0.75 + 0.3125.
+    assert_equal 2.56, TrailsService.scenic(many)
+    assert_operator TrailsService.score(grand.tap { |route| route.duration = 3600 }), :>,
+      TrailsService.score(many.tap { |route| route.duration = 3600 })
+    both = trail("both", terrain: { climb: 400, relief: 400 }, highlights: [{ kind: "waterfall", name: "Falls" }] * 2)
+    assert_equal 4 + 1 + 0.5, TrailsService.scenic(both)
+  end
+
+  test "ranks the routes once highlights and terrain are known, varied across areas" do
+    trails = (1..6).map { |index| trail(index.to_s, at: (47.3 if index.between?(2, 4))) }
+    transit = FakeTransit.new(trips: trails.to_h { |trail| [trail.name, minutes(30 + trail.name.to_i)] })
+    views = { climb: 100, relief: 300 }
+    elevation = FakeElevation.new({ "2" => views, "3" => views, "4" => views, "5" => SearchErrors::UpstreamError.new("down") })
+    hiking = FakeHiking.new(trails, highlights: { trails[5].osm_id => [{ kind: "waterfall", name: "Falls" }] })
+    result = stub_const(TrailsService, :TERRAIN_CHUNK, 1) { search(transit: transit, hiking: hiking, elevation: elevation) }
+
+    assert_equal 6, elevation.lookups.size
+    # The third route within 3 km of two better ones ranks lower, for variety.
     assert_equal %w[2 3 6 4 1 5], result.trails.map(&:name)
-    assert_equal({ title: "Big Park", article_url: "https://en.wikipedia.org/wiki/Big_Park", monthly_views: 50_000 },
-      result.trails.first.area)
-    assert_nil result.trails.find { |trail| trail.name == "5" }.area
+    assert_equal views, result.trails.first.terrain
+    assert_nil result.trails.find { |trail| trail.name == "5" }.terrain
     assert_equal [{ kind: "waterfall", name: "Falls" }], result.trails.third.highlights
     assert_equal result.trails.map(&:score), result.trails.map(&:score).sort.reverse
   end
 
-  test "popularity is looked up for the most promising routes only" do
+  test "terrain is looked up for the most promising routes only" do
     scenic, plain = trail("scenic"), trail("plain")
     transit = FakeTransit.new(trips: { "scenic" => minutes(30), "plain" => minutes(30) })
     hiking = FakeHiking.new([plain, scenic], highlights: { scenic.osm_id => [{ kind: "peak", name: "Knob" }] })
-    wiki = FakeWiki.new
-    stub_const(TrailsService, :MAX_AREA_LOOKUPS, 1) { search(transit: transit, hiking: hiking, wiki: wiki) }
-    assert_equal ["scenic"], wiki.lookups
+    elevation = FakeElevation.new
+    stub_const(TrailsService, :MAX_TERRAIN_LOOKUPS, 1) { search(transit: transit, hiking: hiking, elevation: elevation) }
+    assert_equal ["scenic"], elevation.lookups
+  end
+
+  test "a slow terrain lookup does not hold up the search" do
+    release = Concurrent::Event.new
+    transit = FakeTransit.new(trips: { "loop" => minutes(10) })
+    elevation = FakeElevation.new({ "loop" => { climb: 300, relief: 300 } }, release: release)
+    result = stub_const(TrailsService, :TERRAIN_WAIT_SECONDS, 0.05) do
+      search(transit: transit, hiking: FakeHiking.new([trail("loop")]), elevation: elevation)
+    end
+    assert_equal [nil], result.trails.map(&:terrain)
+  ensure
+    release.set
   end
 
   test "a slow highlights lookup does not hold up the search" do
