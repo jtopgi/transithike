@@ -7,12 +7,17 @@ require "time"
 # contacting the maintainers before sending heavier routing traffic.
 module TransitousService
   ONE_TO_MANY_URL = "https://api.transitous.org/api/experimental/one-to-many-intermodal"
+  ONE_TO_ALL_URL = "https://api.transitous.org/api/v1/one-to-all"
   PLAN_URL = "https://api.transitous.org/api/v6/plan"
   REVERSE_GEOCODE_URL = "https://api.transitous.org/api/v1/reverse-geocode"
   SOURCES_URL = "https://transitous.org/sources/"
   # Route starts are often farther than the default 15-minute walk from a stop.
   MAX_POST_TRANSIT_SECONDS = 30 * 60
-  MAX_TRAVEL_MINUTES = 4 * 60
+  MAX_TRAVEL_MINUTES = 3 * 60
+  # Stops reached by then leave time to walk to a route within MAX_TRAVEL_MINUTES.
+  REACHABLE_STOP_MINUTES = MAX_TRAVEL_MINUTES - 30
+  # Where transit is too dense to list every reachable stop, searches skip the list for a day.
+  DENSE_CACHE_TTL = 1.day
   TRIP_CACHE_TTL = 15.minutes
   AREA_CACHE_TTL = 30.days
   TIME_ZONE_FORMAT = %r{\A[A-Za-z]+(?:/[A-Za-z0-9_+-]+)*\z}
@@ -30,6 +35,32 @@ module TransitousService
       zone = match["tz"]
       { time_zone: zone.is_a?(String) && zone.match?(TIME_ZONE_FORMAT) ? zone : nil, area: area_label(match["areas"]) }
     end
+  end
+
+  # Every stop reachable from the origin, as [latitude, longitude, minutes, rides],
+  # or nil where transit is too dense to list them all.
+  def self.reachable_stops(origin:, departure_time:, connection: nil, cache: Rails.cache)
+    dense_key = "transitous:dense:v1:#{origin.latitude.round(1)}:#{origin.longitude.round(1)}"
+    return if cache.read(dense_key)
+
+    connection ||= SearchHttp.connection(ONE_TO_ALL_URL, timeout: 15)
+    data = SearchHttp.json do
+      connection.get do |request|
+        request.params = { one: place(origin), time: departure_time.utc.iso8601, maxTravelTime: REACHABLE_STOP_MINUTES }
+      end
+    end
+    raise SearchErrors::UpstreamError, INVALID_RESPONSE unless data["all"].is_a?(Array)
+
+    data["all"].filter_map do |reachable|
+      point = reachable["place"] if reachable.is_a?(Hash)
+      next unless point.is_a?(Hash) && SearchHttp.coordinates?(point["lat"], point["lon"]) &&
+        valid_trip?(reachable) && reachable["k"].is_a?(Integer) && !reachable["k"].negative?
+
+      [point["lat"], point["lon"], reachable["duration"], reachable["k"]]
+    end
+  rescue SearchErrors::ResponseTooLarge
+    cache.write(dense_key, true, expires_in: DENSE_CACHE_TTL)
+    nil
   end
 
   # The fastest trip to each destination, in one request: { duration: seconds,

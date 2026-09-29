@@ -40,8 +40,18 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     stub_get(TransitousService::REVERSE_GEOCODE_URL, [{ tz: time_zone, areas: [{ name: "Seattle", default: true }] }])
   end
 
-  def hiking(elements)
-    @stubs.post(URI(OverpassService::URL).path) { [200, {}, JSON.generate(elements: elements)] }
+  # Both Overpass instances answer the area, route details and highlights queries.
+  def hiking(routes, highlights: [], paved: [])
+    OverpassService::URLS.each do |url|
+      @stubs.post(URI(url).path) do |env|
+        query = URI.decode_www_form(env.body).to_h.fetch("data")
+        [200, {}, JSON.generate(elements: overpass_elements(query, routes: routes, highlights: highlights, paved: paved))]
+      end
+    end
+  end
+
+  def stops(*stops)
+    stub_get(TransitousService::ONE_TO_ALL_URL, { all: stops.map { |lat, lon, minutes, rides| { place: { lat: lat, lon: lon }, duration: minutes, k: rides } } })
   end
 
   def trips(*durations)
@@ -70,21 +80,48 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_equal "2026-09-23T15:00:00Z", @requests[URI(TransitousService::ONE_TO_MANY_URL).path].first.params["time"]
     assert_select "h1", text: "Hikes near Seattle, Washington, United States"
     assert_includes response.body, "Travel times for leaving tomorrow at 8:00 AM PDT."
-    assert_select "[data-trail][data-duration='2400'][data-length='0.69'][data-distance='0.0']", count: 1
+    assert_select "[data-trail][data-rank='0'][data-duration='2400'][data-length='0.69'][data-distance='0.0']" \
+      "[data-popularity='0'][data-scenic='0']", count: 1
     assert_select ".trail-map[data-path='[[[47.0,-122.0],[47.01,-122.0]]]'][data-start='[47.0,-122.0]']"
-    assert_select "a[data-photo-url='#{photo_path(lat: 47.0, lon: -122.0)}'][hidden]"
+    assert_select "a[data-photo-url='#{photo_path(lat: 47.01, lon: -122.0)}'][hidden]"
+    assert_select ".trail-chips", count: 0
     assert_select ".trail-card dd", text: /40 min\s+1 transfer/
     assert_select "a[href='https://www.openstreetmap.org/relation/123'][target=_blank]", count: 1
     assert_select "a[href^='https://www.google.com/maps/dir/?']" do |links|
       query = URI.decode_www_form(URI(links.first["href"]).query).to_h
       assert_equal ["Seattle, Washington, United States", "47.0,-122.0", "transit"], query.values_at("origin", "destination", "travelmode")
     end
-    assert_select "[data-results-toolbar][hidden] select[data-sort] option", count: 4
+    assert_select "[data-results-toolbar][hidden] select[data-sort] option", count: 7
+    assert_select "[data-results-toolbar] select[data-sort] option:first-child[value=recommended]"
+    assert_select "[data-results-toolbar] select[data-max-trip] option", count: 4
     assert_select "footer a[href='https://transitous.org/sources/']", text: "data sources"
     assert_select "footer a[href='https://photon.komoot.io']", text: "Photon"
     assert_select "script", text: "alert(1)", count: 0
     assert_includes response.body, "&lt;script&gt;"
-    assert_includes response.body, "not a verified trailhead"
+    assert_includes response.body, "not to a verified trailhead"
+  end
+
+  test "routes show popularity, highlights and paving, and are joined where transit reaches them soonest" do
+    area
+    stops([47.11, -122.001, 30, 1])
+    route = route_element(latitude: 47.1, name: "Falls Loop")
+    hiking([route], highlights: [highlight_node("waterfall", 47.105, -122.0005, name: "Twin Falls")], paved: [123])
+    trips([{ duration: 2400, transfers: 1 }])
+    stub_get(WikipediaService::API_URL, { query: { pages: [{ title: "Twin Falls State Park", fullurl: "https://en.wikipedia.org/wiki/Twin_Falls_State_Park",
+      coordinates: [{ lat: 47.105, lon: -122.0 }], pageviews: { "2026-09-01" => 2_500 } }] } })
+    get search_path, params: { origin: "Pike Place Market", lat: "47.0", lon: "-122.0" }
+
+    assert_response :success
+    assert_equal "47.1100000;-122.0000000", @requests[URI(TransitousService::ONE_TO_MANY_URL).path].first.params["many"]
+    assert_select "[data-trail][data-popularity='2500'][data-scenic='2']", count: 1
+    assert_select ".trail-map[data-start='[47.11,-122.0]']"
+    assert_select ".trail-chip", count: 3
+    assert_select ".trail-chip[title='2,500 Wikipedia page views of Twin Falls State Park in the last 30 days']", text: /Very popular/
+    assert_select ".trail-chip[title='Waterfall: Twin Falls']", text: /Twin Falls/
+    assert_select ".trail-chip", text: /Mostly paved/
+    assert_select "a[href^='https://www.google.com/maps/dir/?']" do |links|
+      assert_equal "47.11,-122.0", URI.decode_www_form(URI(links.first["href"]).query).to_h["destination"]
+    end
   end
 
   test "a chosen suggestion searches its coordinates without a lookup" do
@@ -181,7 +218,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   test "a malformed route response is not an empty success" do
     geocode
     area
-    @stubs.post(URI(OverpassService::URL).path) { [200, {}, "not json"] }
+    OverpassService::URLS.each { |url| @stubs.post(URI(url).path) { [200, {}, "not json"] } }
     get search_path, params: { origin: "Seattle" }
     assert_response :service_unavailable
   end

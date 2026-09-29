@@ -13,7 +13,7 @@ module SearchHttp
       http.options.timeout = timeout
       http.options.on_data = lambda do |chunk, received_bytes, env|
         if received_bytes > MAX_RESPONSE_BYTES
-          raise SearchErrors::UpstreamError, UNAVAILABLE_MESSAGE
+          raise SearchErrors::ResponseTooLarge, UNAVAILABLE_MESSAGE
         end
 
         env[:streaming_response_body] ||= String.new(encoding: Encoding::BINARY)
@@ -25,9 +25,8 @@ module SearchHttp
   def self.json(expected = Hash)
     response = yield
     body = response.env[:streaming_response_body] || response.body
-    unless response.success? && body.is_a?(String) && body.bytesize <= MAX_RESPONSE_BYTES
-      raise SearchErrors::UpstreamError, UNAVAILABLE_MESSAGE
-    end
+    raise SearchErrors::UpstreamError, UNAVAILABLE_MESSAGE unless response.success? && body.is_a?(String)
+    raise SearchErrors::ResponseTooLarge, UNAVAILABLE_MESSAGE if body.bytesize > MAX_RESPONSE_BYTES
 
     body = body.dup.force_encoding(Encoding::UTF_8)
     raise JSON::ParserError, "response body is not valid UTF-8" unless body.valid_encoding?
