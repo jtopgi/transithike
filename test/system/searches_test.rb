@@ -156,7 +156,7 @@ class SearchesTest < ApplicationSystemTestCase
     JS
   end
 
-  test "hikes stream in, are ranked most scenic first once highlights and terrain arrive, and can be sorted and filtered" do
+  test "hikes stream in, are ranked most scenic first once highlights and terrain arrive, and can be filtered" do
     visit search_url(origin: "Seattle")
 
     # Views and highlights arrive with the final ranking.
@@ -178,21 +178,17 @@ class SearchesTest < ApplicationSystemTestCase
       assert_selector ".trail-trip", text: "Last back from the end: 🚌 11 · leave 8:00 PM, home 9:35 PM"
       assert_link "🧭 Directions back"
     end
-    { "Recommended" => ["Ridge Trail", "Short Loop", "Long Traverse"],
-      "Least travel" => ["Ridge Trail", "Short Loop", "Long Traverse"],
-      "Most time there" => ["Ridge Trail", "Short Loop", "Long Traverse"],
-      "Shortest hike" => ["Short Loop", "Long Traverse", "Ridge Trail"],
-      "Longest hike" => ["Ridge Trail", "Long Traverse", "Short Loop"],
-      "Most scenic" => ["Ridge Trail", "Short Loop", "Long Traverse"] }.each do |order, names|
-      select order, from: "Sort by"
-      assert_equal names, route_names, order
-    end
+    # The sliders narrow hikes down, so there's no other order to choose.
+    assert_no_selector "select"
 
-    # The round-trip slider spans the hikes found, from 2 h 20 min to 3 h 20 min as estimated, or
-    # 2 h 10 min to 3 h 10 min as planned, so even its quickest end shows the quickest hike.
+    # Planned trips count from the next change, which fits the round-trip slider to them: the hikes' round trips
+    # are 2 h 10 min to 3 h 10 min as planned, so even its quickest end shows the quickest hike.
+    { "Ridge Trail" => "1 h 5 min there", "Short Loop" => "1 h 15 min there", "Long Traverse" => "1 h 35 min there" }.each do |name, there|
+      assert_selector "article.trail-card", text: /#{name}.*#{there}/m
+    end
+    slide "[data-max-trip]", 480
     trip = find("[data-max-trip]")
-    assert_includes [135, 150], trip["min"].to_i
-    assert_includes [195, 210], trip["max"].to_i
+    assert_equal [135, 195], [trip["min"].to_i, trip["max"].to_i]
     slide "[data-max-trip]", 0
     assert_text "Showing 1 of 3 hikes"
     assert_equal ["Ridge Trail"], route_names

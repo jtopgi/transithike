@@ -273,7 +273,9 @@ class TransitousServiceTest < ActiveSupport::TestCase
     connection = stub_connection(:get, body) do |request|
       assert_equal ["47.6000000,-122.3000000", "47.5000000,-122.0000000", "2026-09-23T15:00:00Z", "false"],
         request.params.values_at("fromPlace", "toPlace", "time", "arriveBy")
-      assert_nil request.params["maxPreTransitTime"]
+      # By train, with the subway or light rail to reach it, and the walk from the start as long as the one to the end.
+      assert_equal TransitousService::TRIP_MODES.join(","), request.params["transitModes"]
+      assert_equal ["1800", "1800"], request.params.values_at("maxPreTransitTime", "maxPostTransitTime")
     end
     times = { departure: "2026-09-23T15:30:00Z", arrival: "2026-09-23T17:02:00Z" }
     assert_equal({ departure: "2026-09-23T15:19:00Z", arrival: "2026-09-23T17:31:00Z", legs: [
@@ -309,6 +311,129 @@ class TransitousServiceTest < ActiveSupport::TestCase
   def ways_back(connection, like: journey_there, earliest: Time.utc(2026, 9, 23, 21), cache: ActiveSupport::Cache::MemoryStore.new)
     TransitousService.ways_back(origin: destination, destination: origin, like: like, earliest: earliest,
       deadline: Time.iso8601("2026-09-23T23:00:00-07:00"), connection: connection, cache: cache)
+  end
+
+  # A stop with a name and coordinates, as plans list them.
+  def stop(name, latitude, longitude = -122.0)
+    { "name" => name, "lat" => latitude, "lon" => longitude }
+  end
+
+  test "a ride at either end of a trip is walked instead when the walk is short and gets there about as soon" do
+    # The train reaches the station at 7:55, and a bus gets home at 8:15, a kilometer away: 18 minutes' walk.
+    train = leg("REGIONAL_RAIL", "routeLongName" => "Hudson", "from" => stop("Cold Spring", 47.5), "to" => stop("Station", 47.0),
+      "startTime" => "2026-09-24T01:52:00Z", "endTime" => "2026-09-24T02:55:00Z")
+    bus = leg("BUS", "routeShortName" => "B62", "from" => stop("Jackson Av", 47.0005), "to" => stop("44 Dr", 47.0085),
+      "startTime" => "2026-09-24T03:03:00Z", "endTime" => "2026-09-24T03:10:00Z")
+    home_by_bus = ->(arrival) { itinerary("2026-09-24T01:52:00Z", arrival, [leg("WALK"), train, leg("WALK"), bus, leg("WALK")]) }
+    summary = ->(trip, to) { TransitousService.journey_summary(trip, [47.5, -122.0], [to, -122.0]) }
+
+    walked = summary.(home_by_bus.("2026-09-24T03:15:00Z"), 47.009)
+    assert_equal [["Hudson"], "2026-09-24T03:13:00Z"], [walked[:legs].pluck(:name), walked[:arrival]]
+    # Walking 37 minutes is too far, and walking home 15 minutes after a quick bus is too late.
+    assert_equal %w[Hudson B62], summary.(home_by_bus.("2026-09-24T03:15:00Z"), 47.02)[:legs].pluck(:name)
+    assert_equal %w[Hudson B62], summary.(home_by_bus.("2026-09-24T02:58:00Z"), 47.009)[:legs].pluck(:name)
+
+    # Setting out, walking 18 minutes to the train beats a bus that leaves 7 minutes earlier.
+    first_bus = leg("BUS", "routeShortName" => "B62", "from" => stop("44 Dr", 47.0085), "to" => stop("Jackson Av", 47.0005),
+      "startTime" => "2026-09-23T15:05:00Z", "endTime" => "2026-09-23T15:12:00Z")
+    out = leg("REGIONAL_RAIL", "routeLongName" => "Hudson", "from" => stop("Station", 47.0), "to" => stop("Cold Spring", 47.5),
+      "startTime" => "2026-09-23T15:30:00Z", "endTime" => "2026-09-23T16:35:00Z")
+    there = TransitousService.journey_summary(itinerary("2026-09-23T15:05:00Z", "2026-09-23T16:40:00Z", [first_bus, out]),
+      [47.009, -122.0], [47.5, -122.0])
+    assert_equal [["Hudson"], "2026-09-23T15:12:00Z"], [there[:legs].pluck(:name), there[:departure]]
+    # A trip's only ride is kept.
+    only_bus = itinerary("2026-09-23T15:05:00Z", "2026-09-23T15:12:00Z", [first_bus])
+    assert_equal ["B62"], TransitousService.journey_summary(only_bus, [47.009, -122.0], [47.0, -122.0])[:legs].pluck(:name)
+
+    # Rides stay where walking would get home after the deadline, or leave before the trips asked for.
+    late = TransitousService.journey_summary(home_by_bus.("2026-09-24T03:15:00Z"), [47.5, -122.0], [47.009, -122.0],
+      arrive_by: Time.utc(2026, 9, 24, 3, 12))
+    assert_equal %w[Hudson B62], late[:legs].pluck(:name)
+    later_bus = first_bus.merge("startTime" => "2026-09-23T15:15:00Z", "endTime" => "2026-09-23T15:22:00Z")
+    early = TransitousService.journey_summary(itinerary("2026-09-23T15:15:00Z", "2026-09-23T16:40:00Z", [later_bus, out]),
+      [47.009, -122.0], [47.5, -122.0], leave_after: Time.utc(2026, 9, 23, 15, 15))
+    assert_equal %w[B62 Hudson], early[:legs].pluck(:name)
+  end
+
+  test "trips walk a stretch rather than ride only a few minutes sooner" do
+    ride = ->(name, mode = "REGIONAL_RAIL") { leg(mode, "routeShortName" => name) }
+    body = { "itineraries" => [
+      # Leaving at 01:00, a bus from the station gets home 8 minutes sooner than walking: not worth a ride.
+      itinerary("2026-09-24T01:00:00Z", "2026-09-24T02:20:00Z", [ride.("walk home")]),
+      itinerary("2026-09-24T01:00:00Z", "2026-09-24T02:12:00Z", [ride.("bus home"), ride.("40", "BUS")]),
+      # Leaving at 02:00, the subway saves 15 minutes: worth it.
+      itinerary("2026-09-24T02:00:00Z", "2026-09-24T03:30:00Z", [ride.("late walk")]),
+      itinerary("2026-09-24T02:00:00Z", "2026-09-24T03:15:00Z", [ride.("late subway"), ride.("7", "SUBWAY")])
+    ], "direct" => [] }
+    ways = ways_back(stub_connection(:get, body), like: nil, earliest: Time.utc(2026, 9, 24, 0, 30))
+    assert_equal [["walk home"], ["late subway", "7"]], ways[:trips].map { |trip| trip[:legs].pluck(:name) }
+    assert_equal ["walk home", "late subway"], [ways[:back], ways[:last]].map { |trip| trip[:legs].first[:name] }
+  end
+
+  test "a journey there goes by train where one arrives in time to hike, and otherwise on any transit" do
+    requests = []
+    # The planner looks further ahead when nothing goes by train that day.
+    next_day = { "itineraries" => [itinerary("2026-09-24T15:10:00Z", "2026-09-24T17:00:00Z", [leg("REGIONAL_RAIL",
+      "routeShortName" => "tomorrow")])], "direct" => [] }
+    today = { "itineraries" => [itinerary("2026-09-23T15:10:00Z", "2026-09-23T16:40:00Z", [leg("BUS", "routeShortName" => "40")])],
+      "direct" => [] }
+    connection = stub_connection(:get, lambda { |request|
+      requests << request.params["transitModes"]
+      request.params["transitModes"] ? next_day : today
+    })
+    journey = TransitousService.journey(origin: origin, destination: destination, time: DEPARTURE, connection: connection,
+      cache: ActiveSupport::Cache::MemoryStore.new)
+    assert_equal ["40"], journey[:legs].pluck(:name)
+    assert_equal [TransitousService::TRIP_MODES.join(","), nil], requests
+  end
+
+  test "ways back go by train where one leaves after the hike, otherwise on any transit, and never on another day" do
+    requests = []
+    by_train = { "itineraries" => [trip_back("01:00", "03:00", mode: "REGIONAL_RAIL", name: "during the hike"),
+      # The planner looks further back when nothing gets home that evening.
+      itinerary("2026-09-22T20:00:00Z", "2026-09-22T22:00:00Z", [leg("REGIONAL_RAIL", "routeShortName" => "yesterday")])],
+      "direct" => [] }
+    any = { "itineraries" => [trip_back("02:30", "04:00", name: "bus after the hike")], "direct" => [] }
+    connection = stub_connection(:get, lambda { |request|
+      requests << request.params["transitModes"]
+      request.params["transitModes"] ? by_train : any
+    })
+    ways = ways_back(connection, like: nil, earliest: Time.utc(2026, 9, 24, 2))
+    assert_equal ["bus after the hike"], ways[:trips].map { |trip| trip[:legs].sole[:name] }
+    assert_equal [TransitousService::TRIP_MODES.join(","), nil], requests
+
+    yesterday = stub_connection(:get, { "itineraries" => by_train["itineraries"].drop(1), "direct" => [] })
+    assert_nil ways_back(yesterday, like: nil, earliest: Time.utc(2026, 9, 24, 2))[:back]
+    # Where nothing leaves after the hike, the last trip that evening is still the way back, home before it's over.
+    before = stub_connection(:get, { "itineraries" => [trip_back("00:30", "02:00")], "direct" => [] })
+    assert_equal "2026-09-24T00:30:00Z", ways_back(before, like: nil, earliest: Time.utc(2026, 9, 24, 3))[:back][:departure]
+  end
+
+  test "the timetable there goes by train unless asked not to" do
+    requests = []
+    body = { "itineraries" => [itinerary("2026-09-23T15:10:00Z", "2026-09-23T16:40:00Z", [leg("BUS", "routeShortName" => "40")])],
+      "direct" => [] }
+    connection = stub_connection(:get, body) { |request| requests << request.params["transitModes"] }
+    trips = TransitousService.departures(origin: origin, destination: destination, time: DEPARTURE, latest: DEPARTURE + 2.hours,
+      by_train: false, connection: connection, cache: ActiveSupport::Cache::MemoryStore.new)
+    assert_equal [["40"], [nil]], [trips.map { |trip| trip[:legs].sole[:name] }, requests]
+    assert TransitousService.by_train?({ legs: [{ mode: "SUBWAY" }, { mode: "REGIONAL_RAIL" }] })
+    refute TransitousService.by_train?({ legs: [{ mode: "REGIONAL_RAIL" }, { mode: "BUS" }] })
+
+    # The train reaches a station 18 minutes' walk from the route at 16:20, and a bus gets there at 16:30.
+    train = leg("REGIONAL_RAIL", "routeShortName" => "Sounder", "to" => stop("Station", 47.491),
+      "startTime" => "2026-09-23T15:10:00Z", "endTime" => "2026-09-23T16:20:00Z")
+    bus = leg("BUS", "routeShortName" => "40", "from" => stop("Station", 47.4911), "to" => stop("Trailhead", 47.4995),
+      "startTime" => "2026-09-23T16:24:00Z", "endTime" => "2026-09-23T16:30:00Z")
+    body = { "itineraries" => [itinerary("2026-09-23T15:10:00Z", "2026-09-23T16:30:00Z", [train, bus])], "direct" => [] }
+    rides = lambda do |arrive_by|
+      TransitousService.departures(origin: origin, destination: destination, time: DEPARTURE, latest: DEPARTURE + 2.hours,
+        arrive_by: arrive_by, connection: stub_connection(:get, body), cache: ActiveSupport::Cache::MemoryStore.new)
+        .sole[:legs].pluck(:name)
+    end
+    # Walking from the station gets there at 16:38, so the bus is only walked instead when that's in time.
+    assert_equal ["Sounder"], rides.(nil)
+    assert_equal %w[Sounder 40], rides.(Time.utc(2026, 9, 23, 16, 35))
   end
 
   test "the way back rides the journey's trains back from where they stopped to where they started, home soonest after the hike" do
@@ -351,7 +476,8 @@ class TransitousServiceTest < ActiveSupport::TestCase
     walk = { departure: "2026-09-23T15:10:00Z", arrival: "2026-09-23T15:40:00Z", legs: [] }
     assert_nil ways_back(connection, like: walk)[:same_way]
     assert_nil ways_back(connection, like: nil)[:same_way]
-    assert_equal [{ "transitModes" => "BUS,FERRY,SUBWAY,TRAM" }, {}, {}], requests
+    by_train = { "transitModes" => TransitousService::TRIP_MODES.join(",") }
+    assert_equal [{ "transitModes" => "BUS,FERRY,SUBWAY,TRAM" }, by_train, by_train], requests
   end
 
   test "trips back that ride much longer than the trip there don't count, so a slow same way gives way to a quicker one" do
@@ -418,7 +544,7 @@ class TransitousServiceTest < ActiveSupport::TestCase
       earliest: Time.utc(2026, 9, 24, 0, 30), deadline: Time.iso8601("2026-09-23T23:00:00-07:00"), connection: connection,
       cache: ActiveSupport::Cache::MemoryStore.new)
     assert_equal [%w[quick last], nil], [ways[:trips].map { |trip| trip[:legs].sole[:name] }, ways[:same_way]]
-    assert_equal [nil, nil], requests.sole.values_at("via", "transitModes")
+    assert_equal [nil, TransitousService::TRIP_MODES.join(",")], requests.sole.values_at("via", "transitModes")
   end
 
   test "the trips there that leave in a window are listed in order, without slow ones or later arrivals at the same time" do
@@ -448,8 +574,8 @@ class TransitousServiceTest < ActiveSupport::TestCase
       assert_equal [ways[:last], true], [ways[:back], ways[:same_way]]
       assert_equal "2026-09-24T01:00:00Z", ways[:back][:departure]
     end
-    # The same way, then any way, each asked once.
-    assert_equal 2, calls
+    # The same way, then any way by train, then on any transit, each asked once.
+    assert_equal 3, calls
   end
 
   test "walking the whole way is a journey without legs, and no journey is nil" do

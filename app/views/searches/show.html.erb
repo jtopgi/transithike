@@ -41,17 +41,6 @@
       <span data-progress-text>Finding the stations trains reach and the hikes near them…</span>
     </div>
     <div class="results-toolbar d-flex flex-wrap align-items-center gap-3 gap-lg-4 mb-4" data-results-toolbar hidden>
-      <div class="d-flex align-items-center gap-2">
-        <label for="sort" class="form-label small fw-semibold mb-0">Sort by</label>
-        <select id="sort" class="form-select form-select-sm w-auto" data-sort>
-          <option value="scenic">Most scenic</option>
-          <option value="recommended">Recommended</option>
-          <option value="travel">Least travel</option>
-          <option value="stay">Most time there</option>
-          <option value="length-asc">Shortest hike</option>
-          <option value="length-desc">Longest hike</option>
-        </select>
-      </div>
       <%# At its right end, the round-trip slider allows any round trip. %>
       <div class="toolbar-range">
         <label for="round-trip" class="small fw-semibold">
@@ -95,16 +84,17 @@
     <% min_km = TrailsService::MIN_DISTANCE_METERS / 1000 %>
     <% min_miles = (TrailsService::MIN_DISTANCE_METERS / OverpassService::METERS_PER_MILE).round %>
     <p class="small text-body-secondary mt-4 mb-0">
-      Trips leave at 8 AM on the day you choose, from the timetables Transitous has for the region: the subway or bus
-      to the station if you need them, then commuter rail, Amtrak, or other trains. Hikes are near stations
+      Trips leave at 8 AM on the day you choose, from the timetables Transitous has for the region: commuter rail,
+      Amtrak, or other trains, with the subway or light rail to the station if you need them, and a walk rather than a
+      short ride where it's about as quick. Buses are only for where no train goes. Hikes are near stations
       at least <%= min_km %> km (<%= min_miles %> miles) away, and hikes the subway or light rail reaches are left out,
       since you likely know them already. Every hike shown has a way back by 11 PM that leaves time to hike it. Once
       each card's trips are looked up, the way back rides the same trains back, home soonest after the hike, and the
-      last trip back is the last that way; the round trip adds the rides there and back. Most scenic puts the hikes
-      with the grandest view or waterfall first: views count for how far a route climbs and how far its high point
-      stands above the land around it, and more with a mapped viewpoint or a named or famous summit, while waterfalls
-      count more with a name, a Wikipedia article, or height. The best counts in full and the next only half, so one
-      grand view outranks many small ones. Recommended also weighs day-hike length, paving, and the round trip.
+      last trip back is the last that way; the round trip adds the rides there and back. Hikes with the grandest view
+      or waterfall come first: views count for how far a route climbs and how far its high point stands above the
+      land around it, and more with a mapped viewpoint or a named or famous summit, while waterfalls count more with
+      a name, a Wikipedia article, or height. The best counts in full and the next only half, so one grand view
+      outranks many small ones; ties go to day-hike length, paving, and the round trip.
       Lengths are approximate, calculated from OpenStreetMap geometry, and climbs from elevation data. Directions lead
       to where the train reaches each route soonest, not to a verified trailhead or public access point. Photos show
       only nature: the nearest park or natural area and photos taken along the route, not necessarily of it.

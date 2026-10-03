@@ -52,6 +52,10 @@ module TrailsService
   HIGHLIGHT_WAIT_SECONDS = 5
   # Searches give up on the first tiles' routes after this long, waiting for a query slot included.
   OVERPASS_WAIT_SECONDS = 90
+  # Routes are picked with how far the land rises around them, looked up for
+  # cells this many degrees across at once, waiting at most this long.
+  RELIEF_CELL_DEGREES = 1.0
+  RELIEF_WAIT_SECONDS = 8
 
   # origin is text to look up, near a rough [latitude, longitude] if given, or
   # a Place chosen from suggestions or the device's location; day is a
@@ -88,9 +92,14 @@ module TrailsService
     farther = start(overpass_pool) { hiking.routes_in(tiles.drop(FIRST_TILES)) } if tiles.size > FIRST_TILES
     search = Search.new(place, access, result, transit, hiking, on_found)
     routes = finished(nearby).value!
-    search.check(hiking.pick(routes, access: access).first(BATCH_SIZE))
-    routes = (routes + optional { finished(farther).value }.to_a).uniq { |route| route[:id] } if farther
-    search.check(hiking.pick(routes, access: access))
+    relief = reliefs(routes, elevation)
+    search.check(hiking.pick(routes, access: access, relief: relief).first(BATCH_SIZE))
+    if farther
+      more = optional { finished(farther).value }.to_a.reject { |route| relief.key?(route[:id]) }
+      relief = relief.merge(reliefs(more, elevation))
+      routes = (routes + more).uniq { |route| route[:id] }
+    end
+    search.check(hiking.pick(routes, access: access, relief: relief))
     raise search.error if result.trails.empty? && search.error
     return result if result.trails.empty?
 
@@ -269,6 +278,16 @@ module TrailsService
     rank(result.trails)
   end
 
+  # How far the land rises around each route, as { id => meters }, looked up a
+  # cell's routes at a time, all at once. Routes whose relief isn't found in
+  # time are picked without it, and the lookups finish in the background,
+  # leaving their tiles for later searches.
+  def self.reliefs(routes, elevation)
+    cells = routes.group_by { |route| route.values_at(:latitude, :longitude).map { |degrees| (degrees.to_f / RELIEF_CELL_DEGREES).floor } }
+    settle(cells.values.map { |cell| start { elevation.reliefs(cell) } }, timeout: RELIEF_WAIT_SECONDS)
+      .select(&:fulfilled?).map(&:value).reduce({}, :merge)
+  end
+
   # How far the routes climb and how far their high points stand above the land
   # around them. Routes whose terrain isn't found in time are ranked without it,
   # and the lookups finish in the background for later searches.
@@ -305,11 +324,14 @@ module TrailsService
     when 1...2 then 0.25
     else 0
     end
-    # Day trips by train often take up to three hours there and back; longer ones count against a hike.
-    hours = round_trip_seconds(trail) / 3600.0
-    travel = [hours - 3, 0].max * 0.25 + [hours - 6, 0].max * 0.5
     length + scenic(trail) * SCENIC_WEIGHT + (trail.notable ? 0.5 : 0) - trail.paved.to_f * 2.5 -
-      (OverpassService.generic_name?(trail.name) ? 1 : 0) - travel - trail.transfers.to_i * 0.1
+      (OverpassService.generic_name?(trail.name) ? 1 : 0) - travel_penalty(round_trip_seconds(trail) / 3600.0) -
+      trail.transfers.to_i * 0.1
+  end
+
+  # Day trips by train often take up to three hours there and back; longer ones count against a hike.
+  def self.travel_penalty(hours)
+    [hours - 3, 0].max * 0.25 + [hours - 6, 0].max * 0.5
   end
 
   # How scenic a route is, from 0 to about 8: the best of its views and

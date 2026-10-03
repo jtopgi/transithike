@@ -43,6 +43,24 @@ class ElevationServiceTest < ActiveSupport::TestCase
     assert_includes requests, "/terrarium/11/329/720.png"
   end
 
+  test "relief is roughly how far the land rises across each route's box, from coarse tiles each asked for once" do
+    requests = []
+    routes = [{ id: 1, bounds: [47.0, -122.0, 47.03, -121.99] }, { id: 2, bounds: [47.01, -122.0, 47.01, -122.0] }]
+    found = ElevationService.reliefs(routes, connection: rising(requests), tiles: ElevationService::TileCache.new(20))
+    # The land rises 300 m across the first route's box, to within the coarse tiles' pixels, about 400 m apart.
+    assert_in_delta 300, found.fetch(1), 40
+    assert_equal 0, found.fetch(2)
+    assert_equal ["/terrarium/8/41/90.png"], requests
+  end
+
+  test "routes on coarse tiles that can't be loaded are left out, and each such tile is asked for once" do
+    requests = []
+    routes = [{ id: 1, bounds: [47.0, -122.0, 47.03, -121.99] }, { id: 2, bounds: [47.01, -122.0, 47.02, -122.0] }]
+    broken = tiles_returning(requests, status: 503) { "" }
+    assert_equal({}, ElevationService.reliefs(routes, connection: broken, tiles: ElevationService::TileCache.new(20)))
+    assert_equal 1, requests.size
+  end
+
   test "tiles are shared by routes, and each route's terrain is cached for a month" do
     travel_to Time.utc(2026, 9, 22, 12) do
       cache, tiles, requests = ActiveSupport::Cache::MemoryStore.new, ElevationService::TileCache.new(20), []

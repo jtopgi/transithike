@@ -15,9 +15,9 @@ to where transit leaves from the far end) and climbs, the round trip's travel
 time, the last trip back and how long that leaves there, and the trains and
 other transit there, the first trip back after the hike, and the last. Each hike
 has a details page with timetables of every trip there that leaves time to hike
-it and every trip back. Hikes can also be sorted by recommendation, round trip,
-time there, or length, and filtered with sliders for the longest round trip
-(spanning the hikes found, from the quickest to any) and a range of lengths.
+it and every trip back. Hikes are listed most scenic first, and filtered with
+sliders for the longest round trip (spanning the hikes found, from the quickest
+to any) and a range of lengths.
 Weekly guides list every hike from big cities, such as
 [New York City](https://transithike.azurewebsites.net/day-hikes-by-train/new-york-city),
 on pages that search engines and AI assistants can read.
@@ -91,9 +91,14 @@ test Overpass connectivity from your deployment before launching.
   half on paved paths or roads, and repeated sections of one named trail (the same
   name within 5 km) are left out: they are walks or multi-day trails rather than
   day hikes. Routes within a 30-minute walk of a station (the most the planner
-  walks) are checked, most promising first (routes with Wikipedia or Wikidata
-  entries, of day-hike size, with distinctive names), up to **120** per search,
-  keeping the section of a trail that trains reach soonest. Results are not an
+  walks) are checked, most promising first, up to **120** per search, keeping
+  the section of a trail that trains reach soonest. Promise counts much as the
+  ranking does: routes with Wikipedia or Wikidata entries, of day-hike size,
+  with distinctive names, across land that rises more (up to 400 m, from coarse
+  zoom-8 terrain tiles about 100 km across, sampled on a 5-by-5 grid over each
+  route's bounding box), and without long trips there. Without the land, an area
+  where most routes have Wikidata entries, such as Franconia's, took most checks
+  from Munich, and the Alps few. Results are not an
   exhaustive trail inventory; where few hiking routes are mapped in OpenStreetMap
   near stations, there are few results.
 - Routes are checked in batches of 40, starting with the first tiles' while the
@@ -116,7 +121,7 @@ test Overpass connectivity from your deployment before launching.
 - **Loops, out and back, or one way.** Routes whose ends meet, or come within
   1 km of each other, are hiked as loops. Other routes are hiked out and back,
   twice their length, back to where transit reached them, which is the distance
-  cards show and sort and filter by. When that would be over 10 miles, or leave
+  cards show and filter by. When that would be over 10 miles, or leave
   too little time, and transit reaches the route within 1.5 km of an end, it can
   instead be hiked one way to the far end, if transit leaves from there late
   enough. The search asks for the last trips back from every route and every such
@@ -126,8 +131,16 @@ test Overpass connectivity from your deployment before launching.
 - **There and back the same way.** Each card shows the round trip: the rides
   there and back. Until a card's trips are planned, it is twice the trip there
   (waiting for the first train included), since coming back the same way takes
-  about as long; ranking, sorting, and the round-trip slider start from that.
-  Once the card scrolls into view, its trips are planned: the soonest trip there,
+  about as long; ranking and the round-trip slider start from that.
+  Once the card scrolls into view, its trips are planned by train, with the
+  subway or light rail to reach the trains, and a walk of up to 30 minutes at
+  either end; buses and coaches only where no such trip goes, such as back from
+  the far end of some one-way hikes. When choosing between trips, each ride
+  counts 10 minutes longer, so trips walk rather than ride only a few minutes
+  sooner, and a ride at either end that a walk of up to 20 minutes replaces,
+  arriving at most 10 minutes later, is walked, as a short bus home from the
+  station is. The planner also looks to other days when nothing goes, so trips
+  outside the day asked for are left out. The card shows the soonest trip there,
   then the trips back that ride the same trains back between the same stations
   (via the station where the last train stopped and the one where the first
   started), with the same kinds of transit or the subway and light rail for the
@@ -339,7 +352,7 @@ empty results, malformed responses, fallbacks, and upstream failures. Request
 tests also check that the form sends the parameters the search reads and that
 pages still render when a browser returns its session cookie with forgery
 protection on, as in production. The browser tests choose a suggested starting
-point, sort the results and filter them with the sliders, check the first and
+point, check the results come most scenic first, filter them with the sliders, check the first and
 last trips back and a one-way hike's directions back, and browse a card's photos.
 Request tests render a hike's details page and its timetables, the guides from
 a sample guide, and what search engines read: link previews, structured data,
