@@ -214,7 +214,8 @@ module TransitousService
     latest = (time + MAX_TRAVEL_MINUTES.minutes).utc.iso8601
     cache.fetch("transitous:journey:v5:#{params.values_at(:fromPlace, :toPlace, :time).join(':')}", expires_in: TRIP_CACHE_TTL) do
       connection ||= SearchHttp.connection(PLAN_URL, timeout: 10)
-      by_train(connection, params) { |journey| journey[:arrival] <= latest }.min_by { |journey| costed_arrival(journey) }
+      by_train(connection, params, leave_after: time) { |journey| journey[:arrival] <= latest }
+        .min_by { |journey| costed_arrival(journey) }
     end
   end
 
@@ -237,12 +238,13 @@ module TransitousService
       timetableView: true, searchWindow: (deadline - earliest).clamp(1.hour, 14.hours).to_i,
       detailedLegs: false, maxPreTransitTime: MAX_POST_TRANSIT_SECONDS, maxPostTransitTime: MAX_POST_TRANSIT_SECONDS
     }
-    # The planner looks further back when nothing arrives in the window, so trips arriving before it are left out.
-    window = (deadline - params[:searchWindow]).utc.iso8601
+    # The planner looks to earlier days when nothing gets home that evening, so trips home over a day before the deadline are left out.
+    day = (deadline - 1.day).utc.iso8601
     trips_for = lambda do |query|
-      cache.fetch("transitous:ways-back:v4:#{Digest::SHA256.hexdigest(query.to_json)}", expires_in: TRIP_CACHE_TTL) do
+      key = Digest::SHA256.hexdigest(query.merge(earliest: earliest.utc.iso8601).to_json)
+      cache.fetch("transitous:ways-back:v4:#{key}", expires_in: TRIP_CACHE_TTL) do
         connection ||= SearchHttp.connection(PLAN_URL, timeout: 15)
-        plan(connection, query).select { |trip| trip[:arrival].between?(window, params[:time]) }
+        plan(connection, query, leave_after: earliest, arrive_by: deadline).select { |trip| trip[:arrival].between?(day, params[:time]) }
       end
     end
     longest = ride_seconds(like) * BACK_RIDE_FACTOR + BACK_RIDE_SLACK if like
@@ -279,17 +281,23 @@ module TransitousService
   end
 
   # The trips there that leave from time until latest, like #journey's and in
-  # order, leaving out any that ride much longer than the quickest.
-  def self.departures(origin:, destination:, time:, latest:, connection: nil, cache: Rails.cache)
+  # order, leaving out any that ride much longer than the quickest; by train
+  # unless by_train is false, as when the journey there isn't.
+  def self.departures(origin:, destination:, time:, latest:, by_train: true, connection: nil, cache: Rails.cache)
     params = {
       fromPlace: place(origin), toPlace: place(destination), time: time.utc.iso8601, arriveBy: false,
       timetableView: true, searchWindow: (latest - time).clamp(1.hour, 12.hours).to_i, detailedLegs: false,
       maxPostTransitTime: MAX_POST_TRANSIT_SECONDS
     }
-    key = Digest::SHA256.hexdigest(params.merge(latest: latest.utc.iso8601).to_json)
+    key = Digest::SHA256.hexdigest(params.merge(latest: latest.utc.iso8601, by_train: by_train).to_json)
     trips = cache.fetch("transitous:departures:v2:#{key}", expires_in: TRIP_CACHE_TTL) do
       connection ||= SearchHttp.connection(PLAN_URL, timeout: 15)
-      by_train(connection, params) { |trip| trip[:departure].between?(params[:time], latest.utc.iso8601) }
+      leaving = ->(trip) { trip[:departure].between?(params[:time], latest.utc.iso8601) }
+      if by_train
+        by_train(connection, params, leave_after: time, &leaving)
+      else
+        plan(connection, params, leave_after: time).select(&leaving)
+      end
     end
     quickest = trips.map { |trip| ride_seconds(trip) }.min
     timetable(trips.select { |trip| ride_seconds(trip) <= quickest * BACK_RIDE_FACTOR + BACK_RIDE_SLACK.to_i })
@@ -320,9 +328,15 @@ module TransitousService
   end
 
   # The trips a plan finds on TRIP_MODES that the block keeps, or where there
-  # are none, those it finds on any transit.
-  def self.by_train(connection, params, &keep)
-    plan(connection, params.merge(by_train_params)).select(&keep).presence || plan(connection, params).select(&keep)
+  # are none, those it finds on any transit; bounds are #plan's.
+  def self.by_train(connection, params, **bounds, &keep)
+    plan(connection, params.merge(by_train_params), **bounds).select(&keep).presence ||
+      plan(connection, params, **bounds).select(&keep)
+  end
+
+  # Whether a trip rides only TRIP_MODES, as trips by train do.
+  def self.by_train?(trip)
+    trip[:legs].all? { |leg| TRIP_MODES.include?(leg[:mode]) }
   end
 
   # Without buses, the walk from where a trip starts may be as long as the one to where it ends.
@@ -349,19 +363,21 @@ module TransitousService
     { via: via.join(",").presence, transitModes: modes.join(",") }.compact
   end
 
-  # The trips in a plan response, skipping malformed ones.
-  def self.plan(connection, params)
+  # The trips in a plan response, skipping malformed ones. A ride at either end
+  # is only walked instead when the trip still leaves at leave_after or later
+  # and gets there by arrive_by, as the plan's caller asks.
+  def self.plan(connection, params, leave_after: nil, arrive_by: nil)
     data = SearchHttp.json { connection.get { |request| request.params = params } }
     journeys = data.values_at("itineraries", "direct")
     raise SearchErrors::UpstreamError, INVALID_RESPONSE unless journeys.all?(Array)
 
     ends = params.values_at(:fromPlace, :toPlace).map { |place| coordinates(place) }
-    journeys.flatten(1).filter_map { |journey| journey_summary(journey, *ends) }
+    journeys.flatten(1).filter_map { |journey| journey_summary(journey, *ends, leave_after: leave_after, arrive_by: arrive_by) }
   end
 
   # A trip's times and rides, with a ride at either end walked instead where
   # walk_ends says, from and to being where the trip starts and ends.
-  def self.journey_summary(journey, from = nil, to = nil)
+  def self.journey_summary(journey, from = nil, to = nil, leave_after: nil, arrive_by: nil)
     return unless journey.is_a?(Hash) && journey["legs"].is_a?(Array) && journey["legs"].all?(Hash)
 
     departure, arrival = journey.values_at("startTime", "endTime").map { |time| parse_time(time) }
@@ -369,7 +385,7 @@ module TransitousService
 
     legs = journey["legs"].select { |leg| leg["mode"].is_a?(String) && leg["mode"].match?(/\A[A-Z_]{1,30}\z/) }
       .reject { |leg| STREET_MODES.include?(leg["mode"]) }
-    departure, arrival = walk_ends(legs, departure, arrival, from, to)
+    departure, arrival = walk_ends(legs, departure, arrival, from, to, leave_after, arrive_by)
     { departure: departure.utc.iso8601, arrival: arrival.utc.iso8601, legs: legs.map do |leg|
       # Trains are known by their lines, such as "Port Jervis Line", rather than codes like "MNBNP".
       names = leg.values_at("routeShortName", "routeLongName")
@@ -383,18 +399,24 @@ module TransitousService
 
   # Drops the last of a trip's rides when walking from where the ride before it
   # stops takes at most MAX_SWAP_WALK_MINUTES and arrives at most RIDE_COST
-  # later, and the first likewise, walking to where the next ride leaves, then
-  # returns the trip's [departure, arrival]. At least one ride is kept.
-  def self.walk_ends(rides, departure, arrival, from, to)
-    if rides.size > 1 && (walk = walk_minutes(point(rides[-2]["to"]), to)) && (off = parse_time(rides[-2]["endTime"])) &&
-        walk <= MAX_SWAP_WALK_MINUTES && off + walk.minutes <= arrival + RIDE_COST
-      rides.pop
-      arrival = off + walk.minutes
+  # later, by arrive_by, and the first likewise, walking to where the next ride
+  # leaves, at leave_after or later unless the trip leaves before then anyway.
+  # Returns the trip's [departure, arrival]. At least one ride is kept.
+  def self.walk_ends(rides, departure, arrival, from, to, leave_after = nil, arrive_by = nil)
+    if rides.size > 1 && (walk = walk_minutes(point(rides[-2]["to"]), to)) && (off = parse_time(rides[-2]["endTime"]))
+      home = off + walk.minutes
+      if walk <= MAX_SWAP_WALK_MINUTES && home <= arrival + RIDE_COST && (arrive_by.nil? || home <= arrive_by)
+        rides.pop
+        arrival = home
+      end
     end
-    if rides.size > 1 && (walk = walk_minutes(from, point(rides[1]["from"]))) && (on = parse_time(rides[1]["startTime"])) &&
-        walk <= MAX_SWAP_WALK_MINUTES && on - walk.minutes >= departure - RIDE_COST
-      rides.shift
-      departure = on - walk.minutes
+    if rides.size > 1 && (walk = walk_minutes(from, point(rides[1]["from"]))) && (on = parse_time(rides[1]["startTime"]))
+      leave = on - walk.minutes
+      if walk <= MAX_SWAP_WALK_MINUTES && leave >= departure - RIDE_COST &&
+          (leave_after.nil? || leave >= leave_after || departure < leave_after)
+        rides.shift
+        departure = leave
+      end
     end
     [departure, arrival]
   end

@@ -344,6 +344,15 @@ class TransitousServiceTest < ActiveSupport::TestCase
     # A trip's only ride is kept.
     only_bus = itinerary("2026-09-23T15:05:00Z", "2026-09-23T15:12:00Z", [first_bus])
     assert_equal ["B62"], TransitousService.journey_summary(only_bus, [47.009, -122.0], [47.0, -122.0])[:legs].pluck(:name)
+
+    # Rides stay where walking would get home after the deadline, or leave before the trips asked for.
+    late = TransitousService.journey_summary(home_by_bus.("2026-09-24T03:15:00Z"), [47.5, -122.0], [47.009, -122.0],
+      arrive_by: Time.utc(2026, 9, 24, 3, 12))
+    assert_equal %w[Hudson B62], late[:legs].pluck(:name)
+    later_bus = first_bus.merge("startTime" => "2026-09-23T15:15:00Z", "endTime" => "2026-09-23T15:22:00Z")
+    early = TransitousService.journey_summary(itinerary("2026-09-23T15:15:00Z", "2026-09-23T16:40:00Z", [later_bus, out]),
+      [47.009, -122.0], [47.5, -122.0], leave_after: Time.utc(2026, 9, 23, 15, 15))
+    assert_equal %w[B62 Hudson], early[:legs].pluck(:name)
   end
 
   test "trips walk a stretch rather than ride only a few minutes sooner" do
@@ -395,6 +404,21 @@ class TransitousServiceTest < ActiveSupport::TestCase
 
     yesterday = stub_connection(:get, { "itineraries" => by_train["itineraries"].drop(1), "direct" => [] })
     assert_nil ways_back(yesterday, like: nil, earliest: Time.utc(2026, 9, 24, 2))[:back]
+    # Where nothing leaves after the hike, the last trip that evening is still the way back, home before it's over.
+    before = stub_connection(:get, { "itineraries" => [trip_back("00:30", "02:00")], "direct" => [] })
+    assert_equal "2026-09-24T00:30:00Z", ways_back(before, like: nil, earliest: Time.utc(2026, 9, 24, 3))[:back][:departure]
+  end
+
+  test "the timetable there goes by train unless asked not to" do
+    requests = []
+    body = { "itineraries" => [itinerary("2026-09-23T15:10:00Z", "2026-09-23T16:40:00Z", [leg("BUS", "routeShortName" => "40")])],
+      "direct" => [] }
+    connection = stub_connection(:get, body) { |request| requests << request.params["transitModes"] }
+    trips = TransitousService.departures(origin: origin, destination: destination, time: DEPARTURE, latest: DEPARTURE + 2.hours,
+      by_train: false, connection: connection, cache: ActiveSupport::Cache::MemoryStore.new)
+    assert_equal [["40"], [nil]], [trips.map { |trip| trip[:legs].sole[:name] }, requests]
+    assert TransitousService.by_train?({ legs: [{ mode: "SUBWAY" }, { mode: "REGIONAL_RAIL" }] })
+    refute TransitousService.by_train?({ legs: [{ mode: "REGIONAL_RAIL" }, { mode: "BUS" }] })
   end
 
   test "the way back rides the journey's trains back from where they stopped to where they started, home soonest after the hike" do
