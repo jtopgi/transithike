@@ -1,6 +1,8 @@
 # Cities with weekly guides to day hikes by train, in the order they're listed,
 # and the point trips start from. A city's guide is only published once a
-# build finds at least GuideService::MIN_HIKES hikes from it.
+# build finds at least GuideService::MIN_HIKES hikes from it. Check that a new
+# city's hikes are its own: Philadelphia's were nearly all New York's, hours
+# away, since few hiking routes are mapped near its train stations.
 new-york-city:
   name: New York City
   origin: Midtown Manhattan
@@ -43,9 +45,3 @@ vienna:
   latitude: 48.2082
   longitude: 16.3738
   time_zone: Europe/Vienna
-philadelphia:
-  name: Philadelphia
-  origin: Center City
-  latitude: 39.9526
-  longitude: -75.1652
-  time_zone: America/New_York

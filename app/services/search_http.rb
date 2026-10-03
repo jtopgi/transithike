@@ -7,8 +7,21 @@ module SearchHttp
   # Community-run providers require clients to identify themselves with a contact.
   USER_AGENT = "TransitHike/0.1 (+https://github.com/jtopgi/transithike)"
 
+  # Logs each failed request with its provider, which the errors people see leave out.
+  class FailureLog < Faraday::Middleware
+    def call(env)
+      @app.call(env).on_complete do |done|
+        Rails.logger.warn("#{done.url.host} responded #{done.status}") unless done.success?
+      end
+    rescue Faraday::Error, SearchErrors::UpstreamError => error
+      Rails.logger.warn("#{env.url.host} failed: #{error.class.name.demodulize}")
+      raise
+    end
+  end
+
   def self.connection(url, timeout: 5)
     Faraday.new(url: url, headers: { "User-Agent" => USER_AGENT }) do |http|
+      http.use FailureLog
       http.options.open_timeout = 3
       http.options.timeout = timeout
       http.options.on_data = lambda do |chunk, received_bytes, env|
