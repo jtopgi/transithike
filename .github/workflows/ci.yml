@@ -81,7 +81,9 @@ jobs:
           context: .
           load: true
           tags: transithike:ci
-          build-args: APP_REVISION=${{ github.sha }}
+          build-args: |
+            APP_REVISION=${{ github.sha }}
+            APP_BUILD=ci-${{ github.run_id }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Smoke test the production image without a database
@@ -95,6 +97,8 @@ jobs:
           # Deployments wait for this header to report the new commit.
           curl --silent --dump-header - --output /dev/null http://localhost:3000/up |
             tr -d '\r' | grep --quiet --ignore-case "^x-app-revision: $GITHUB_SHA$"
+          curl --silent --dump-header - --output /dev/null http://localhost:3000/up |
+            tr -d '\r' | grep --quiet --ignore-case "^x-app-build: ci-$GITHUB_RUN_ID$"
           test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://localhost:3000/)" = 301
           https=(--silent --show-error --header "X-Forwarded-Proto: https")
           curl --fail "${https[@]}" --dump-header headers.txt --output page.html http://localhost:3000/
@@ -135,7 +139,9 @@ jobs:
       APP: ${{ vars.AZURE_WEBAPP }}
       GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
       REGISTRY: ${{ vars.AZURE_CONTAINER_REGISTRY }}
-      IMAGE: ${{ vars.AZURE_CONTAINER_REGISTRY }}.azurecr.io/transithike:${{ github.sha }}
+      # The same commit is built again with new guides, so each build has its own tag.
+      BUILD: ${{ github.run_id }}-${{ github.run_attempt }}
+      IMAGE: ${{ vars.AZURE_CONTAINER_REGISTRY }}.azurecr.io/transithike:${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
@@ -155,7 +161,9 @@ jobs:
           context: .
           push: true
           tags: ${{ env.IMAGE }}
-          build-args: APP_REVISION=${{ github.sha }}
+          build-args: |
+            APP_REVISION=${{ github.sha }}
+            APP_BUILD=${{ env.BUILD }}
           cache-from: type=gha
       - name: Deploy to Azure App Service
         id: deploy
@@ -168,9 +176,9 @@ jobs:
       - name: Wait for the new build to serve traffic
         run: |
           for _ in $(seq 1 40); do
-            revision=$(curl --silent --max-time 30 --dump-header - --output /dev/null "$URL/up" |
-              tr -d '\r' | sed -n -E 's/^x-app-revision: *//Ip')
-            if [ "$revision" = "$GITHUB_SHA" ]; then exit 0; fi
+            build=$(curl --silent --max-time 30 --dump-header - --output /dev/null "$URL/up" |
+              tr -d '\r' | sed -n -E 's/^x-app-build: *//Ip')
+            if [ "$build" = "$BUILD" ]; then exit 0; fi
             sleep 15
           done
           echo "::error::The new build was not serving traffic after 10 minutes."

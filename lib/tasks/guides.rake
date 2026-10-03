@@ -7,16 +7,27 @@ namespace :guides do
     guides = GuideService.guides.select { |guide| only.nil? || only.include?(guide.slug) }
     abort "No guides match CITIES=#{ENV['CITIES']}" if guides.empty?
 
+    # Free providers are busy at times, so a city whose search fails is tried again after a pause.
+    pause = Integer(ENV.fetch("RETRY_PAUSE", "120"))
     written = guides.count do |guide|
-      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      data = GuideService.build(guide, previous: GuideService.previous(guide))
-      kept = GuideService.write(guide, data)
-      seconds = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round
-      puts "#{guide.name}: #{data[:hikes].size} hikes in #{seconds}s#{kept ? '' : ', too few, so the last guide stays'}"
-      kept
-    rescue SearchErrors::UpstreamError, SearchErrors::InvalidInput => error
-      puts "#{guide.name}: failed (#{error.message}), so the last guide stays"
-      false
+      attempts = 0
+      begin
+        attempts += 1
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        data = GuideService.build(guide, previous: GuideService.previous(guide))
+        kept = GuideService.write(guide, data)
+        seconds = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round
+        puts "#{guide.name}: #{data[:hikes].size} hikes in #{seconds}s#{kept ? '' : ', too few, so the last guide stays'}"
+        kept
+      rescue SearchErrors::UpstreamError, SearchErrors::InvalidInput => error
+        if attempts < 2 && error.is_a?(SearchErrors::UpstreamError)
+          puts "#{guide.name}: failed (#{error.message}), trying again in #{pause}s"
+          sleep pause
+          retry
+        end
+        puts "#{guide.name}: failed (#{error.message}), so the last guide stays"
+        false
+      end
     end
     puts "#{written} of #{guides.size} guides written to #{GuideService.directory}"
     # Lookups left running finish, and their pools stop, before Ruby exits, which can otherwise hang killing their threads.
