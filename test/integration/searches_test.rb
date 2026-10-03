@@ -141,11 +141,9 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_select "input[name=day][value=sunday][checked]"
     assert_select "[data-progress][role=status]", text: /Finding the stations trains reach/
     assert_select "[data-skeleton]", count: 2
-    assert_select "[data-results-toolbar][hidden] select[data-sort] option", count: 6
-    assert_select "select[data-sort] option:first-child[value=scenic]", text: "Most scenic"
-    assert_select "select[data-sort] option[value=stay]", text: "Most time there"
-    assert_select "select[data-sort] option[value=distance]", count: 0
-    assert_select "select[data-sort] option[value=popular]", count: 0
+    # Hikes are only ever most scenic first, the sliders narrowing them down.
+    assert_select "[data-results-toolbar][hidden]"
+    assert_select "select", count: 0
     # Sliders at their ends filter nothing: a round trip of 2 to 8 hours, and lengths from 1 to 20 miles.
     assert_select "[data-results-toolbar] input[type=range][data-max-trip][min='120'][max='480'][value='480']"
     assert_select "[data-length-range] input[type=range][data-length-min][min='1'][max='20'][value='1']"
@@ -200,7 +198,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
       "[data-required='7200'][data-plan='out_and_back']")
     assert card
     # Arriving at 9:30 AM with the last trip back at 9 PM leaves 11 hours 30 minutes.
-    assert_equal "41400", card["data-stay"]
+    assert_equal "· up to 11 h there", card.at_css("[data-stay-label]").text.squish
     assert card.at_css(".trail-map[data-path='[[[47.3,-122.0],[47.32,-122.0]]]'][data-start='[47.3,-122.0]']")
     # Photos are looked for at the route's middle and a sixth of the way from each end.
     assert card.at_css("a[data-photos-url='#{photos_path(points: '47.32,-122.0|47.3,-122.0')}'][hidden]")
@@ -468,7 +466,9 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_equal ["2026-09-23T21:00:00Z", nil], response.parsed_body["back"].values_at("departure") + [response.parsed_body["same_way"]]
     back_request = @requests[URI(TransitousService::PLAN_URL).path].last.params
-    assert_equal ["48.5000000,-122.3000000", nil, nil], back_request.values_at("fromPlace", "via", "transitModes")
+    # By train, with the subway or light rail to reach it, unless none goes.
+    assert_equal ["48.5000000,-122.3000000", nil, TransitousService::TRIP_MODES.join(",")],
+      back_request.values_at("fromPlace", "via", "transitModes")
     get trip_path(from: "47.6,-122.3", to: "48.4,-122.3", finish: "nowhere", leave: "2026-09-23T15:00:00Z",
       back_by: "2026-09-24T06:00:00Z")
     assert_response :bad_request

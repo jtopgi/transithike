@@ -195,11 +195,12 @@ module OverpassService
   end
 
   # Up to MAX_TRANSIT_ROUTES ids of the routes transit may reach, most promising
-  # and quickest first, keeping each trail's quickest section.
-  def self.pick(candidates, access:)
+  # and quickest first, keeping each trail's quickest section. relief is how
+  # far the land rises around routes, in meters by id, as ElevationService.reliefs finds.
+  def self.pick(candidates, access:, relief: {})
     reachable = candidates.filter_map { |route| (minutes = access.reach(route[:bounds])) && route.merge(minutes: minutes) }
     distinct(reachable.sort_by { |route| route[:minutes] })
-      .sort_by { |route| [-promise(route), route[:minutes]] }.first(MAX_TRANSIT_ROUTES).pluck(:id)
+      .sort_by { |route| [-promise(route, relief[route[:id]]), route[:minutes]] }.first(MAX_TRANSIT_ROUTES).pluck(:id)
   end
 
   # The routes, leaving out any named like an earlier one within DUPLICATE_METERS.
@@ -215,9 +216,14 @@ module OverpassService
     end
   end
 
-  # Notable routes of day-hike size with distinct names are likelier to be good hikes.
-  def self.promise(route)
-    (route[:notable] ? 1 : 0) + (route[:span] >= 800 ? 0.5 : 0) - (generic_name?(route[:name]) ? 1 : 0)
+  # Notable routes of day-hike size with distinct names are likelier to be good
+  # hikes, and like TrailsService.score, routes across hills and mountains
+  # likelier to be scenic, and long trips there count against routes. Without
+  # these, an area with many notable routes would fill every check, however far.
+  def self.promise(route, relief = nil)
+    hours = route[:minutes].to_f * 2 / 60
+    (route[:notable] ? 1 : 0) + (route[:span] >= 800 ? 0.5 : 0) - (generic_name?(route[:name]) ? 1 : 0) +
+      [relief.to_i / 100.0, 4].min * TrailsService::SCENIC_WEIGHT - TrailsService.travel_penalty(hours)
   end
 
   def self.generic_name?(name)

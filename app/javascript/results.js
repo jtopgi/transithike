@@ -1,18 +1,10 @@
-// Results page: streams hikes in as they are found, then sorts, filters, and previews them.
+// Results page: streams hikes in as they are found, most scenic first, then filters and previews them.
 import { drawMap } from "./map_preview"
 
-// Ties keep the recommended order.
+// The sliders narrow hikes down by round trip and length, so they're only ever
+// ranked most scenic first, ties keeping the recommended order.
 const byScore = (a, b) => b.dataset.score - a.dataset.score || a.dataset.travel - b.dataset.travel
-const ascending = (key) => (a, b) => a.dataset[key] - b.dataset[key] || byScore(a, b)
-const descending = (key) => (a, b) => b.dataset[key] - a.dataset[key] || byScore(a, b)
-const ORDERS = {
-  scenic: descending("scenic"),
-  recommended: byScore,
-  travel: ascending("travel"),
-  stay: descending("stay"),
-  "length-asc": ascending("length"),
-  "length-desc": descending("length")
-}
+const mostScenic = (a, b) => b.dataset.scenic - a.dataset.scenic || byScore(a, b)
 // A slider at its end filters nothing: any round trip, and any length from the shortest to the longest.
 const miles = (value) => `${Number(value)} mi`
 const MODE_ICONS = {
@@ -178,7 +170,7 @@ class Results {
     range.style.setProperty("--high", percent(this.longest))
     const cards = [...this.list.querySelectorAll("[data-trail]")]
     let shown = 0
-    cards.sort(ORDERS[this.toolbar.querySelector("[data-sort]").value]).forEach((card) => {
+    cards.sort(mostScenic).forEach((card) => {
       const length = Number(card.dataset.length)
       card.hidden = !(length >= min && length <= max && Number(card.dataset.travel) <= maxTrip)
       if (!card.hidden) shown += 1
@@ -256,7 +248,6 @@ class Results {
 
     const stay = Math.max(Math.floor((new Date(last.departure) - new Date(there.arrival)) / 60000), 0)
     const tight = stay * 60 < Number(card.dataset.required)
-    card.dataset.stay = stay * 60
     line.querySelector("[data-stay-label]").textContent = `· ${tight ? "only" : "up to"} ${stayLabel(stay)} there`
     line.querySelector("[data-return-icon]").textContent = tight ? "⚠️" : "↩️"
   }

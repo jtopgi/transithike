@@ -42,8 +42,8 @@ class OverpassServiceTest < ActiveSupport::TestCase
   end
 
   # Transit reaches every route in 60 minutes unless told otherwise.
-  def pick(candidates, access: FakeAccess.new(Hash.new(60)))
-    OverpassService.pick(candidates, access: access)
+  def pick(candidates, access: FakeAccess.new(Hash.new(60)), relief: {})
+    OverpassService.pick(candidates, access: access, relief: relief)
   end
 
   # A station km north and east of 47, -122, reached in minutes.
@@ -262,6 +262,16 @@ class OverpassServiceTest < ActiveSupport::TestCase
     assert OverpassService.generic_name?(OverpassService::UNNAMED)
     assert OverpassService.generic_name?(nil)
     refute OverpassService.generic_name?("Loop Trail to Twin Falls")
+  end
+
+  test "routes across hilly land are checked first, and long trips there count against routes" do
+    notable, hilly, mountains, flat = candidate(1, 10, notable: true), candidate(2, 20), candidate(3, 30), candidate(4, 40)
+    access = FakeAccess.new({ notable[:bounds] => 60, hilly[:bounds] => 60, mountains[:bounds] => 180, flat[:bounds] => 30 })
+    # Land rising 300 m outweighs a Wikipedia article, and mountains three hours away
+    # still do, though the trip there counts against them; relief counts up to 400 m.
+    assert_equal [2, 3, 1, 4], pick([notable, hilly, mountains, flat], access: access,
+      relief: { 2 => 300, 3 => 2_000, 4 => 20 })
+    assert_equal [1, 4, 2, 3], pick([notable, hilly, mountains, flat], access: access)
   end
 
   test "sections of one trail are checked once, where transit reaches soonest, but namesakes farther away are kept" do

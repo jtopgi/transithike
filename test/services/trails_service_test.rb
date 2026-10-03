@@ -71,12 +71,12 @@ class TrailsServiceTest < ActiveSupport::TestCase
   class FakeHiking
     FIRST_TILE = [47.5, -122.5].freeze
 
-    attr_reader :access, :batches, :stations, :tile_requests, :threads
+    attr_reader :access, :batches, :reliefs, :stations, :tile_requests, :threads
 
     # stuck names the lookups that wait for release: :first_tiles, :other_tiles, :trails_for, or :highlights.
     def initialize(trails, far: [], highlights: {}, failing: [], release: nil, stuck: [:highlights])
       @trails, @far, @highlights, @failing, @release, @stuck = trails, far, highlights, failing, release, stuck
-      @batches, @threads, @tile_requests = [], [], Concurrent::Array.new
+      @batches, @threads, @tile_requests, @reliefs = [], [], Concurrent::Array.new, []
     end
 
     # One tile, or five when there are routes in the others.
@@ -91,11 +91,12 @@ class TrailsServiceTest < ActiveSupport::TestCase
       @tile_requests << tiles
       raise @trails if first && @trails.is_a?(Exception)
 
-      (first ? @trails : @far).map { |trail| { id: trail.osm_id } }
+      (first ? @trails : @far).map { |trail| { id: trail.osm_id, latitude: trail.latitude, longitude: trail.longitude } }
     end
 
-    def pick(routes, access:)
+    def pick(routes, access:, relief:)
       @access = access
+      @reliefs << relief
       routes.pluck(:id)
     end
 
@@ -118,12 +119,21 @@ class TrailsServiceTest < ActiveSupport::TestCase
   end
 
   # Terrain by route name; a lookup including a name mapped to an exception fails,
-  # and with a release event, lookups wait for it.
+  # and with a release event, lookups wait for it. Relief is by route id, and a
+  # lookup including an id mapped to an exception fails.
   class FakeElevation
-    attr_reader :lookups
+    attr_reader :lookups, :relief_lookups
 
-    def initialize(terrain = {}, release: nil)
-      @terrain, @release, @lookups = terrain, release, Concurrent::Array.new
+    def initialize(terrain = {}, release: nil, relief: {})
+      @terrain, @release, @relief, @lookups, @relief_lookups = terrain, release, relief, Concurrent::Array.new, Concurrent::Array.new
+    end
+
+    def reliefs(routes)
+      @relief_lookups << routes.pluck(:id)
+      failure = routes.map { |route| @relief[route[:id]] }.grep(Exception).first
+      raise failure if failure
+
+      routes.to_h { |route| [route[:id], @relief[route[:id]]] }.compact
     end
 
     def terrain(trails)
@@ -177,6 +187,24 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal "Seattle, Washington", result.area
     assert result.returns_checked
     assert result.complete
+  end
+
+  test "routes are picked knowing how far the land rises around them, and without it when that can't be looked up" do
+    near, far = trail("near"), trail("far")
+    transit = FakeTransit.new(trips: { "near" => minutes(30), "far" => minutes(30) })
+    hiking = FakeHiking.new([near], far: [far])
+    elevation = FakeElevation.new(relief: { near.osm_id => 120, far.osm_id => 450 })
+    assert_equal %w[far near], search(transit: transit, hiking: hiking, elevation: elevation).trails.map(&:name).sort
+
+    # The first batch is picked with the nearest routes' relief, the rest with every route's,
+    # each route's looked up once.
+    assert_equal [{ near.osm_id => 120 }, { near.osm_id => 120, far.osm_id => 450 }], hiking.reliefs
+    assert_equal [[near.osm_id], [far.osm_id]], elevation.relief_lookups
+
+    hiking = FakeHiking.new([near])
+    failing = FakeElevation.new(relief: { near.osm_id => SearchErrors::UpstreamError.new("down") })
+    assert_equal %w[near], search(transit: transit, hiking: hiking, elevation: failing).trails.map(&:name)
+    assert_equal [{}, {}], hiking.reliefs
   end
 
   test "results are reported as they are found: the place, each batch, and the final ranking" do

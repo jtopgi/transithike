@@ -9,6 +9,11 @@ module ElevationService
   ATTRIBUTION_URL = "https://github.com/tilezen/joerd/blob/master/docs/attribution.md"
   # Zoom 11 tiles are about 15 km across, with a height about every 60 m.
   ZOOM = 11
+  # Zoom 8 tiles are about 100 km across, with a height about every 400 m:
+  # enough to tell hills and mountains from plains before routes are measured.
+  RELIEF_ZOOM = 8
+  # Heights across each route's bounding box, this many points along each side.
+  RELIEF_GRID = 5
   TILE_PIXELS = 256
   # Points along each route, and around its highest point in rings this far out, in eight directions.
   PROFILE_POINTS = 64
@@ -45,6 +50,37 @@ module ElevationService
     keys.transform_values { |key| found[key] }
   end
 
+  # Roughly how far the land rises across each route's bounding box, as
+  # { id => meters }, from coarse tiles, for routes as OverpassService.routes_in
+  # finds them. Routes on tiles that can't be loaded are left out, and each
+  # such tile is asked for only once.
+  def self.reliefs(routes, connection: nil, tiles: TILES)
+    connection ||= SearchHttp.connection(TILE_URL, timeout: 10)
+    failed = Set.new
+    routes.each_with_object({}) do |route, reliefs|
+      heights = grid(route[:bounds]).map { |point| coarse_height(*point, connection, tiles, failed) }
+      reliefs[route[:id]] = heights.max - heights.min unless heights.include?(nil)
+    end
+  end
+
+  # RELIEF_GRID by RELIEF_GRID [latitude, longitude] points evenly across a [south, west, north, east] box.
+  def self.grid(bounds)
+    south, west, north, east = bounds
+    steps = (0...RELIEF_GRID).map { |step| step.fdiv(RELIEF_GRID - 1) }
+    steps.product(steps).map { |up, across| [south + (north - south) * up, west + (east - west) * across] }
+  end
+
+  # The height at a point from a coarse tile, or nil when its tile can't be loaded.
+  def self.coarse_height(latitude, longitude, connection, tiles, failed)
+    tile = pixel(latitude, longitude, RELIEF_ZOOM).first(2)
+    return if failed.include?(tile)
+
+    height(latitude, longitude, connection, tiles, RELIEF_ZOOM)
+  rescue SearchErrors::UpstreamError
+    failed << tile
+    nil
+  end
+
   # Up to PROFILE_POINTS [latitude, longitude] points spread along a path of lines.
   def self.profile(path)
     points = Array(path).flatten(1)
@@ -64,16 +100,16 @@ module ElevationService
     end
   end
 
-  # The height in whole meters at a point, from the tile holding it.
-  def self.height(latitude, longitude, connection, tiles)
-    x, y, column, row = pixel(latitude, longitude)
-    heights = tiles.fetch("#{ZOOM}/#{x}/#{y}") { decode(SearchHttp.body { connection.get("#{ZOOM}/#{x}/#{y}.png") }) }
+  # The height in whole meters at a point, from the tile holding it at a zoom.
+  def self.height(latitude, longitude, connection, tiles, zoom = ZOOM)
+    x, y, column, row = pixel(latitude, longitude, zoom)
+    heights = tiles.fetch("#{zoom}/#{x}/#{y}") { decode(SearchHttp.body { connection.get("#{zoom}/#{x}/#{y}.png") }) }
     heights.unpack1("n", offset: (row * TILE_PIXELS + column) * 2)
   end
 
-  # The [x, y] of the Web Mercator tile holding a point, and the point's [column, row] in it.
-  def self.pixel(latitude, longitude)
-    scale = 2**ZOOM
+  # The [x, y] of the Web Mercator tile holding a point at a zoom, and the point's [column, row] in it.
+  def self.pixel(latitude, longitude, zoom = ZOOM)
+    scale = 2**zoom
     sine = Math.sin(latitude.clamp(-MAX_LATITUDE, MAX_LATITUDE) * Math::PI / 180)
     x = ((longitude + 180) / 360.0 * scale).clamp(0, scale - 1e-9)
     y = ((0.5 - Math.log((1 + sine) / (1 - sine)) / (4 * Math::PI)) * scale).clamp(0, scale - 1e-9)

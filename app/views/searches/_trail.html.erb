@@ -1,6 +1,6 @@
 <div class="col" data-trail data-osm-id="<%= trail.osm_id %>" data-score="<%= trail.score %>"
      data-scenic="<%= TrailsService.scenic(trail) %>" data-travel="<%= TrailsService.round_trip_seconds(trail).round %>"
-     data-length="<%= TrailsService.hike_miles(trail).round(2) %>" data-stay="<%= stay_seconds(trail) %>"
+     data-length="<%= TrailsService.hike_miles(trail).round(2) %>"
      data-plan="<%= trail.plan %>"
      data-required="<%= (TrailsService.required_hours(trail) * 3600).round %>">
   <article class="card trail-card h-100 border-0 shadow-sm">
