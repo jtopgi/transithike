@@ -68,9 +68,13 @@ ENV PORT="3000" \
     RAILS_LOG_TO_STDOUT="1" \
     RAILS_SERVE_STATIC_FILES="1"
 
-# The commit this image was built from, reported in an X-App-Revision header.
+# The commit this image was built from, reported in an X-App-Revision header,
+# and the build, in an X-App-Build header: a commit is built again with new
+# guides, so deployments wait for the build they started.
 ARG APP_REVISION
-ENV APP_REVISION="${APP_REVISION}"
+ARG APP_BUILD
+ENV APP_REVISION="${APP_REVISION}" \
+    APP_BUILD="${APP_BUILD}"
 
 EXPOSE 3000
 CMD ["bundle", "exec", "puma", "-C", "config/puma.rb"]

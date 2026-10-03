@@ -281,8 +281,9 @@ planning, linked from the home page, the navigation, and an index of cities.
 - **Weekly builds.** The [Guides workflow](.github/workflows/guides.yml) runs on
   Wednesdays (and from the Actions tab, for some cities if you like). It runs
   `bin/rails guides:build`, which searches from each city with the live
-  providers, plans every hike's trips there and back with `TripPlans`, finds
-  their photos, and writes `db/guides/<city>.json`. A city's guide is only
+  providers (trying a city again after two minutes when a provider is busy),
+  plans every hike's trips there and back with `TripPlans`, finds their photos,
+  and writes `db/guides/<city>.json`. A city's guide is only
   replaced when the new one has at least 12 hikes and at least 60% as many as
   the last, so a provider's bad day doesn't empty its pages, and hikes keep their
   pages' addresses from week to week. Plain or shared names such as "White Trail"
@@ -390,10 +391,12 @@ The app runs at <https://transithike.azurewebsites.net> on
 from GitHub Actions:
 
 - After CI passes on `master`, the `deploy` job signs in to Azure with OpenID
-  Connect (no stored passwords), pushes the image to Azure Container Registry
-  tagged with the commit SHA, and points the web app at it. The image reports
-  its commit in an `X-App-Revision` header, so the job waits until the new build
-  serves traffic, loads the site twice with its session cookie, and runs one
+  Connect (no stored passwords), downloads the latest guides, pushes the image to
+  Azure Container Registry tagged with the commit SHA and the run (a commit is
+  built again with new guides), and points the web app at it. The image reports
+  its commit in an `X-App-Revision` header and its build in `X-App-Build`, so the
+  job waits until the new build serves traffic, loads the site twice with its
+  session cookie, and runs one
   real Saturday search from Grand Central Terminal; a provider outage there only
   produces a warning. Deployments and
   the app URL appear under the repository's `production` environment. If GitHub
