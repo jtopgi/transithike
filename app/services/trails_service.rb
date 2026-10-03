@@ -167,7 +167,8 @@ module TrailsService
         earliest_return: result.departure_time + MIN_HIKE_HOURS.hours)
     rescue SearchErrors::UpstreamError
       result.returns_checked = false
-      return reached
+      # Routes that couldn't be hiked by the deadline are still left out.
+      return reached.select { |trail| trail.arrival + required_hours(trail).hours <= result.return_by }
     end
     from_finish = linear.zip(latest.drop(reached.size)).to_h
     reached.each_with_index.filter_map do |trail, index|

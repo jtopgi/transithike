@@ -298,8 +298,9 @@ class TrailsServiceTest < ActiveSupport::TestCase
   end
 
   test "when the way back can't be looked up, routes transit reaches are shown and the result says so" do
-    transit = FakeTransit.new(trips: { "a" => minutes(30) }, returns: SearchErrors::UpstreamError.new("changed"))
-    result = search(transit: transit, hiking: FakeHiking.new([trail("a")]))
+    # Twenty miles out and back take 20 hours, more than the day has.
+    transit = FakeTransit.new(trips: { "a" => minutes(30), "epic" => minutes(30) }, returns: SearchErrors::UpstreamError.new("changed"))
+    result = search(transit: transit, hiking: FakeHiking.new([trail("a"), trail("epic", length: 20, loop: false)]))
     assert_equal ["a"], result.trails.map(&:name)
     assert_nil result.trails.first.last_return
     refute result.returns_checked
