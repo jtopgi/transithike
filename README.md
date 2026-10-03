@@ -115,11 +115,11 @@ test Overpass connectivity from your deployment before launching.
   twice their length, back to where transit reached them, which is the distance
   cards show and sort and filter by. When that would be over 10 miles, or leave
   too little time, and transit reaches the route within 1.5 km of an end, it can
-  instead be hiked one way to the far end, if transit leaves from there in time
-  and rides at most a quarter longer than the trip there, plus 15 minutes. The
-  search asks for the last trips back from every route and every such far end in
-  one request. Those cards say so, mark the finish on the map, add **Directions
-  back** from it, and plan the trips back from there.
+  instead be hiked one way to the far end, if transit leaves from there late
+  enough. The search asks for the last trips back from every route and every such
+  far end in one request. Those cards say so, mark the finish on the map, add
+  **Directions back** from it, and plan the trips back from there, preferring
+  ones that ride at most a quarter longer than the trip there, plus 15 minutes.
 - **There and back the same way.** Each card shows the round trip: the rides
   there and back. Until a card's trips are planned, it is twice the trip there
   (waiting for the first train included), since coming back the same way takes

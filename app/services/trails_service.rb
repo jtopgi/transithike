@@ -171,22 +171,21 @@ module TrailsService
     end
     from_finish = linear.zip(latest.drop(reached.size)).to_h
     reached.each_with_index.filter_map do |trail, index|
-      planned(trail, latest[index], finishes[index], from_finish[index], result.return_by)
+      planned(trail, latest[index], finishes[index], from_finish[index])
     end
   end
 
   # The trail as it can be hiked and still make the last trip back: back to
   # where it starts, unless that's over COMFORTABLE_MILES out and back or leaves
-  # too little time, and its far end has transit back that leaves soon enough
-  # and rides not much longer than the trip there. nil when neither leaves time
-  # to hike it all.
-  def self.planned(trail, start_return, finish, finish_return, deadline)
+  # too little time, and transit leaves its far end late enough. nil when
+  # neither leaves time to hike it all. How long rides back take is only known
+  # once a card's trips are planned, which then prefer quick ones.
+  def self.planned(trail, start_return, finish, finish_return)
     trail.plan, trail.finish, trail.last_return = (loop?(trail) ? :loop : :out_and_back), nil, start_return
     back = start_return && time_to_hike?(trail)
     return trail if back && (trail.plan == :loop || hike_miles(trail) <= COMFORTABLE_MILES)
 
-    slowest = trail.duration * TransitousService::BACK_RIDE_FACTOR + TransitousService::BACK_RIDE_SLACK.to_i
-    if finish && finish_return && deadline - finish_return <= slowest
+    if finish && finish_return
       through = trail.dup.tap { |candidate| candidate.plan, candidate.finish, candidate.last_return = :through, finish, finish_return }
       return through if time_to_hike?(through)
     end

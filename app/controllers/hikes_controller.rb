@@ -38,33 +38,19 @@ class HikesController < ApplicationController
     @origin, @leave, @back_by = origin, leave.in_time_zone(@zone), back_by.in_time_zone(@zone)
     @results_path = search_path({ origin: @origin_name || SearchOrigin::CURRENT_LOCATION, lat: origin.latitude,
       lon: origin.longitude, day: @leave.saturday? ? "saturday" : "sunday", tz: @zone.tzinfo.name })
-    @there, @ways, @departures = timetables(origin, start, finish, leave, back_by)
+    trips = TripPlans.plan(@trail, origin: origin, leave: leave, back_by: back_by)
+    @there, @ways, @departures = trips.values_at(:there, :ways, :departures)
     highlights, @trail.terrain, @photos = TrailsService.settle([extras], timeout: EXTRAS_WAIT_SECONDS).first.value(0) || []
     @trail.highlights = highlights || []
     expires_in TransitousService::TRIP_CACHE_TTL
   rescue SearchErrors::UpstreamError
+    # The lookups started alongside finish rather than outlive the request.
+    TrailsService.settle([extras], timeout: EXTRAS_WAIT_SECONDS) if extras
     @unavailable = true
     render :show, status: :service_unavailable
   end
 
   private
-
-  # The first trip there, the trips back after hiking from its arrival, and the
-  # trips there that leave time to hike before the last trip back.
-  def timetables(origin, start, finish, leave, back_by)
-    # In whole minutes, as the results page looks trips up, so its lookups are shared.
-    hike = (TrailsService.required_hours(@trail) * 60).round.minutes
-    there = TransitousService.journey(origin: origin, destination: start, time: leave)
-    arrival = there ? Time.iso8601(there[:arrival]) : leave
-    ways = TransitousService.ways_back(origin: finish || start, destination: origin, like: there,
-      earliest: arrival + hike, deadline: back_by, follow: finish.nil?)
-    last = Time.iso8601(ways[:last][:departure]) if ways[:last]
-    departures = if last && there
-      TransitousService.departures(origin: origin, destination: start, time: leave, latest: last - hike - (arrival - leave) + 1.hour)
-        .select { |trip| Time.iso8601(trip[:arrival]) + hike <= last }
-    end
-    [there, ways, departures || [there].compact]
-  end
 
   def optional
     yield

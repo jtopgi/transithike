@@ -243,7 +243,8 @@ class TrailsServiceTest < ActiveSupport::TestCase
 
   test "routes are left out without a way back the same day that leaves time to hike all of them" do
     trails = [trail("roomy"), trail("stranded"), trail("rushed"), trail("long", length: 10, loop: false),
-      trail("through", length: 6, loop: false), trail("there and back", length: 2, loop: false)]
+      trail("through", length: 6, loop: false), trail("there and back", length: 2, loop: false),
+      trail("late bus", length: 12, loop: false)]
     deadline = Time.utc(2026, 9, 27, 6)
     transit = FakeTransit.new(trips: trails.to_h { |trail| [trail.name, minutes(60)] }, returns: {
       "roomy" => Time.utc(2026, 9, 27, 2), "stranded" => nil,
@@ -251,20 +252,24 @@ class TrailsServiceTest < ActiveSupport::TestCase
       "rushed" => Time.utc(2026, 9, 26, 17, 59),
       # Ten miles out and back take 10 hours, more than the 4 left, and nothing leaves from the far end.
       "long" => Time.utc(2026, 9, 26, 20), "long finish" => nil,
-      # Six miles to the far end take 3 hours, and the last trip home from there rides an hour.
+      # Six miles to the far end take 3 hours, and the last trip home from there leaves at 22:00 PDT.
       "through" => Time.utc(2026, 9, 26, 18), "through finish" => deadline - 1.hour,
-      # Two miles out and back take 2 hours. The far end's transit rides much longer than the trip there.
-      "there and back" => Time.utc(2026, 9, 26, 18, 30), "there and back finish" => deadline - 3.hours
+      # Two miles out and back take 2 hours, comfortable enough to come back the same way.
+      "there and back" => Time.utc(2026, 9, 26, 18, 30), "there and back finish" => deadline - 3.hours,
+      # Twelve miles out and back don't fit, but 6 hours to the far end do, before its last bus at 3:30 PM PDT,
+      # though that leaves hours before 11 PM.
+      "late bus" => Time.utc(2026, 9, 26, 19), "late bus finish" => Time.utc(2026, 9, 26, 22, 30)
     })
     result = search(transit: transit, hiking: FakeHiking.new(trails))
 
     found = result.trails.index_by(&:name)
-    assert_equal ["roomy", "there and back", "through"], found.keys.sort
+    assert_equal ["late bus", "roomy", "there and back", "through"], found.keys.sort
     assert_equal [:loop, nil, Time.utc(2026, 9, 27, 2)], found["roomy"].to_h.values_at(:plan, :finish, :last_return)
     through = trails.find { |trail| trail.name == "through" }
     assert_equal [:through, through.path.first.last, deadline - 1.hour],
       found["through"].to_h.values_at(:plan, :finish, :last_return)
     assert_equal [:out_and_back, nil], found["there and back"].to_h.values_at(:plan, :finish)
+    assert_equal [:through, Time.utc(2026, 9, 26, 22, 30)], found["late bus"].to_h.values_at(:plan, :last_return)
     # One request asks for the last trips back from every route and every linear route's far end.
     assert_equal [deadline, SATURDAY + 90.minutes], transit.return_requests.sole
   end

@@ -567,11 +567,11 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_select ".alert", text: /transit planner is unavailable/
   end
 
-  test "trips need two points, times on one day, and at most 12 hours of hiking, and provider failures say so" do
+  test "trips need two points, times on one day, and hikes that fit between them, and provider failures say so" do
     valid = { from: "47.6,-122.3", to: "48.4,-122.3", leave: "2026-09-23T15:00:00Z", back_by: "2026-09-24T06:00:00Z" }
     [{ from: "91,0" }, { to: "north" }, { from: nil }, { leave: "tomorrow" }, { back_by: "2026-09-23T14:00:00Z" },
       { back_by: "2026-09-26T06:00:00Z" }, { leave: "2026-10-30T15:00:00Z", back_by: "2026-10-31T06:00:00Z" },
-      { hike: "three hours" }, { hike: "-5" }, { hike: "721" }, { hike: "0x10" }, { hike: "" }].each do |change|
+      { hike: "three hours" }, { hike: "-5" }, { hike: "901" }, { hike: "0x10" }, { hike: "" }].each do |change|
       get trip_path(valid.merge(change).compact)
       assert_response :bad_request
     end
