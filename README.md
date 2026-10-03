@@ -18,6 +18,9 @@ has a details page with timetables of every trip there that leaves time to hike
 it and every trip back. Hikes can also be sorted by recommendation, round trip,
 time there, or length, and filtered with sliders for the longest round trip
 (spanning the hikes found, from the quickest to any) and a range of lengths.
+Weekly guides list every hike from big cities, such as
+[New York City](https://transithike.azurewebsites.net/day-hikes-by-train/new-york-city),
+on pages that search engines and AI assistants can read.
 
 ## Requirements
 
@@ -265,6 +268,55 @@ and searches are rate limited per visitor. The Directions link opens Google Maps
 public directions page, which needs no API key. Provider outages cannot be
 validated by offline tests; perform a real search before launching.
 
+## Guides, search engines, and AI assistants
+
+Search results load as they're found, which search engines and AI assistants
+can't read, so the site also has **guides**: a page per city at
+`/day-hikes-by-train/<city>`, and a page per hike with its route, photos,
+facts, and timetables there and back, built from the same search and trip
+planning, linked from the home page, the navigation, and an index of cities.
+
+- **Cities** are listed in `config/guides.yml`, each with the point trips start
+  from. Trips are for the coming Saturday, from 8 AM, back by 11 PM.
+- **Weekly builds.** The [Guides workflow](.github/workflows/guides.yml) runs on
+  Wednesdays (and from the Actions tab, for some cities if you like). It runs
+  `bin/rails guides:build`, which searches from each city with the live
+  providers, plans every hike's trips there and back with `TripPlans`, finds
+  their photos, and writes `db/guides/<city>.json`. A city's guide is only
+  replaced when the new one has at least 12 hikes and at least 60% as many as
+  the last, so a provider's bad day doesn't empty its pages, and hikes keep their
+  pages' addresses from week to week. Plain or shared names such as "White Trail"
+  get the natural area nearby, or the station trains go to, in their title.
+- **Publishing.** The workflow uploads the guides as `guides.tar.gz` to the
+  `guides-data` prerelease (not to the repository, so its history doesn't grow
+  every week), then runs CI on `master`, whose deploy job downloads the latest
+  guides into the image with `bin/download-guides`. Once guides are published,
+  a failed download fails the build rather than deploying, or building the next
+  guides, without them. Pages read them from the image, so they need no lookups
+  and load at once. To build guides locally, run
+  `CITIES=new-york-city bin/rails guides:build`; `db/guides` is ignored by Git.
+- **What search engines read.** Every page has a description, a canonical
+  address, and link previews (Open Graph and Twitter tags, with the hike's first
+  photo or `public/og-image.png`). Guides have structured data (an `ItemList` of
+  hikes, `TouristAttraction`s with coordinates, and breadcrumbs), and the home
+  page describes the app as a free `WebApplication`. `robots.txt` lets crawlers
+  read every page but not the lookups pages make (`/search/stream`, `/trip`,
+  `/photos`, `/places`, `/hike`), which would plan trips with the free providers
+  for them. Search results and hike details from a search are `noindex`, since
+  every starting point has its own. `sitemap.xml` lists the home page, the guides,
+  and every hike's page, with when each guide was built, and `llms.txt` sums up
+  the site and its guides for AI assistants.
+- **IndexNow.** After a deploy that the Guides workflow starts, CI submits the
+  sitemap's pages to [IndexNow](https://www.indexnow.org), which tells Bing
+  (whose index ChatGPT search, Copilot, and DuckDuckGo use), Yandex, and others
+  about them. Its key is public, served from `public/<key>.txt`.
+- **Search consoles.** To see how Google and Bing index the site, add it to
+  [Google Search Console](https://search.google.com/search-console) as a URL
+  prefix and to [Bing Webmaster Tools](https://www.bing.com/webmasters), choose
+  the HTML tag method, and set the tag's content as the App Service settings
+  `GOOGLE_SITE_VERIFICATION` and `BING_SITE_VERIFICATION`; then submit
+  `/sitemap.xml` in each. Bing can also import the site from Google's console.
+
 ## Tests and security checks
 
 ```sh
@@ -287,8 +339,11 @@ pages still render when a browser returns its session cookie with forgery
 protection on, as in production. The browser tests choose a suggested starting
 point, sort the results and filter them with the sliders, check the first and
 last trips back and a one-way hike's directions back, and browse a card's photos.
-Request tests render a hike's details page and its timetables. Elevation tests
-decode generated tiles that use each of PNG's row filters.
+Request tests render a hike's details page and its timetables, the guides from
+a sample guide, and what search engines read: link previews, structured data,
+`robots.txt`, the sitemap, and `llms.txt`. Guide tests build a guide from fake
+providers. Elevation tests decode generated tiles that use each of PNG's row
+filters.
 
 [GitHub Actions](.github/workflows/ci.yml) runs these checks against PostgreSQL
 on every push and pull request. It also builds the production container image

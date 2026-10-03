@@ -1,0 +1,51 @@
+# Cities with weekly guides to day hikes by train, in the order they're listed,
+# and the point trips start from. A city's guide is only published once a
+# build finds at least GuideService::MIN_HIKES hikes from it.
+new-york-city:
+  name: New York City
+  origin: Midtown Manhattan
+  latitude: 40.7536
+  longitude: -73.9832
+  time_zone: America/New_York
+london:
+  name: London
+  origin: central London
+  latitude: 51.508
+  longitude: -0.1247
+  time_zone: Europe/London
+zurich:
+  name: Zurich
+  origin: Zurich main station
+  latitude: 47.3779
+  longitude: 8.5403
+  time_zone: Europe/Zurich
+berlin:
+  name: Berlin
+  origin: central Berlin
+  latitude: 52.52
+  longitude: 13.405
+  time_zone: Europe/Berlin
+paris:
+  name: Paris
+  origin: central Paris
+  latitude: 48.8566
+  longitude: 2.3522
+  time_zone: Europe/Paris
+munich:
+  name: Munich
+  origin: Munich main station
+  latitude: 48.1402
+  longitude: 11.56
+  time_zone: Europe/Berlin
+vienna:
+  name: Vienna
+  origin: central Vienna
+  latitude: 48.2082
+  longitude: 16.3738
+  time_zone: Europe/Vienna
+philadelphia:
+  name: Philadelphia
+  origin: Center City
+  latitude: 39.9526
+  longitude: -75.1652
+  time_zone: America/New_York
