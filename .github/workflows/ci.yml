@@ -4,7 +4,13 @@ on:
   push:
   pull_request:
   # Runs from the Actions tab, as when GitHub drops a push's event, deploy master too.
+  # The guides workflow starts one with indexnow, after publishing new guides.
   workflow_dispatch:
+    inputs:
+      indexnow:
+        description: Tell search engines about the guides' pages after deploying
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -138,6 +144,11 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - run: az acr login --name "$REGISTRY"
+      # The guides workflow publishes the weekly guides as the guides-data release, and every build serves the latest.
+      - name: Download the latest guides
+        run: bin/download-guides
+        env:
+          GH_TOKEN: ${{ github.token }}
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -190,3 +201,25 @@ jobs:
           fi
         env:
           URL: ${{ steps.deploy.outputs.url }}
+      # Bing, and the search engines and AI assistants that use its index, hear about the guides' pages,
+      # which the guides workflow has just rebuilt. The key is public: search engines read it from the site.
+      - name: Tell search engines about the guides (IndexNow)
+        if: inputs.indexnow
+        run: |
+          curl --fail --silent --show-error --max-time 60 "$URL/sitemap.xml" |
+            grep --only-matching '<loc>[^<]*</loc>' | sed -E 's#</?loc>##g' > urls.txt
+          python3 - <<'JSON' > indexnow.json
+          import json, os
+          urls = open("urls.txt").read().split()
+          host = os.environ["URL"].removeprefix("https://")
+          print(json.dumps({"host": host, "key": os.environ["KEY"], "keyLocation": f"{os.environ['URL']}/{os.environ['KEY']}.txt",
+            "urlList": urls[:10000]}))
+          JSON
+          status=$(curl --silent --show-error --max-time 60 --output response.txt --write-out '%{http_code}' \
+            --header "Content-Type: application/json; charset=utf-8" --data @indexnow.json https://api.indexnow.org/indexnow)
+          echo "IndexNow answered HTTP $status for $(wc -l < urls.txt) pages."
+          case "$status" in 200|202) ;; *) echo "::warning::IndexNow didn't accept the pages: $(cat response.txt)" ;; esac
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+          KEY: 704c5d0361244e9f8eff381a17d9b944
+

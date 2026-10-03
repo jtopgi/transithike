@@ -1,0 +1,48 @@
+<%# A hike in a city's guide, linking to its page. %>
+<% trail = hike.trail
+   photo = hike.photos.first
+   last = last_trip_time(hike) %>
+<div class="col">
+  <article class="card trail-card h-100 border-0 shadow-sm">
+    <%= link_to guide_hike_path(page.guide.slug, hike.slug), class: "guide-card-media", tabindex: -1, aria: { hidden: true } do %>
+      <% if photo %>
+        <img src="<%= photo[:image_url] %>" alt="" loading="lazy" decoding="async">
+      <% else %>
+        <div class="trail-map" data-lazy-map data-path="<%= trail.path.to_json %>"
+             data-start="<%= [trail.latitude, trail.longitude].to_json %>"></div>
+      <% end %>
+    <% end %>
+    <div class="card-body d-flex flex-column p-4">
+      <h2 class="card-title h5 mb-3"><%= link_to hike.title, guide_hike_path(page.guide.slug, hike.slug), class: "stretched-link link-dark text-decoration-none" %></h2>
+      <%= render "searches/chips", trail: trail %>
+      <dl class="trail-stats">
+        <div>
+          <dt><span aria-hidden="true">🚆</span> Each way</dt>
+          <dd>
+            <%= each_way_label(hike) %>
+            <small class="trail-transfers"><%= main_train(hike) %></small>
+          </dd>
+        </div>
+        <div>
+          <dt><span aria-hidden="true">🥾</span> Hike</dt>
+          <dd>
+            ≈ <%= number_with_precision(TrailsService.hike_miles(trail), precision: 1) %> mi
+            <small class="trail-transfers"><%= hike_plan_label(trail) %></small>
+          </dd>
+        </div>
+        <% if trail.terrain %>
+          <div>
+            <dt><span aria-hidden="true">⛰️</span> Climb</dt>
+            <dd><%= climb_label(trail) %></dd>
+          </div>
+        <% end %>
+      </dl>
+      <% if last %>
+        <p class="trail-return mb-0">
+          <span aria-hidden="true">↩️</span> Last trip back<%= " from the far end" if trail.finish %>
+          <strong><%= last.in_time_zone(page.departure_time.time_zone).strftime("%-I:%M %p") %></strong>
+        </p>
+      <% end %>
+    </div>
+  </article>
+</div>

@@ -1,0 +1,27 @@
+# TransitHike
+
+> Weekend day hikes you can reach by train from the city, with a train back the same evening. Free, with no account.
+
+TransitHike finds mapped hiking routes (OpenStreetMap) near commuter, regional, and intercity train stations, leaving
+out places the subway reaches. It only lists hikes with a trip back the same evening that leaves time to hike all of
+each, at about 2 miles an hour with breaks. Each hike has its trains there and back, the last trip back, its length
+(loop, out and back, or one way to transit home), how far it climbs, photos of nature along it, and timetables.
+Transit times come from Transitous, so check them before you go.
+
+## Guides
+<% @pages.each do |page| %>
+- [Day hikes by train from <%= page.guide.name %>](<%= guide_url(page.guide.slug) %>): <%= page.hikes.size %> hikes from <%= page.guide.origin %>, including <%= page.hikes.first(3).map(&:title).to_sentence %>. Updated <%= page.built_at.utc.to_date.iso8601 %>.
+<% end %>
+
+## Search from anywhere
+
+- Search for hikes from any starting point and weekend day: <%= search_url %>?origin={place}&day={saturday|sunday}
+- Search results load as they're found, so read the guides above for pages with every hike's details.
+
+## Data
+
+- Transit: Transitous (https://transitous.org), from open timetables
+- Hiking routes and maps: © OpenStreetMap contributors (https://www.openstreetmap.org/copyright)
+- Elevation: Terrain Tiles on AWS (USGS 3DEP, SRTM, and other sources)
+- Photos: Wikipedia and Wikimedia Commons, credited on each photo
+- Source code: https://github.com/jtopgi/transithike (MIT license)

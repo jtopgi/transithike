@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Downloads the newest published guides (a guides-<time>.tar.gz file of the
+# guides-data release) into db/guides. Until guides are published there are
+# none to get, but any other failure fails, so builds never go ahead without
+# the published guides.
+set -euo pipefail
+
+mkdir -p db/guides tmp
+release="repos/{owner}/{repo}/releases/tags/guides-data"
+newest='[.assets[] | select(.name | test("^guides-[0-9]+\\.tar\\.gz$"))] | sort_by(.name) | last | .name // ""'
+if ! file=$(gh api "$release" --jq "$newest" 2> tmp/guides-error.txt); then
+  if grep --quiet "HTTP 404" tmp/guides-error.txt; then
+    echo "::warning::No guides are published yet."
+    exit 0
+  fi
+  cat tmp/guides-error.txt >&2
+  exit 1
+fi
+if [ -z "$file" ]; then
+  echo "::warning::No guides are published yet."
+  exit 0
+fi
+
+for attempt in 1 2 3 4 5; do
+  if gh release download guides-data --pattern "$file" --dir tmp --clobber; then
+    tar --extract --gzip --file "tmp/$file" --directory db/guides
+    echo "Downloaded $file:"
+    ls db/guides
+    exit 0
+  fi
+  echo "Download attempt $attempt failed; trying again."
+  sleep $((attempt * 10))
+done
+echo "::error::The published guides ($file) couldn't be downloaded." >&2
+exit 1

@@ -1,0 +1,35 @@
+<% content_for :title, "Day hikes by train from big cities" %>
+<% content_for :description, "Weekend day hikes you can reach by train from #{@pages.map { |page| page.guide.name }.to_sentence}, " \
+  "with a train back the same evening, updated weekly." %>
+<% content_for :canonical, guides_url %>
+<section class="results-hero text-white">
+  <div class="container py-4">
+    <h1 class="h2 fw-bold mb-2">Day hikes by train from big cities</h1>
+    <p class="mb-0 results-subtitle">
+      Weekend day hikes you can reach by commuter, regional, and intercity trains, with a train back the same evening
+      and time to hike all of each. Updated every week.
+    </p>
+  </div>
+</section>
+<div class="container py-4">
+  <div class="row row-cols-1 row-cols-md-2 row-cols-xl-3 g-4">
+    <% @pages.each do |page| %>
+      <div class="col">
+        <article class="card h-100 border-0 shadow-sm">
+          <div class="card-body p-4">
+            <h2 class="h5"><%= link_to "Day hikes by train from #{page.guide.name}", guide_path(page.guide.slug) %></h2>
+            <p class="text-body-secondary mb-2"><%= pluralize(page.hikes.size, "hike") %> from <%= page.guide.origin %>, including:</p>
+            <ul class="mb-0">
+              <% page.hikes.first(3).each do |hike| %>
+                <li><%= link_to hike.title, guide_hike_path(page.guide.slug, hike.slug) %></li>
+              <% end %>
+            </ul>
+          </div>
+        </article>
+      </div>
+    <% end %>
+  </div>
+  <p class="text-body-secondary mt-4 mb-0">
+    Not near one of these cities? <%= link_to "Search from your own starting point", root_path %>.
+  </p>
+</div>
