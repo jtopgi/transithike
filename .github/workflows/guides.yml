@@ -34,12 +34,9 @@ jobs:
         with:
           bundler-cache: true
       # Each build starts from the published guides, so hikes keep their pages and a bad day doesn't replace them.
+      # Only the first build, before the release exists, starts without them.
       - name: Download the published guides
-        run: |
-          mkdir -p db/guides tmp
-          if gh release download guides-data --pattern guides.tar.gz --dir tmp --clobber; then
-            tar --extract --gzip --file tmp/guides.tar.gz --directory db/guides
-          fi
+        run: bin/download-guides
       - name: Build the guides
         run: bin/rails guides:build
         env:

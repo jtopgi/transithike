@@ -48,6 +48,16 @@ class GuidesTest < ActionDispatch::IntegrationTest
     assert_equal ["TransitHike", "Day hikes by train", "New York City"], structured_data.fetch("BreadcrumbList")["itemListElement"].pluck("name")
   end
 
+  test "titles show names as they are, with apostrophes and ampersands" do
+    data = guide_data
+    data[:hikes].first.merge!(title: "Pilgrims' Way & Downs")
+    write_guide(data)
+    get guide_hike_path("new-york-city", "breakneck-ridge-trail")
+    assert_select "title", "Pilgrims' Way & Downs by train from New York City · TransitHike"
+    assert_select "meta[property='og:title'][content=?]", "Pilgrims' Way & Downs by train from New York City"
+    refute_includes response.body, "&amp;#39;"
+  end
+
   test "a hike's guide page has its trips, timetables, and photos, and links to more hikes" do
     write_guide
     get guide_hike_path("new-york-city", "breakneck-ridge-trail")

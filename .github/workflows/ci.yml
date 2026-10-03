@@ -146,14 +146,7 @@ jobs:
       - run: az acr login --name "$REGISTRY"
       # The guides workflow publishes the weekly guides as the guides-data release, and every build serves the latest.
       - name: Download the latest guides
-        run: |
-          mkdir -p db/guides tmp
-          if gh release download guides-data --pattern guides.tar.gz --dir tmp --clobber; then
-            tar --extract --gzip --file tmp/guides.tar.gz --directory db/guides
-            ls db/guides
-          else
-            echo "::warning::No guides are published yet, so the site has no guide pages."
-          fi
+        run: bin/download-guides
         env:
           GH_TOKEN: ${{ github.token }}
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1

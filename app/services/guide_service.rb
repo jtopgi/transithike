@@ -120,7 +120,7 @@ module GuideService
     # Titles and slugs for the hikes, telling apart plain or shared names with
     # the natural area or station nearby, and keeping each route's last slug.
     def titled(hikes, previous)
-      kept = Array(previous&.dig(:hikes)).to_h { |hike| [hike.dig(:trail, :osm_id), hike[:slug]] }
+      kept = Array(previous&.dig(:hikes)).to_h { |hike| [hike.dig(:trail, :osm_id), slug(hike[:slug].to_s).presence] }
       shared = hikes.map { |hike| hike.dig(:trail, :name).downcase }.tally
       taken = Set.new
       hikes.each do |hike|
@@ -133,10 +133,15 @@ module GuideService
         hike[:title] = plain && qualifier ? "#{name} (#{qualifier})" : name
         slug = kept[hike.dig(:trail, :osm_id)]
         slug = nil if slug && taken.include?(slug)
-        slug ||= unique(hike[:title].parameterize.presence || "hike", taken)
+        slug ||= unique(slug(hike[:title]).presence || "hike", taken)
         taken << slug
         hike[:slug] = slug
       end
+    end
+
+    # Lowercase letters and digits joined by single hyphens, as the guides' routes accept.
+    def slug(text)
+      text.parameterize.tr("_", "-").squeeze("-").delete_prefix("-").delete_suffix("-")
     end
 
     def generic?(name)

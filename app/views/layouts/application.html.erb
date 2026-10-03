@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <title><%= content_for?(:title) ? "#{yield(:title)} · TransitHike" : "TransitHike · Weekend hikes you can reach by train" %></title>
+    <title><%= content_for?(:title) ? safe_join([yield(:title), " · TransitHike"]) : "TransitHike · Weekend hikes you can reach by train" %></title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <% description = content_for?(:description) ? yield(:description) : "Weekend day hikes you can reach by train from the city, with a train back the same evening."
        page_title = content_for?(:title) ? yield(:title) : "Weekend hikes you can reach by train"

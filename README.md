@@ -290,7 +290,9 @@ planning, linked from the home page, the navigation, and an index of cities.
 - **Publishing.** The workflow uploads the guides as `guides.tar.gz` to the
   `guides-data` prerelease (not to the repository, so its history doesn't grow
   every week), then runs CI on `master`, whose deploy job downloads the latest
-  guides into the image. Pages read them from the image, so they need no lookups
+  guides into the image with `bin/download-guides`. Once guides are published,
+  a failed download fails the build rather than deploying, or building the next
+  guides, without them. Pages read them from the image, so they need no lookups
   and load at once. To build guides locally, run
   `CITIES=new-york-city bin/rails guides:build`; `db/guides` is ignored by Git.
 - **What search engines read.** Every page has a description, a canonical

@@ -82,6 +82,14 @@ class GuideServiceTest < ActiveSupport::TestCase
     assert_equal "2026-10-10T13:30:00Z", hike.dig(:trail, :arrival)
   end
 
+  test "slugs are lowercase letters and digits joined by hyphens, as the guides' addresses accept" do
+    previous = { hikes: [{ slug: "old_slug__2", trail: { osm_id: 2 } }] }
+    data = GuideService.build(guide, previous: previous, search: FakeSearch.new([trail("koasa_trail-etappe_3", 1),
+      trail("Somewhere else", 2), trail("Pilgrims' Way & Co.", 3)]), transit: FakeTransit.new, photos: FakePhotos.new)
+    assert_equal ["koasa-trail-etappe-3", "old-slug-2", "pilgrims-way-co"], data[:hikes].pluck(:slug)
+    assert data[:hikes].all? { |hike| hike[:slug].match?(/\A[a-z0-9]+(?:-[a-z0-9]+)*\z/) }
+  end
+
   test "hikes keep the slugs they had, and without a place, plain names stay as they are" do
     previous = { hikes: [{ slug: "old-white-trail", trail: { osm_id: 1 } }] }
     photos = Class.new { def photos_near(_) = nil }.new
