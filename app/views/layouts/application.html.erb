@@ -4,10 +4,31 @@
     <meta charset="utf-8">
     <title><%= content_for?(:title) ? "#{yield(:title)} · TransitHike" : "TransitHike · Weekend hikes you can reach by train" %></title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="<%= content_for?(:description) ? yield(:description) : "Weekend day hikes you can reach by train from the city, with a train back the same evening." %>">
+    <% description = content_for?(:description) ? yield(:description) : "Weekend day hikes you can reach by train from the city, with a train back the same evening."
+       page_title = content_for?(:title) ? yield(:title) : "Weekend hikes you can reach by train"
+       page_url = content_for?(:canonical) ? yield(:canonical) : request.base_url + request.path %>
+    <meta name="description" content="<%= description %>">
     <% if content_for?(:robots) %>
       <meta name="robots" content="<%= yield(:robots) %>">
+    <% else %>
+      <link rel="canonical" href="<%= page_url %>">
     <% end %>
+    <%# Shared links show a preview with the page's title, summary, and a photo. %>
+    <meta property="og:site_name" content="TransitHike">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="<%= page_title %>">
+    <meta property="og:description" content="<%= description %>">
+    <meta property="og:url" content="<%= page_url %>">
+    <meta property="og:image" content="<%= content_for?(:og_image) ? yield(:og_image) : "#{request.base_url}/og-image.png" %>">
+    <meta name="twitter:card" content="summary_large_image">
+    <%# Proof of ownership for Google Search Console and Bing Webmaster Tools, when set. %>
+    <% if ENV["GOOGLE_SITE_VERIFICATION"].present? %>
+      <meta name="google-site-verification" content="<%= ENV["GOOGLE_SITE_VERIFICATION"] %>">
+    <% end %>
+    <% if ENV["BING_SITE_VERIFICATION"].present? %>
+      <meta name="msvalidate.01" content="<%= ENV["BING_SITE_VERIFICATION"] %>">
+    <% end %>
+    <%= yield :structured_data %>
     <meta name="theme-color" content="#14532d">
     <%= csrf_meta_tags %>
     <%= csp_meta_tag %>
@@ -24,6 +45,7 @@
           <span class="badge rounded-pill text-bg-light text-success fw-semibold">Beta</span>
         <% end %>
         <div class="d-flex gap-3">
+          <%= link_to "Guides", guides_path, class: "nav-link link-light link-opacity-75 link-opacity-100-hover small" %>
           <%= link_to "Send feedback", "https://github.com/jtopgi/transithike/issues/new?labels=feedback&title=Feedback%3A+",
                 class: "nav-link link-light link-opacity-75 link-opacity-100-hover small" %>
           <%= link_to "GitHub", "https://github.com/jtopgi/transithike",

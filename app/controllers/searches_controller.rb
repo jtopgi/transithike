@@ -3,6 +3,7 @@ class SearchesController < ApplicationController
 
   def new
     @origin = params[:origin] if params[:origin].is_a?(String)
+    @guides = GuideService.pages
   end
 
   # The results page shows at once, and streams hikes in as they are found.

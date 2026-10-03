@@ -1,0 +1,41 @@
+<% guide = @page.guide
+   trail = @hike.trail
+   zone = @page.departure_time.time_zone
+   title = "#{@hike.title} by train from #{guide.name}"
+   summary = hike_summary(@hike, @page) %>
+<% content_for :title, title %>
+<% content_for :description, summary %>
+<% content_for :canonical, guide_hike_url(guide.slug, @hike.slug) %>
+<% content_for :og_image, @hike.photos.first&.dig(:image_url) %>
+<% content_for :structured_data do %>
+  <%= structured_data({ "@context" => "https://schema.org", "@type" => "TouristAttraction", "name" => @hike.title,
+        "description" => summary, "url" => guide_hike_url(guide.slug, @hike.slug), "isAccessibleForFree" => true,
+        "geo" => { "@type" => "GeoCoordinates", "latitude" => trail.latitude, "longitude" => trail.longitude },
+        "image" => @hike.photos.map { |photo| photo[:image_url] }.presence }.compact) %>
+  <%= structured_data(breadcrumbs_data([["TransitHike", root_url], ["Day hikes by train", guides_url],
+        [guide.name, guide_url(guide.slug)], [@hike.title, guide_hike_url(guide.slug, @hike.slug)]])) %>
+<% end %>
+<section class="results-hero text-white">
+  <div class="container py-4">
+    <nav aria-label="Breadcrumb" class="small mb-2">
+      <%= link_to "Day hikes by train", guides_path, class: "link-light" %> ›
+      <%= link_to guide.name, guide_path(guide.slug), class: "link-light" %>
+    </nav>
+    <h1 class="h2 fw-bold mb-1"><%= @hike.title %></h1>
+    <p class="mb-0 results-subtitle"><%= summary %></p>
+  </div>
+</section>
+<%= render "hikes/details", trail: trail, zone: zone, there: @hike.there, ways: @hike.ways, departures: @hike.departures,
+      photos: @hike.photos, origin_name: guide.origin, place: guide.place, leave: @page.departure_time, return_by: @page.return_by %>
+<% others = @page.hikes.reject { |hike| hike.equal?(@hike) }.first(6) %>
+<% if others.any? %>
+  <section class="container pb-4" aria-labelledby="more-heading">
+    <h2 class="h5" id="more-heading">More day hikes by train from <%= guide.name %></h2>
+    <ul class="list-unstyled guide-more mb-0">
+      <% others.each do |hike| %>
+        <li><%= link_to hike.title, guide_hike_path(guide.slug, hike.slug) %>
+          <span class="text-body-secondary small">· <%= each_way_label(hike) %> each way</span></li>
+      <% end %>
+    </ul>
+  </section>
+<% end %>

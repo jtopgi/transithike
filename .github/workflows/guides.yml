@@ -1,0 +1,58 @@
+name: Guides
+
+# Builds the weekly guides to day hikes by train from config/guides.yml's
+# cities with the live providers, publishes them as the guides-data release,
+# and deploys them, telling search engines about their pages.
+on:
+  schedule:
+    # Wednesdays, so the guides plan the coming Saturday's trips.
+    - cron: "17 10 * * 3"
+  workflow_dispatch:
+    inputs:
+      cities:
+        description: Cities to rebuild, as config/guides.yml's slugs separated by commas (all when empty)
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: guides
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: ruby/setup-ruby@e8944e80fb94b20106697132f8c20c665fab29e9 # v1.325.0
+        with:
+          bundler-cache: true
+      # Each build starts from the published guides, so hikes keep their pages and a bad day doesn't replace them.
+      - name: Download the published guides
+        run: |
+          mkdir -p db/guides tmp
+          if gh release download guides-data --pattern guides.tar.gz --dir tmp --clobber; then
+            tar --extract --gzip --file tmp/guides.tar.gz --directory db/guides
+          fi
+      - name: Build the guides
+        run: bin/rails guides:build
+        env:
+          RAILS_ENV: production
+          SECRET_KEY_BASE_DUMMY: "1"
+          CITIES: ${{ inputs.cities }}
+      - name: Publish the guides
+        run: |
+          tar --create --gzip --file tmp/guides.tar.gz --directory db/guides .
+          if ! gh release view guides-data > /dev/null 2>&1; then
+            gh release create guides-data --prerelease --title "Day-hike guides" \
+              --notes "The weekly guides to day hikes by train that the site serves, built by the Guides workflow."
+          fi
+          gh release upload guides-data tmp/guides.tar.gz --clobber
+      - name: Deploy them
+        run: gh workflow run ci.yml --ref master --field indexnow=true

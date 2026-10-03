@@ -1,3 +1,9 @@
+<% content_for :structured_data do %>
+  <%= structured_data({ "@context" => "https://schema.org", "@type" => "WebApplication", "name" => "TransitHike",
+        "url" => root_url, "applicationCategory" => "TravelApplication", "operatingSystem" => "Any",
+        "description" => "Weekend day hikes you can reach by train from the city, with a train back the same evening.",
+        "offers" => { "@type" => "Offer", "price" => "0", "priceCurrency" => "USD" } }) %>
+<% end %>
 <section class="hero text-white">
   <div class="container hero-body">
     <div class="row justify-content-center">
@@ -40,3 +46,15 @@
     </div>
   </div>
 </section>
+
+<% if @guides.any? %>
+  <section class="container pb-5" aria-labelledby="guides-heading">
+    <h2 class="h4" id="guides-heading">Day hikes by train from</h2>
+    <p class="text-body-secondary">Weekly guides to every hike we found from these cities, with timetables there and back.</p>
+    <div class="d-flex flex-wrap gap-2">
+      <% @guides.each do |page| %>
+        <%= link_to page.guide.name, guide_path(page.guide.slug), class: "btn btn-outline-success" %>
+      <% end %>
+    </div>
+  </section>
+<% end %>

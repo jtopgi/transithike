@@ -28,4 +28,10 @@ export function drawMap(element, { interactive = false } = {}) {
 
 document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll("[data-hike-map]").forEach((element) => drawMap(element, { interactive: true }))
+  // Guides' cards without photos preview their routes as they scroll into view.
+  const lazy = new IntersectionObserver((entries) => entries.filter((entry) => entry.isIntersecting).forEach(({ target }) => {
+    lazy.unobserve(target)
+    drawMap(target)
+  }), { rootMargin: "200px" })
+  document.querySelectorAll("[data-lazy-map]").forEach((element) => lazy.observe(element))
 })
