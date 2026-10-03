@@ -258,8 +258,9 @@ class TransitousServiceTest < ActiveSupport::TestCase
 
   test "a journey there lists the legs on transit of the soonest arrival, trains by their lines' names" do
     amtrak = leg("REGIONAL_RAIL", "routeShortName" => "", "routeLongName" => "Amtrak Cascades", "displayName" => "516",
-      "agencyName" => "Amtrak", "headsign" => "Vancouver", "from" => { "stopId" => "king-street" },
-      "to" => { "stopId" => "mount-vernon" })
+      "agencyName" => "Amtrak", "headsign" => "Vancouver", "from" => { "stopId" => "king-street", "name" => "King  Street" },
+      "to" => { "stopId" => "mount-vernon", "name" => "Mount Vernon" }, "startTime" => "2026-09-23T15:40:00Z",
+      "endTime" => "2026-09-23T16:55:00-07:00")
     commuter = leg("SUBURBAN", "routeShortName" => "MNBNP", "routeLongName" => "Port Jervis Line", "agencyName" => "NJ Transit",
       "from" => { "stopId" => "a,b" }, "to" => { "name" => "No id" })
     unnamed = leg("RAIL", "routeShortName" => "", "routeLongName" => " ", "displayName" => "8811")
@@ -274,13 +275,17 @@ class TransitousServiceTest < ActiveSupport::TestCase
         request.params.values_at("fromPlace", "toPlace", "time", "arriveBy")
       assert_nil request.params["maxPreTransitTime"]
     end
+    times = { departure: "2026-09-23T15:30:00Z", arrival: "2026-09-23T17:02:00Z" }
     assert_equal({ departure: "2026-09-23T15:19:00Z", arrival: "2026-09-23T17:31:00Z", legs: [
+      # Each leg's stops are named, and its times are in UTC.
       { mode: "REGIONAL_RAIL", name: "Amtrak Cascades", agency: "Amtrak", headsign: "Vancouver",
-        from: "king-street", to: "mount-vernon" },
+        from: "king-street", to: "mount-vernon", from_name: "King Street", to_name: "Mount Vernon",
+        departure: "2026-09-23T15:40:00Z", arrival: "2026-09-23T23:55:00Z" },
       # Stop ids that couldn't be sent back to the planner are left out.
-      { mode: "SUBURBAN", name: "Port Jervis Line", agency: "NJ Transit", headsign: nil, from: nil, to: nil },
-      { mode: "RAIL", name: "8811", agency: nil, headsign: nil, from: nil, to: nil },
-      { mode: "BUS", name: "206", agency: "Skagit Transit", headsign: nil, from: nil, to: nil }
+      { mode: "SUBURBAN", name: "Port Jervis Line", agency: "NJ Transit", headsign: nil, from: nil, to: nil,
+        from_name: nil, to_name: "No id", **times },
+      { mode: "RAIL", name: "8811", agency: nil, headsign: nil, from: nil, to: nil, from_name: nil, to_name: nil, **times },
+      { mode: "BUS", name: "206", agency: "Skagit Transit", headsign: nil, from: nil, to: nil, from_name: nil, to_name: nil, **times }
     ] }, TransitousService.journey(origin: origin, destination: destination, time: DEPARTURE, connection: connection))
   end
 
@@ -322,6 +327,8 @@ class TransitousServiceTest < ActiveSupport::TestCase
 
     assert_equal ["later, just as soon home", "the last one, sooner home", true],
       [ways[:back][:legs].sole[:name], ways[:last][:legs].sole[:name], ways[:same_way]]
+    # The timetable back runs from the first trip home after the hike to the last, one trip for each time it leaves.
+    assert_equal ["later, just as soon home", "the last one, sooner home"], ways[:trips].map { |trip| trip[:legs].sole[:name] }
     params = requests.sole
     assert_equal ["47.5000000,-122.0000000", "47.6000000,-122.3000000", "2026-09-24T06:00:00Z", "true", "true"],
       params.values_at("fromPlace", "toPlace", "time", "arriveBy", "timetableView")
@@ -398,8 +405,38 @@ class TransitousServiceTest < ActiveSupport::TestCase
     end
 
     nothing = ways_back(stub_connection(:get, { "itineraries" => [], "direct" => [] }))
-    assert_equal({ back: nil, last: nil, same_way: false }, nothing)
+    assert_equal({ back: nil, last: nil, same_way: false, trips: [] }, nothing)
     assert_raises(SearchErrors::UpstreamError) { ways_back(stub_connection(:get, {}, status: 503)) }
+  end
+
+  test "trips back from a route's far end go any way, quick enough for the trip there" do
+    requests = []
+    body = { "itineraries" => [trip_back("01:00", "05:30", name: "slow"), trip_back("02:00", "03:30", name: "quick"),
+      trip_back("04:00", "05:50", name: "last")], "direct" => [] }
+    connection = stub_connection(:get, body) { |request| requests << request.params }
+    ways = TransitousService.ways_back(origin: destination, destination: origin, like: journey_there, follow: false,
+      earliest: Time.utc(2026, 9, 24, 0, 30), deadline: Time.iso8601("2026-09-23T23:00:00-07:00"), connection: connection,
+      cache: ActiveSupport::Cache::MemoryStore.new)
+    assert_equal [%w[quick last], nil], [ways[:trips].map { |trip| trip[:legs].sole[:name] }, ways[:same_way]]
+    assert_equal [nil, nil], requests.sole.values_at("via", "transitModes")
+  end
+
+  test "the trips there that leave in a window are listed in order, without slow ones or later arrivals at the same time" do
+    requests = []
+    body = { "itineraries" => [
+      itinerary("2026-09-23T16:10:00Z", "2026-09-23T17:40:00Z", [leg("SUBURBAN", "routeLongName" => "Hudson Line")]),
+      itinerary("2026-09-23T15:10:00Z", "2026-09-23T16:30:00Z", [leg("SUBURBAN", "routeLongName" => "Hudson Line")]),
+      itinerary("2026-09-23T15:10:00Z", "2026-09-23T16:50:00Z", [leg("BUS", "routeShortName" => "99")]),
+      # Riding much longer than the quickest, and leaving after the window.
+      itinerary("2026-09-23T15:40:00Z", "2026-09-23T19:00:00Z", [leg("BUS", "routeShortName" => "slow")]),
+      itinerary("2026-09-23T19:10:00Z", "2026-09-23T20:30:00Z", [leg("SUBURBAN", "routeLongName" => "Hudson Line")])
+    ], "direct" => [] }
+    connection = stub_connection(:get, body) { |request| requests << request.params }
+    trips = TransitousService.departures(origin: origin, destination: destination, time: DEPARTURE,
+      latest: Time.utc(2026, 9, 23, 19), connection: connection, cache: ActiveSupport::Cache::MemoryStore.new)
+    assert_equal [%w[2026-09-23T15:10:00Z 2026-09-23T16:30:00Z], %w[2026-09-23T16:10:00Z 2026-09-23T17:40:00Z]],
+      trips.map { |trip| trip.values_at(:departure, :arrival) }
+    assert_equal ["false", "true", "14400"], requests.sole.values_at("arriveBy", "timetableView", "searchWindow")
   end
 
   test "when no way back leaves after the hike, the way back is the last one the same way, and ways back are cached" do

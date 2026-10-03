@@ -1,0 +1,27 @@
+<% content_for :title, @trail ? "#{@trail.name} by train" : "Hike details" %>
+<% content_for :robots, "noindex" %>
+<% origin_name = @origin_name || "your starting point" %>
+<section class="results-hero text-white">
+  <div class="container py-4">
+    <% if @results_path %>
+      <p class="small mb-2"><%= link_to "← All hikes from #{origin_name}", @results_path, class: "link-light" %></p>
+    <% end %>
+    <h1 class="h2 fw-bold mb-1"><%= @trail&.name || "Hike details" %></h1>
+    <% if @trail && @leave %>
+      <p class="mb-0 results-subtitle">
+        Day hike by train from <%= origin_name %>, <%= @leave.strftime("%A, %B %-d") %>, with a way back by
+        <%= @back_by.strftime("%-I %p") %>.
+      </p>
+    <% end %>
+  </div>
+</section>
+<% if @unavailable %>
+  <div class="container py-4">
+    <div class="alert alert-warning mb-0" role="alert">
+      The transit planner is unavailable just now, so we couldn't look up the timetables. Please try again later.
+    </div>
+  </div>
+<% else %>
+  <%= render "hikes/details", trail: @trail, zone: @zone, there: @there, ways: @ways, departures: @departures,
+        photos: @photos&.dig(:photos), origin_name: origin_name, place: @origin, leave: @leave, return_by: @back_by %>
+<% end %>

@@ -68,13 +68,16 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   end
 
   # The one-request API answers trips there; with arriveBy, the latest trips
-  # back, which by default leave two hours before the 11 PM deadline; and with
-  # transitModes, trips by city transit, which by default reach nothing.
+  # back from each route and each linear route's far end, which by default leave
+  # two hours before the 11 PM deadline, and returns stand for the first ones
+  # asked about, the rest having none; and with transitModes, trips by city
+  # transit, which by default reach nothing.
   def transit(trips, returns: nil, city: nil, walks: [])
     stub_get(TransitousService::ONE_TO_MANY_URL) do |env|
       back = env.params["arriveBy"] == "true"
+      asked = env.params["many"].split(",").size
       durations = if back
-        returns || trips.map { [{ duration: 7200, transfers: 0 }] }
+        returns ? returns + Array.new(asked - returns.size) { [] } : Array.new(asked) { [{ duration: 7200, transfers: 0 }] }
       elsif env.params["transitModes"]
         city || trips.map { [] }
       else
@@ -179,7 +182,9 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_equal ["47.0000000;-122.0000000", "47.3000000;-122.0000000", "2026-09-26T15:00:00Z", nil],
       trips.values_at("one", "many", "time", "transitModes")
     assert_equal ["47.3000000;-122.0000000", "SUBWAY,TRAM"], city.values_at("many", "transitModes")
-    assert_equal ["2026-09-27T06:00:00Z", "true"], returns.values_at("time", "arriveBy")
+    # The last trips back from the route, and from its far end.
+    assert_equal ["47.3000000;-122.0000000,47.3200000;-122.0000000", "2026-09-27T06:00:00Z", "true"],
+      returns.values_at("many", "time", "arriveBy")
     # The station is on the line between two tiles, so routes within a walk of it are in either.
     assert_includes @requests["overpass"].first, 'relation["type"="route"]["route"="hiking"](47.0,-122.5,47.5,-121.5)->.region;'
 
@@ -189,9 +194,10 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_equal "America/Los_Angeles", place["time_zone"]
     assert_equal [{ "count" => 1 }], data_for("checking")
 
-    # Coming back the same way takes as long as going until the card's trips are planned.
-    card = cards.at_css("[data-trail][data-osm-id='123'][data-travel='10800'][data-length='1.38'][data-scenic='0.0']" \
-      "[data-required='5400']")
+    # Coming back the same way takes as long as going until the card's trips are planned. The route is hiked out and
+    # back, 2.76 miles in 1½ hours at least, and the last trip back leaves half an hour after.
+    card = cards.at_css("[data-trail][data-osm-id='123'][data-travel='10800'][data-length='2.76'][data-scenic='0.0']" \
+      "[data-required='7200'][data-plan='out_and_back']")
     assert card
     # Arriving at 9:30 AM with the last trip back at 9 PM leaves 11 hours 30 minutes.
     assert_equal "41400", card["data-stay"]
@@ -203,11 +209,17 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert card.at_css("[data-climb-stat][hidden]")
     assert_nil card.at_css("[data-distance]")
     assert_match(/Round trip\s+≈ 3 h\s+≈ 1 h 30 min each way · 1 transfer/, card.at_css(".trail-stats").text.squish)
+    assert_match(/Hike ≈ 2.8 mi out and back/, card.at_css(".trail-stats").text.squish)
     assert_match(/Last trip back 9:00 PM\s+· up to 11 h there/, card.at_css(".trail-return").text.squish)
     trip_url = card.at_css("[data-trip-url]")["data-trip-url"]
-    # The way back is planned from after the 1½ hours the search requires for hiking.
+    # The way back is planned from after the 2 hours the search requires for hiking.
     assert_equal trip_path(from: "47.0,-122.0", to: "47.3,-122.0", leave: "2026-09-26T15:00:00Z", back_by: "2026-09-27T06:00:00Z",
-      hike: 90), trip_url
+      hike: 120), trip_url
+    assert_equal hike_path(route: 123, plan: "out_and_back", from: "47.0,-122.0", to: "47.3,-122.0", leave: "2026-09-26T15:00:00Z",
+      back_by: "2026-09-27T06:00:00Z", tz: "America/Los_Angeles", origin: "Seattle, Washington, United States"),
+      card.at_css("a[href^='/hike?']")["href"]
+    assert_nil card.at_css("[data-finish]")
+    assert_equal ["🧭 Directions"], card.css("a[href^='https://www.google.com/maps/dir/']").map(&:text)
     assert card.at_css("a[href='https://www.openstreetmap.org/relation/123'][target=_blank]")
     query = URI.decode_www_form(URI(card.at_css("a[href^='https://www.google.com/maps/dir/?']")["href"]).query).to_h
     assert_equal ["Seattle, Washington, United States", "47.3,-122.0", "transit"], query.values_at("origin", "destination", "travelmode")
@@ -437,6 +449,122 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_equal ["mount-vernon,seattle", "BUS,REGIONAL_RAIL,SUBWAY,TRAM", "34140"],
       back_request.values_at("via", "transitModes", "searchWindow")
     assert_equal "private", response.headers["Cache-Control"].split(", ").find { |part| part.start_with?("private") }
+  end
+
+  test "a trip back from a route's far end goes any way from there" do
+    stub_get(TransitousService::PLAN_URL) do |env|
+      body = if env.params["arriveBy"] == "true"
+        { itineraries: [train_back("21:00", "22:35")], direct: [] }
+      else
+        { itineraries: [journey("2026-09-23T15:19:00Z", "2026-09-23T17:31:00Z", [
+          leg("REGIONAL_RAIL", "Cascades", "2026-09-23T15:40:00Z", "2026-09-23T17:20:00Z", from: "seattle", to: "mount-vernon")
+        ])], direct: [] }
+      end
+      [200, {}, JSON.generate(body)]
+    end
+    get trip_path(from: "47.6,-122.3", to: "48.4,-122.3", finish: "48.5,-122.3", leave: "2026-09-23T15:00:00Z",
+      back_by: "2026-09-24T06:00:00Z", hike: "180")
+
+    assert_response :success
+    assert_equal ["2026-09-23T21:00:00Z", nil], response.parsed_body["back"].values_at("departure") + [response.parsed_body["same_way"]]
+    back_request = @requests[URI(TransitousService::PLAN_URL).path].last.params
+    assert_equal ["48.5000000,-122.3000000", nil, nil], back_request.values_at("fromPlace", "via", "transitModes")
+    get trip_path(from: "47.6,-122.3", to: "48.4,-122.3", finish: "nowhere", leave: "2026-09-23T15:00:00Z",
+      back_by: "2026-09-24T06:00:00Z")
+    assert_response :bad_request
+  end
+
+  # A train there from Seattle leaving and arriving at these UTC times on September 23, or early on September 24.
+  def train_there(leave, arrive)
+    leave, arrive = [leave, arrive].map { |time| "2026-09-#{time >= '12:00' ? 23 : 24}T#{time}:00Z" }
+    journey(leave, arrive, [leg("REGIONAL_RAIL", "Cascades", leave, arrive, from: "seattle", to: "mount-vernon")
+      .merge(from: { stopId: "seattle", name: "King Street" }, to: { stopId: "mount-vernon", name: "Mount Vernon" })])
+  end
+
+  # The planner answers a journey there, the trips there in a window, and the trips back.
+  def planner(there: [train_there("15:19", "17:31")], window: [], back: [])
+    stub_get(TransitousService::PLAN_URL) do |env|
+      trips = if env.params["arriveBy"] == "true" then back
+      elsif env.params["timetableView"] == "true" then window
+      else there
+      end
+      [200, {}, JSON.generate(itineraries: trips, direct: [])]
+    end
+  end
+
+  def hike_params(**changes)
+    { route: 123, plan: "out_and_back", from: "47.6,-122.3", to: "47.3,-122.0", leave: "2026-09-23T15:00:00Z",
+      back_by: "2026-09-24T06:00:00Z", tz: "America/Los_Angeles", origin: "Pike Place Market" }.merge(changes)
+  end
+
+  test "a hike's page shows its route, the trips there that leave time to hike all of it, and the trips back" do
+    hiking([route_element(latitude: 47.3, name: "Ridge Trail")], highlights: [highlight_node("waterfall", 47.31, -122.0, name: "Twin Falls")])
+    elevation
+    stub_get(WikipediaService::API_URL, {})
+    back = [train_back("20:00", "21:30"), train_back("21:00", "22:35"), train_back("03:30", "05:15")]
+    back.each { |trip| trip[:legs].first[:from][:name] = "Mount Vernon" }
+    planner(window: [train_there("15:19", "17:31"), train_there("16:19", "18:31"), train_there("23:19", "01:31")], back: back)
+    get hike_path(hike_params)
+
+    assert_response :success
+    assert_select "meta[name=robots][content=noindex]"
+    assert_select "h1", text: "Ridge Trail"
+    assert_select "a[href='#{search_path(origin: 'Pike Place Market', lat: 47.6, lon: -122.3, day: 'sunday', tz: 'America/Los_Angeles')}']",
+      text: "← All hikes from Pike Place Market"
+    assert_select "[data-hike-map][data-path='[[[47.3,-122.0],[47.32,-122.0]]]'][data-start='[47.3,-122.0]']:not([data-finish])"
+    assert_select ".trail-chip", text: /Twin Falls/
+    facts = css_select(".hike-facts").sole.text.squish
+    assert_match(/Hike ≈ 2.8 mi out and back, about 1 h 30 min/, facts)
+    assert_match(/Last trip back 8:30 PM from Mount Vernon/, facts)
+    assert_equal "Taking the first trip there, you arrive at 10:31 AM and have up to 9 h 59 min until the last trip back, " \
+      "for a hike of about 1 h 30 min.", css_select(".hike-intro").sole.text.squish
+    there, back = css_select("table.timetable tbody").map { |table| table.css("tr").map { |row| row.css("td").first(2).map(&:text) } }
+    # Arriving at 6:31 PM leaves no time to hike before the last trip back.
+    assert_equal [["8:19 AM", "10:31 AM"], ["9:19 AM", "11:31 AM"]], there
+    assert_equal [["1:00 PM", "2:30 PM"], ["2:00 PM", "3:35 PM"], ["8:30 PM", "10:15 PM"]], back
+    assert_select "tr.timetable-last", text: /8:30 PM.*Last/m
+    assert_select "td", text: /Cascades from King Street to Mount Vernon/
+    assert_equal ["🧭 Directions"], css_select("a[href^='https://www.google.com/maps/dir/']").map(&:text)
+    departures = @requests[URI(TransitousService::PLAN_URL).path].map(&:params).find { |params| params["timetableView"] == "true" &&
+      params["arriveBy"] == "false" }
+    assert_equal ["47.6000000,-122.3000000", "47.3000000,-122.0000000"], departures.values_at("fromPlace", "toPlace")
+  end
+
+  test "a hike to the far end comes back any way from there, with directions back" do
+    hiking([route_element(latitude: 47.3, name: "Ridge Trail")])
+    elevation
+    stub_get(WikipediaService::API_URL, {})
+    planner(window: [train_there("15:19", "17:31")], back: [train_back("21:00", "22:35")])
+    get hike_path(hike_params(plan: "through", finish: "47.32,-122.0"))
+
+    assert_response :success
+    assert_select "[data-hike-map][data-finish='[47.32,-122.0]']"
+    assert_match(/Hike ≈ 1.4 mi one way, back from the far end/, css_select(".hike-facts").sole.text.squish)
+    back_request = @requests[URI(TransitousService::PLAN_URL).path].map(&:params).find { |params| params["arriveBy"] == "true" }
+    assert_equal ["47.3200000,-122.0000000", nil], back_request.values_at("fromPlace", "via")
+    query = URI.decode_www_form(URI(css_select("a").find { |link| link.text == "🧭 Directions back" }["href"]).query).to_h
+    assert_equal ["47.32,-122.0", "47.6,-122.3"], query.values_at("origin", "destination")
+  end
+
+  test "a hike's page needs a route, points, a plan, times on one day, and a time zone, and says when it can't plan" do
+    [{ route: "abc" }, { plan: "wander" }, { plan: "through" }, { from: "91,0" }, { to: nil }, { tz: "Mars/Olympus" },
+      { leave: "soon" }, { back_by: "2026-09-26T06:00:00Z" }].each do |change|
+      get hike_path(hike_params(**change).compact)
+      assert_response :bad_request
+    end
+    assert_empty @requests
+
+    hiking([])
+    get hike_path(hike_params)
+    assert_response :not_found
+
+    hiking([route_element(latitude: 47.3)])
+    elevation
+    stub_get(WikipediaService::API_URL, {})
+    stub_get(TransitousService::PLAN_URL, "{}", status: 503)
+    get hike_path(hike_params)
+    assert_response :service_unavailable
+    assert_select ".alert", text: /transit planner is unavailable/
   end
 
   test "trips need two points, times on one day, and at most 12 hours of hiking, and provider failures say so" do

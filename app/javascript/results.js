@@ -1,7 +1,6 @@
 // Results page: streams hikes in as they are found, then sorts, filters, and previews them.
-import * as L from "leaflet"
+import { drawMap } from "./map_preview"
 
-const TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 // Ties keep the recommended order.
 const byScore = (a, b) => b.dataset.score - a.dataset.score || a.dataset.travel - b.dataset.travel
 const ascending = (key) => (a, b) => a.dataset[key] - b.dataset[key] || byScore(a, b)
@@ -214,7 +213,11 @@ class Results {
     // whose travel times include waiting for the train.
     if (there && back) this.showTravel(card, rideMinutes(there), rideMinutes(back))
     if (last) this.showLast(card, last, there)
-    const lines = [["There", there, "arrive"], ["Back", back, "home"]]
+    // The first trip back after the hike, and the last one, which leaves time to stay longer.
+    const from = card.dataset.plan === "through" ? " from the end" : ""
+    const lastToo = last && back && last.departure !== back.departure
+    const lines = [["There", there, "arrive"], [lastToo ? `First back${from}` : `Back${from}`, back, "home"],
+      [`Last back${from}`, lastToo ? last : null, "home"]]
       .filter(([, trip]) => trip)
       .map(([label, trip, end]) => this.tripLine(label, trip, end))
     if (back && sameWay === false) {
@@ -240,8 +243,9 @@ class Results {
     const line = card.querySelector(".trail-return")
     if (!line.querySelector("strong")) {
       // The search couldn't check the way back, but the planner could.
+      const from = card.dataset.plan === "through" ? " from the far end" : ""
       line.replaceChildren(
-        Object.assign(document.createElement("span"), { ariaHidden: "true", textContent: "↩️" }), " Last trip back ",
+        Object.assign(document.createElement("span"), { ariaHidden: "true", textContent: "↩️" }), ` Last trip back${from} `,
         document.createElement("strong"), " ", Object.assign(document.createElement("span"), { className: "text-body-secondary" })
       )
       line.firstChild.dataset.returnIcon = ""
@@ -286,23 +290,6 @@ class Results {
   }
 }
 
-function drawMap(element) {
-  const map = L.map(element, {
-    attributionControl: false, zoomControl: false, dragging: false, scrollWheelZoom: false,
-    doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false
-  })
-  L.tileLayer(TILES, { maxZoom: 17 }).addTo(map)
-  L.control.attribution({ prefix: false })
-    .addAttribution('© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>')
-    .addTo(map)
-  const route = L.polyline(JSON.parse(element.dataset.path), { color: "#15803d", weight: 4 }).addTo(map)
-  L.circleMarker(JSON.parse(element.dataset.start), {
-    radius: 6, color: "#fff", weight: 2, fillColor: "#14532d", fillOpacity: 1
-  }).bindTooltip("Directions lead here").addTo(map)
-  const fit = () => map.fitBounds(route.getBounds(), { padding: [16, 16] })
-  fit()
-  return { map, fit }
-}
 
 // Wikimedia serves any image at standard thumbnail widths, such as 120 px for the gallery.
 const thumbnail = (url) => url.replace(/\/\d+px-/, "/120px-")

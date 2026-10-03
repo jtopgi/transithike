@@ -1,11 +1,13 @@
 <div class="col" data-trail data-osm-id="<%= trail.osm_id %>" data-score="<%= trail.score %>"
      data-scenic="<%= TrailsService.scenic(trail) %>" data-travel="<%= TrailsService.round_trip_seconds(trail).round %>"
-     data-length="<%= trail.length.round(2) %>" data-stay="<%= stay_seconds(trail) %>"
+     data-length="<%= TrailsService.hike_miles(trail).round(2) %>" data-stay="<%= stay_seconds(trail) %>"
+     data-plan="<%= trail.plan %>"
      data-required="<%= (TrailsService.required_hours(trail) * 3600).round %>">
   <article class="card trail-card h-100 border-0 shadow-sm">
     <div class="trail-media">
       <div class="trail-map" role="img" aria-label="Map of <%= trail.name %>"
-           data-path="<%= trail.path.to_json %>" data-start="<%= [trail.latitude, trail.longitude].to_json %>"></div>
+           data-path="<%= trail.path.to_json %>" data-start="<%= [trail.latitude, trail.longitude].to_json %>"
+           <% if trail.finish %>data-finish="<%= trail.finish.to_json %>"<% end %>></div>
       <a class="trail-photo" data-photos-url="<%= photos_path(points: photo_points(trail)) %>" hidden
          target="_blank" rel="noopener">
         <img alt="" decoding="async">
@@ -28,8 +30,11 @@
           </dd>
         </div>
         <div>
-          <dt><span aria-hidden="true">🥾</span> Length</dt>
-          <dd>≈ <%= number_with_precision(trail.length, precision: 1) %> mi</dd>
+          <dt><span aria-hidden="true">🥾</span> Hike</dt>
+          <dd>
+            ≈ <%= number_with_precision(TrailsService.hike_miles(trail), precision: 1) %> mi
+            <small class="trail-transfers"><%= hike_plan_label(trail) %></small>
+          </dd>
         </div>
         <%# How far it climbs, once the search has looked up its terrain. %>
         <div data-climb-stat <%= "hidden" unless trail.terrain %>>
@@ -39,7 +44,8 @@
       </dl>
       <p class="trail-return">
         <% if trail.last_return %>
-          <span aria-hidden="true" data-return-icon>↩️</span> Last trip back <strong><%= clock(trail.last_return, result) %></strong>
+          <span aria-hidden="true" data-return-icon>↩️</span> Last trip back<%= " from the far end" if trail.finish %>
+          <strong><%= clock(trail.last_return, result) %></strong>
           <span class="text-body-secondary" data-stay-label>· up to <%= stay_label(trail) %> there</span>
         <% else %>
           <span aria-hidden="true">⚠️</span> We couldn't check the way back. Check it before you go.
@@ -49,8 +55,14 @@
       <p class="card-text trail-summary text-body-secondary flex-grow-1"><%= trail.summary %></p>
       <p class="trail-photo-credit small text-body-secondary" hidden></p>
       <div class="d-flex flex-wrap gap-2">
-        <%= link_to "🧭 Directions", directions_url(trail), class: "btn btn-success btn-sm", target: "_blank",
-              rel: "noopener", aria: { label: "Transit directions to #{trail.name}" } %>
+        <%= link_to trail.finish ? "🧭 Directions there" : "🧭 Directions", directions_url(trail), class: "btn btn-success btn-sm",
+              target: "_blank", rel: "noopener", aria: { label: "Transit directions to #{trail.name}" } %>
+        <% if trail.finish %>
+          <%= link_to "🧭 Directions back", directions_back_url(trail, result.place), class: "btn btn-success btn-sm",
+                target: "_blank", rel: "noopener", aria: { label: "Transit directions back from the end of #{trail.name}" } %>
+        <% end %>
+        <%= link_to "Details & timetables", hike_details_path(trail, result), class: "btn btn-outline-success btn-sm",
+              aria: { label: "Details and timetables for #{trail.name}" } %>
         <%= link_to "View on OpenStreetMap", "https://www.openstreetmap.org/relation/#{trail.osm_id}",
               class: "btn btn-outline-secondary btn-sm", target: "_blank", rel: "noopener",
               aria: { label: "#{trail.name} on OpenStreetMap" } %>

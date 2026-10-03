@@ -7,21 +7,24 @@ class TripsController < ApplicationController
 
   # from and to are "latitude,longitude"; leave is when the trip there starts,
   # back_by is when the trip back must arrive, and hike is the minutes to hike
-  # before heading back. back is the first trip home after the hike and last is
-  # the last one, both the same way as the trip there where it runs in time.
+  # before heading back. finish, if given, is where a hike that doesn't come
+  # back ends, and the trips back leave from. back is the first trip home after
+  # the hike and last is the last one, both the same way as the trip there
+  # where it runs in time.
   def show
     origin, route = [params[:from], params[:to]].map { |value| point(value) }
+    finish = point(params[:finish]) if params.key?(:finish)
     leave, back_by = [params[:leave], params[:back_by]].map { |value| time(value) }
     hike = params.key?(:hike) ? minutes(params[:hike]) : 0
-    unless origin && route && leave && back_by && hike&.between?(0, MAX_HIKE_MINUTES) &&
+    unless origin && route && leave && back_by && hike&.between?(0, MAX_HIKE_MINUTES) && (finish || !params.key?(:finish)) &&
         leave.between?(1.day.ago, 8.days.from_now) && back_by.between?(leave, leave + 1.day)
       return head(:bad_request)
     end
 
     there = TransitousService.journey(origin: origin, destination: route, time: leave)
     arrival = there ? Time.iso8601(there[:arrival]) : leave
-    ways = TransitousService.ways_back(origin: route, destination: origin, like: there,
-      earliest: arrival + hike.minutes, deadline: back_by)
+    ways = TransitousService.ways_back(origin: finish || route, destination: origin, like: there,
+      earliest: arrival + hike.minutes, deadline: back_by, follow: finish.nil?)
     expires_in TransitousService::TRIP_CACHE_TTL
     render json: { there: shown(there), back: shown(ways[:back]), last: shown(ways[:last]), same_way: ways[:same_way] }
   rescue SearchErrors::UpstreamError

@@ -1,5 +1,7 @@
 <% label = coordinates && @origin == SearchesController::CURRENT_LOCATION ? "your location" : @origin %>
 <% content_for :title, @error ? "Day hikes by train" : "Day hikes by train from #{label}" %>
+<%# Results load as they're found, which search engines can't follow, and every starting point has its own. %>
+<% content_for :robots, "noindex" %>
 <section class="results-hero text-white">
   <div class="container py-4">
     <div class="row g-4 align-items-center">

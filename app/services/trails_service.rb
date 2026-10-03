@@ -18,12 +18,19 @@ module TrailsService
   FIRST_TILES = 4
   # Routes are checked in batches, most promising first, so results show as they are found.
   BATCH_SIZE = 40
-  # Hiking at 2 mph with breaks. Routes that don't loop are hiked out and back,
-  # and at least REQUIRED_HOURS must be left before the last trip back; longer
-  # routes can be shortened.
+  # Hiking at 2 mph with breaks, a hike takes at least MIN_HIKE_HOURS, which
+  # leaves time to enjoy short ones, and the whole hike must be done
+  # RETURN_MARGIN before the last trip back leaves.
   HIKE_MPH = 2.0
-  HIKE_HOURS = 1.5..7
-  REQUIRED_HOURS = 1.5..4
+  MIN_HIKE_HOURS = 1.5
+  RETURN_MARGIN = 30.minutes
+  # Routes whose loose ends are closer than this are hiked as loops.
+  LOOP_GAP_METERS = 1_000
+  # Routes that transit reaches this close to an end can be hiked from there to
+  # the other end. Out and back is simpler, with the same way home, so routes are
+  # only hiked one way when out and back would be longer than COMFORTABLE_MILES.
+  END_REACH_METERS = 1_500
+  COMFORTABLE_MILES = 10
   # Without the one-request API, only this many of the nearest routes are planned one by one.
   MAX_PLANNED_ROUTES = 15
   # Terrain is looked up for up to this many of the most promising routes, a
@@ -146,19 +153,63 @@ module TrailsService
       trail
     end
     reached = beyond_city_transit(place, reached, result.departure_time, transit)
+    reached.each { |trail| trail.plan = loop?(trail) ? :loop : :out_and_back }
     return reached if reached.empty?
 
+    # Linear routes can also be hiked to their far end, when transit leaves from there.
+    finishes = reached.map { |trail| finish(trail) }
+    linear = finishes.each_index.select { |index| finishes[index] }
+    ends = linear.map do |index|
+      Place.new(name: "#{reached[index].name} finish", latitude: finishes[index][0], longitude: finishes[index][1])
+    end
     latest = begin
-      transit.latest_returns(origin: place, destinations: reached, deadline: result.return_by,
-        earliest_return: result.departure_time + REQUIRED_HOURS.first.hours)
+      transit.latest_returns(origin: place, destinations: reached + ends, deadline: result.return_by,
+        earliest_return: result.departure_time + MIN_HIKE_HOURS.hours)
     rescue SearchErrors::UpstreamError
       result.returns_checked = false
       return reached
     end
-    reached.zip(latest).filter_map do |trail, time|
-      trail.last_return = time
-      trail if time && time - trail.arrival >= required_hours(trail).hours
+    from_finish = linear.zip(latest.drop(reached.size)).to_h
+    reached.each_with_index.filter_map do |trail, index|
+      planned(trail, latest[index], finishes[index], from_finish[index], result.return_by)
     end
+  end
+
+  # The trail as it can be hiked and still make the last trip back: back to
+  # where it starts, unless that's over COMFORTABLE_MILES out and back or leaves
+  # too little time, and its far end has transit back that leaves soon enough
+  # and rides not much longer than the trip there. nil when neither leaves time
+  # to hike it all.
+  def self.planned(trail, start_return, finish, finish_return, deadline)
+    trail.plan, trail.finish, trail.last_return = (loop?(trail) ? :loop : :out_and_back), nil, start_return
+    back = start_return && time_to_hike?(trail)
+    return trail if back && (trail.plan == :loop || hike_miles(trail) <= COMFORTABLE_MILES)
+
+    slowest = trail.duration * TransitousService::BACK_RIDE_FACTOR + TransitousService::BACK_RIDE_SLACK.to_i
+    if finish && finish_return && deadline - finish_return <= slowest
+      through = trail.dup.tap { |candidate| candidate.plan, candidate.finish, candidate.last_return = :through, finish, finish_return }
+      return through if time_to_hike?(through)
+    end
+    trail if back
+  end
+
+  def self.time_to_hike?(trail)
+    trail.last_return - trail.arrival >= required_hours(trail).hours
+  end
+
+  # Whether the route ends where it starts, or near enough to walk back.
+  def self.loop?(trail)
+    ends = trail.ends
+    trail.loop || ends.nil? || OverpassService.distance(*ends.first, *ends.last) < LOOP_GAP_METERS
+  end
+
+  # The [latitude, longitude] of a linear route's far end, when transit reaches
+  # it near its other end, or nil.
+  def self.finish(trail)
+    return if loop?(trail)
+
+    near, far = trail.ends.sort_by { |point| OverpassService.distance(trail.latitude, trail.longitude, *point) }
+    far if OverpassService.distance(trail.latitude, trail.longitude, *near) <= END_REACH_METERS
   end
 
   # City dwellers already know the hikes the subway or light rail reaches, so
@@ -190,13 +241,19 @@ module TrailsService
     trail.duration * 2
   end
 
-  # About how long hiking the whole route takes.
-  def self.hike_hours(trail)
-    ((trail.loop ? trail.length : trail.length * 2) / HIKE_MPH).clamp(HIKE_HOURS)
+  # How far the hike goes: once along a loop or to the far end, and twice out and back.
+  def self.hike_miles(trail)
+    (trail.plan || (trail.loop ? :loop : :out_and_back)) == :out_and_back ? trail.length * 2 : trail.length
   end
 
+  # About how long the whole hike takes.
+  def self.hike_hours(trail)
+    [hike_miles(trail) / HIKE_MPH, MIN_HIKE_HOURS].max
+  end
+
+  # The hike, and the margin before the last trip back.
   def self.required_hours(trail)
-    hike_hours(trail).clamp(REQUIRED_HOURS)
+    hike_hours(trail) + RETURN_MARGIN / 1.hour.to_f
   end
 
   # Adds the highlights found in time and the terrain of the most promising
@@ -239,10 +296,10 @@ module TrailsService
     trails.sort_by! { |trail| [-trail.score, trail.duration] }
   end
 
-  # Higher is better: scenic, unpaved routes of day-hike length, with time to
-  # enjoy them, and not too long a trip there and back.
+  # Higher is better: scenic, unpaved hikes of day-hike length, and not too
+  # long a trip there and back.
   def self.score(trail)
-    length = case trail.length
+    length = case hike_miles(trail)
     when 3..12 then 1.5
     when 2...3, 12..16 then 1
     when 1...2 then 0.25
@@ -251,9 +308,8 @@ module TrailsService
     # Day trips by train often take up to three hours there and back; longer ones count against a hike.
     hours = round_trip_seconds(trail) / 3600.0
     travel = [hours - 3, 0].max * 0.25 + [hours - 6, 0].max * 0.5
-    rushed = trail.last_return && trail.last_return - trail.arrival < hike_hours(trail).hours ? 0.5 : 0
     length + scenic(trail) * SCENIC_WEIGHT + (trail.notable ? 0.5 : 0) - trail.paved.to_f * 2.5 -
-      (OverpassService.generic_name?(trail.name) ? 1 : 0) - travel - trail.transfers.to_i * 0.1 - rushed
+      (OverpassService.generic_name?(trail.name) ? 1 : 0) - travel - trail.transfers.to_i * 0.1
   end
 
   # How scenic a route is, from 0 to about 8: the best of its views and

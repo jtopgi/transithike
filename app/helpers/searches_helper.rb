@@ -9,12 +9,9 @@ module SearchesHelper
   }.freeze
   FEET_PER_METER = 3.28084
 
-  # The route's middle, then points a sixth of the way from each end, as
-  # "latitude,longitude|..." to about 1 km, where photos taken along it are looked for.
+  # Where photos taken along the route are looked for, as "latitude,longitude|...".
   def photo_points(trail)
-    points = Array(trail.path).flatten(1)
-    along = [1.0 / 6, 5.0 / 6].map { |share| points[(share * (points.size - 1)).round] } if points.size > 1
-    [trail.midpoint, *along].map { |latitude, longitude| "#{latitude.round(2)},#{longitude.round(2)}" }.uniq.join("|")
+    trail.photo_points.map { |point| point.join(",") }.join("|")
   end
 
   # [icon, label, detail] chips for a route's views and the highlights on the way.
@@ -83,12 +80,18 @@ module SearchesHelper
   end
 
   # Where the page looks up the trains there and back, and when they leave:
-  # the way back is the first after hiking for the time the search requires.
+  # the way back is the first after hiking for the time the search requires,
+  # from the route's far end when it's hiked there.
   def trip_lookup_path(trail, result)
     place = result.place
     trip_path(from: "#{place.latitude.to_f},#{place.longitude.to_f}", to: "#{trail.latitude.to_f},#{trail.longitude.to_f}",
-      leave: result.departure_time.utc.iso8601, back_by: result.return_by.utc.iso8601,
+      finish: trail.finish&.join(","), leave: result.departure_time.utc.iso8601, back_by: result.return_by.utc.iso8601,
       hike: (TrailsService.required_hours(trail) * 60).round)
+  end
+
+  # How the hike goes, such as "out and back".
+  def hike_plan_label(trail)
+    { loop: "loop", out_and_back: "out and back", through: "one way, back from the far end" }.fetch(trail.plan || :loop)
   end
 
   # A length of time such as "4 h 35 min", "2 h", or "50 min", in steps of five
@@ -136,5 +139,11 @@ module SearchesHelper
     # Without an origin, Google Maps starts from the device's own location.
     params = { api: 1, origin: trail.origin, destination: "#{trail.latitude},#{trail.longitude}", travelmode: "transit" }
     "https://www.google.com/maps/dir/?#{URI.encode_www_form(params.compact)}"
+  end
+
+  # Transit directions from where a hike finishes back to the search's starting point.
+  def directions_back_url(trail, place)
+    params = { api: 1, origin: trail.finish.join(","), destination: "#{place.latitude},#{place.longitude}", travelmode: "transit" }
+    "https://www.google.com/maps/dir/?#{URI.encode_www_form(params)}"
   end
 end

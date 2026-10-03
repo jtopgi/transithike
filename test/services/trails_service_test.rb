@@ -241,24 +241,55 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal ["by subway", "by train"], search(transit: transit, hiking: FakeHiking.new(trails)).trails.map(&:name).sort
   end
 
-  test "routes without a way back the same day, or without time to hike before it, are left out" do
-    trails = [trail("roomy"), trail("stranded"), trail("rushed"), trail("long", length: 10, loop: false)]
+  test "routes are left out without a way back the same day that leaves time to hike all of them" do
+    trails = [trail("roomy"), trail("stranded"), trail("rushed"), trail("long", length: 10, loop: false),
+      trail("through", length: 6, loop: false), trail("there and back", length: 2, loop: false)]
+    deadline = Time.utc(2026, 9, 27, 6)
     transit = FakeTransit.new(trips: trails.to_h { |trail| [trail.name, minutes(60)] }, returns: {
       "roomy" => Time.utc(2026, 9, 27, 2), "stranded" => nil,
-      # Arriving at 16:00 UTC, there is 1 hour 29 minutes before the last trip back.
-      "rushed" => Time.utc(2026, 9, 26, 17, 29),
-      # A 20-mile round trip needs the most time required, 4 hours, which is just what's left.
-      "long" => Time.utc(2026, 9, 26, 20)
+      # Arriving at 16:00 UTC, a 3-mile loop takes 1.5 hours, and the last trip back must leave half an hour after.
+      "rushed" => Time.utc(2026, 9, 26, 17, 59),
+      # Ten miles out and back take 10 hours, more than the 4 left, and nothing leaves from the far end.
+      "long" => Time.utc(2026, 9, 26, 20), "long finish" => nil,
+      # Six miles to the far end take 3 hours, and the last trip home from there rides an hour.
+      "through" => Time.utc(2026, 9, 26, 18), "through finish" => deadline - 1.hour,
+      # Two miles out and back take 2 hours. The far end's transit rides much longer than the trip there.
+      "there and back" => Time.utc(2026, 9, 26, 18, 30), "there and back finish" => deadline - 3.hours
     })
     result = search(transit: transit, hiking: FakeHiking.new(trails))
 
-    assert_equal %w[roomy long], result.trails.map(&:name)
-    deadline, earliest = transit.return_requests.sole
-    assert_equal [Time.utc(2026, 9, 27, 6), SATURDAY + 90.minutes], [deadline, earliest]
+    found = result.trails.index_by(&:name)
+    assert_equal ["roomy", "there and back", "through"], found.keys.sort
+    assert_equal [:loop, nil, Time.utc(2026, 9, 27, 2)], found["roomy"].to_h.values_at(:plan, :finish, :last_return)
+    through = trails.find { |trail| trail.name == "through" }
+    assert_equal [:through, through.path.first.last, deadline - 1.hour],
+      found["through"].to_h.values_at(:plan, :finish, :last_return)
+    assert_equal [:out_and_back, nil], found["there and back"].to_h.values_at(:plan, :finish)
+    # One request asks for the last trips back from every route and every linear route's far end.
+    assert_equal [deadline, SATURDAY + 90.minutes], transit.return_requests.sole
+  end
+
+  test "hikes take an hour every 2 miles, out and back twice the route, and at least an hour and a half" do
     assert_equal 1.5, TrailsService.hike_hours(trail("short", length: 1.2))
-    assert_equal 7, TrailsService.hike_hours(trail("epic", length: 30))
-    assert_equal 5, TrailsService.hike_hours(trail("there and back", length: 5, loop: false))
-    assert_equal 4, TrailsService.required_hours(trail("there and back", length: 5, loop: false))
+    assert_equal 15, TrailsService.hike_hours(trail("epic", length: 30))
+    there_and_back = trail("there and back", length: 5, loop: false)
+    assert_equal [10, 5, 5.5], [TrailsService.hike_miles(there_and_back), TrailsService.hike_hours(there_and_back),
+      TrailsService.required_hours(there_and_back)]
+    there_and_back.plan = :through
+    assert_equal [5, 2.5], [TrailsService.hike_miles(there_and_back), TrailsService.hike_hours(there_and_back)]
+  end
+
+  test "linear routes reached near an end can be hiked to the other, and routes with close ends are loops" do
+    near_ends = trail("near ends", loop: false).tap { |route| route.path = [[[47.0, -122.1], [47.005, -122.1]]] }
+    assert TrailsService.loop?(near_ends)
+    assert_nil TrailsService.finish(near_ends)
+    linear = trail("linear", loop: false, at: 47.0)
+    assert_equal [47.01, -122.1], TrailsService.finish(linear)
+    # Reached halfway along an 11 km route, it's hiked out and back.
+    linear.latitude = 47.05
+    linear.path = [(0..10).map { |step| [47.0 + step * 0.01, -122.1] }]
+    assert_nil TrailsService.finish(linear)
+    refute TrailsService.loop?(linear)
   end
 
   test "when the way back can't be looked up, routes transit reaches are shown and the result says so" do
@@ -357,7 +388,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "scenery, day-hike lengths and time there rank routes up; paving, generic names and long trips down" do
+  test "scenery and day-hike lengths rank routes up; paving, generic names and long trips down" do
     base = trail("base", length: 5, duration: 3600, transfers: 0, arrival: SATURDAY + 1.hour,
       last_return: Time.utc(2026, 9, 27, 2))
     score = ->(**changes) { TrailsService.score(base.dup.tap { |copy| changes.each { |key, value| copy[key] = value } }) }
@@ -369,6 +400,8 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal 2, score.call(notable: true)
     assert_equal 1, score.call(length: 2.5)
     assert_equal 0.25, score.call(length: 1.5)
+    # Out and back, the hike is twice as long.
+    assert_equal 1.5, score.call(length: 1.5, loop: false, plan: :out_and_back)
     assert_equal 0.25, score.call(paved: 0.5)
     assert_equal 0.5, score.call(name: "Trail 2")
     # Three hours there and back costs nothing, four a little, and more than six much more.
@@ -377,7 +410,6 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_in_delta 1.5 - 0.75, score.call(duration: 10_800), 0.001
     assert_in_delta 1.5 - 1 - 0.5, score.call(duration: 12_600), 0.001
     assert_in_delta 1.3, score.call(transfers: 2), 0.001
-    assert_equal 1, score.call(last_return: SATURDAY + 2.hours)
   end
 
   test "views count for how far a route climbs or its high point stands above the land around it, and for mapped vistas" do

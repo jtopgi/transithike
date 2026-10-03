@@ -1,0 +1,18 @@
+<%# Credited photos of nature along a route, each linking to its page on Wikimedia Commons. %>
+<% if photos.present? %>
+  <section class="mb-4" aria-labelledby="photos-heading">
+    <h2 class="h5" id="photos-heading">Photos along the way</h2>
+    <div class="hike-photos">
+      <% photos.each do |photo| %>
+        <figure class="hike-photo">
+          <%= link_to photo[:file_url], target: "_blank", rel: "noopener" do %>
+            <img src="<%= photo[:image_url] %>" alt="<%= photo[:caption] %>" loading="lazy" decoding="async">
+          <% end %>
+          <figcaption class="small text-body-secondary">
+            <%= photo[:caption] %> · <%= link_to photo[:credit], photo[:file_url], target: "_blank", rel: "noopener" %>
+          </figcaption>
+        </figure>
+      <% end %>
+    </div>
+  </section>
+<% end %>

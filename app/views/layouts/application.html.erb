@@ -4,7 +4,10 @@
     <meta charset="utf-8">
     <title><%= content_for?(:title) ? "#{yield(:title)} · TransitHike" : "TransitHike · Weekend hikes you can reach by train" %></title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Weekend day hikes you can reach by train from the city, with a train back the same evening.">
+    <meta name="description" content="<%= content_for?(:description) ? yield(:description) : "Weekend day hikes you can reach by train from the city, with a train back the same evening." %>">
+    <% if content_for?(:robots) %>
+      <meta name="robots" content="<%= yield(:robots) %>">
+    <% end %>
     <meta name="theme-color" content="#14532d">
     <%= csrf_meta_tags %>
     <%= csp_meta_tag %>

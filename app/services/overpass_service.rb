@@ -69,14 +69,31 @@ module OverpassService
   # paved is the share of the route's length on paved ways or roads, and loop is
   # true for routes that end where they start. arrival and last_return are the
   # times transit gets there and last leaves for the origin. terrain is the
-  # route's { climb:, relief: } in meters, from ElevationService.
+  # route's { climb:, relief: } in meters, from ElevationService. plan is how
+  # it's hiked, :loop, :out_and_back, or :through to finish, the
+  # [latitude, longitude] of its far end, where the trip back leaves.
   Trail = Struct.new(:name, :summary, :latitude, :longitude, :length, :osm_id, :path, :highlights, :notable,
-    :paved, :loop, :distance, :duration, :transfers, :arrival, :last_return, :origin, :terrain, :score,
+    :paved, :loop, :distance, :duration, :transfers, :arrival, :last_return, :origin, :terrain, :score, :plan, :finish,
     keyword_init: true) do
     # A point halfway along the route, in its area even where transit reaches it from town.
     def midpoint
       points = Array(path).flatten(1)
       points[points.size / 2] || [latitude, longitude]
+    end
+
+    # The route's middle, then points a sixth of the way from each end, to
+    # about 1 km, where photos taken along it are looked for.
+    def photo_points
+      points = Array(path).flatten(1)
+      along = [1.0 / 6, 5.0 / 6].map { |share| points[(share * (points.size - 1)).round] } if points.size > 1
+      [midpoint, *along].map { |latitude, longitude| [latitude.round(2), longitude.round(2)] }.uniq
+    end
+
+    # The two loose ends of the route's ways that are farthest apart, as
+    # [latitude, longitude] pairs, or nil when every way's end meets another's.
+    def ends
+      loose = Array(path).flat_map { |line| [line.first, line.last] }.tally.select { |_, count| count.odd? }.keys
+      loose.combination(2).max_by { |first, last| OverpassService.distance(*first, *last) } if loose.size >= 2
     end
   end
 
