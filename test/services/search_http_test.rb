@@ -22,6 +22,25 @@ class SearchHttpTest < ActiveSupport::TestCase
     assert_raises(SearchErrors::ResponseTooLarge) { on_data.call("x", SearchHttp::MAX_RESPONSE_BYTES + 1, env) }
   end
 
+  test "connections log which provider failed and how" do
+    stubs = Faraday::Adapter::Test::Stubs.new do |stub|
+      stub.get("/busy") { [429, {}, ""] }
+      stub.get("/slow") { raise Faraday::TimeoutError }
+      stub.get("/fine") { [200, {}, "{}"] }
+    end
+    connection = SearchHttp.connection("https://provider.example")
+    connection.builder.adapter :test, stubs
+    log = StringIO.new
+    logger, Rails.logger = Rails.logger, ActiveSupport::Logger.new(log)
+
+    connection.get("/fine")
+    connection.get("/busy")
+    assert_raises(Faraday::TimeoutError) { connection.get("/slow") }
+    assert_equal ["provider.example responded 429", "provider.example failed: TimeoutError"], log.string.lines.map(&:strip)
+  ensure
+    Rails.logger = logger if logger
+  end
+
   test "JSON bodies must have the expected shape size and encoding" do
     assert_equal [1], SearchHttp.json(Array) { stub_connection(:get, [1]).get }
     assert_equal({ "a" => 1 }, SearchHttp.json { stub_connection(:get, { "a" => 1 }).get })

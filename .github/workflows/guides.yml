@@ -42,6 +42,8 @@ jobs:
         env:
           RAILS_ENV: production
           SECRET_KEY_BASE_DUMMY: "1"
+          # The log says which provider failed when a city's search does.
+          RAILS_LOG_TO_STDOUT: "1"
           CITIES: ${{ inputs.cities }}
       - name: Publish the guides
         run: bin/publish-guides

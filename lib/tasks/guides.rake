@@ -1,6 +1,8 @@
 namespace :guides do
   desc "Build the day-hike guides for the cities in config/guides.yml (or CITIES=slug,slug) into db/guides"
   task build: :environment do
+    # Each city's line shows as it finishes, with the time, in a workflow's log.
+    $stdout.sync = true
     # Lookups are shared within a build, as they are within the server.
     Rails.cache = ActiveSupport::Cache::MemoryStore.new(size: 256.megabytes)
     only = ENV["CITIES"].to_s.split(",").map(&:strip).presence
