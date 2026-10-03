@@ -1,0 +1,39 @@
+<%# A table of trips: when each leaves and arrives, how long it rides, and the transit it takes. %>
+<div class="table-responsive timetable-scroll" tabindex="0" aria-label="<%= caption %>">
+  <table class="table table-sm align-middle timetable mb-2">
+    <caption class="visually-hidden"><%= caption %></caption>
+    <thead>
+      <tr>
+        <th scope="col">Leave</th>
+        <th scope="col"><%= arrive_label %></th>
+        <th scope="col">Ride</th>
+        <th scope="col">Transit</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% trips.each do |trip| %>
+        <tr class="<%= 'timetable-last' if trip.equal?(trips.last) && mark_last %>">
+          <td class="text-nowrap fw-semibold"><%= trip_clock(trip[:departure], zone) %></td>
+          <td class="text-nowrap"><%= trip_clock(trip[:arrival], zone) %></td>
+          <td class="text-nowrap"><%= ride_label(trip) %></td>
+          <td>
+            <% legs = Array(trip[:legs]) %>
+            <% if legs.empty? %>
+              🚶 Walk
+            <% else %>
+              <% legs.each_with_index do |leg, index| %>
+                <span class="timetable-leg" title="<%= [leg[:agency], ("to #{leg[:headsign]}" if leg[:headsign])].compact.join(' ') %>">
+                  <span aria-hidden="true"><%= mode_icon(leg[:mode]) %></span>
+                  <%= leg_label(leg) %><%= " (#{trip_clock(leg[:departure], zone)})" if leg[:departure] && index.positive? %>
+                </span>
+              <% end %>
+            <% end %>
+            <% if trip.equal?(trips.last) && mark_last %>
+              <span class="badge text-bg-warning ms-1">Last</span>
+            <% end %>
+          </td>
+        </tr>
+      <% end %>
+    </tbody>
+  </table>
+</div>

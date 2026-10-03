@@ -8,13 +8,16 @@ town: hikes near commuter-rail, Amtrak, and other train stations, not the parks
 the subway already reaches. The application is Rails-rendered with Bootstrap: a
 starting-point box that suggests places as you type (or uses the device's
 location) with a Saturday/Sunday choice, and a results page that shows at once
-and streams in hikes as they are found, most scenic first. Each card has a map
-preview, photos taken nearby, highlights, how far the hike climbs, the round
-trip's travel time, the last trip back and how long that leaves there, and the
-trains and other transit to take each way, coming back the same way. Hikes can
-also be sorted by recommendation, round trip, time there, or length, and
-filtered with sliders for the longest round trip (spanning the hikes found, from
-the quickest to any) and a range of lengths.
+and streams in hikes as they are found, most scenic first. Only hikes you can
+finish before the last trip back are shown. Each card has a map preview, photos
+taken nearby, highlights, how far the hike goes (a loop, out and back, or one way
+to where transit leaves from the far end) and climbs, the round trip's travel
+time, the last trip back and how long that leaves there, and the trains and
+other transit there, the first trip back after the hike, and the last. Each hike
+has a details page with timetables of every trip there that leaves time to hike
+it and every trip back. Hikes can also be sorted by recommendation, round trip,
+time there, or length, and filtered with sliders for the longest round trip
+(spanning the hikes found, from the quickest to any) and a range of lengths.
 
 ## Requirements
 
@@ -101,11 +104,22 @@ test Overpass connectivity from your deployment before launching.
   out, so the trip is for the same day a week later. The search page offers the
   next weekend day by the device's clock. Only routes reachable within **4
   hours** of setting out, waiting included, are shown, and only with a way back
-  that arrives by **11 PM** the same day and leaves enough time to hike: the
-  route's length at 2 mph, or twice that for routes that don't loop, but at least
-  1½ and at most 4 hours (long routes can be shortened). Journeys may include up
-  to 30 minutes' walk from the last stop, and from the route to the first stop on
-  the way back.
+  that arrives by **11 PM** the same day and leaves time to hike **all** of the
+  route at 2 mph with breaks (at least 1½ hours, to enjoy short ones) and still
+  leave the last trip back half an hour to spare. Routes too long for that, such
+  as 20-mile long-distance trails, are left out. Journeys may include up to 30
+  minutes' walk from the last stop, and from the route to the first stop on the
+  way back.
+- **Loops, out and back, or one way.** Routes whose ends meet, or come within
+  1 km of each other, are hiked as loops. Other routes are hiked out and back,
+  twice their length, back to where transit reached them, which is the distance
+  cards show and sort and filter by. When that would be over 10 miles, or leave
+  too little time, and transit reaches the route within 1.5 km of an end, it can
+  instead be hiked one way to the far end, if transit leaves from there late
+  enough. The search asks for the last trips back from every route and every such
+  far end in one request. Those cards say so, mark the finish on the map, add
+  **Directions back** from it, and plan the trips back from there, preferring
+  ones that ride at most a quarter longer than the trip there, plus 15 minutes.
 - **There and back the same way.** Each card shows the round trip: the rides
   there and back. Until a card's trips are planned, it is twice the trip there
   (waiting for the first train included), since coming back the same way takes
@@ -117,11 +131,21 @@ test Overpass connectivity from your deployment before launching.
   ride home. Buses often stop across the street on the way back, so a trip there
   without trains keeps only its kinds of transit. Trips back that ride more than
   a quarter longer than the trip there, plus 15 minutes, don't count, so an
-  evening bus or a slow detour isn't suggested. The way back shown is the one
-  home soonest after hiking for the time the search requires, and the last trip
-  back is the last such trip, which also sets the time there (flagged when it's
-  less than the hike needs). Where the same way doesn't run after the hike, the
+  evening bus or a slow detour isn't suggested. The card shows the first trip
+  home after hiking for the time the search requires, and the last such trip,
+  which also sets the time there (flagged when it's less than the hike needs),
+  each with its transit. Where the same way doesn't run after the hike, the
   quickest other way is shown, and the card says so.
+- **Details and timetables.** Each card links to a page for its hike (left out
+  of search engines, since every starting point has its own) with a map to
+  explore, the hike's facts, its photos, and two timetables: every trip there
+  from 8 AM on that arrives in time to hike all of it before the last trip back,
+  leaving out any that ride much longer than the quickest, and every trip back
+  from the first after the hike, if you take the first trip there, to the last.
+  Each row has when it leaves and arrives, how long it rides, and its transit with
+  the stops it rides between. The route's highlights, terrain, and photos are
+  looked up while transit is planned, and the page shows without them after 10
+  seconds. Its trips are looked up the way cards' are, sharing their cache.
 - **Not the city's parks.** Hikes the subway, metro, or light rail
   (`TransitousService::CITY_MODES`: Transitous's `SUBWAY` and `TRAM`; its `METRO`
   means suburban trains) reach within those 4 hours are left out, since
@@ -140,14 +164,13 @@ test Overpass connectivity from your deployment before launching.
   for a name, one for a Wikipedia article, and one for every 20 m of mapped height,
   up to 1.5. Cards show "Big views" when the higher of the climb and the relief is
   at least 300 m (about 1,000 ft), and "Views" from 150 m.
-- **Recommended** adds 1.5 points for routes of 3 to 12 miles (1 for 2 to 3 or 12
-  to 16 miles, a quarter for shorter ones), 0.6 per point of scenery, and half a
-  point for routes with Wikipedia or Wikidata entries. It subtracts up to 1.25
-  points for partly paved routes, one for generic names such as "Trail 2", a
-  quarter point per hour of round trip beyond three hours plus another half point
-  per hour beyond six hours, 0.1 per transfer, half a point when there isn't time
-  to hike the whole route before the last trip back, and 1.5 points for a route
-  within 3 km of two that rank higher, for variety.
+- **Recommended** adds 1.5 points for hikes of 3 to 12 miles (1 for 2 to 3 or 12
+  to 16 miles, a quarter for shorter ones), counting out and back twice, 0.6 per
+  point of scenery, and half a point for routes with Wikipedia or Wikidata
+  entries. It subtracts up to 1.25 points for partly paved routes, one for generic
+  names such as "Trail 2", a quarter point per hour of round trip beyond three
+  hours plus another half point per hour beyond six hours, 0.1 per transfer, and
+  1.5 points for a route within 3 km of two that rank higher, for variety.
 - **Highlights** are mapped waterfalls, summits, and viewpoints within 150 m of a
   route's ways, waterfalls first, and famous ones (with a Wikipedia article) and
   named ones before the others. The paved share comes from mapped surfaces,
@@ -262,8 +285,10 @@ empty results, malformed responses, fallbacks, and upstream failures. Request
 tests also check that the form sends the parameters the search reads and that
 pages still render when a browser returns its session cookie with forgery
 protection on, as in production. The browser tests choose a suggested starting
-point, sort the results and filter them with the sliders, and browse a card's
-photos. Elevation tests decode generated tiles that use each of PNG's row filters.
+point, sort the results and filter them with the sliders, check the first and
+last trips back and a one-way hike's directions back, and browse a card's photos.
+Request tests render a hike's details page and its timetables. Elevation tests
+decode generated tiles that use each of PNG's row filters.
 
 [GitHub Actions](.github/workflows/ci.yml) runs these checks against PostgreSQL
 on every push and pull request. It also builds the production container image

@@ -191,32 +191,34 @@ module TransitousService
   end
 
   # A trip for showing its legs, as { departure:, arrival:, legs: [{ mode:, name:,
-  # agency:, headsign:, from:, to: }] } with ISO 8601 times, the ids
-  # of the stops each leg rides between (nil when unknown), and only the legs on
-  # transit (none for walking the whole way), or nil when there is none. It
-  # leaves at time and arrives soonest.
+  # agency:, headsign:, from:, to:, from_name:, to_name:, departure:, arrival: }] }
+  # with ISO 8601 times, the ids and names of the stops each leg rides between
+  # (nil when unknown), and only the legs on transit (none for walking the whole
+  # way), or nil when there is none. It leaves at time and arrives soonest.
   def self.journey(origin:, destination:, time:, connection: nil, cache: Rails.cache)
     params = {
       fromPlace: place(origin), toPlace: place(destination), time: time.utc.iso8601,
       arriveBy: false, timetableView: false, detailedLegs: false, maxPostTransitTime: MAX_POST_TRANSIT_SECONDS
     }
-    cache.fetch("transitous:journey:v3:#{params.values_at(:fromPlace, :toPlace, :time).join(':')}", expires_in: TRIP_CACHE_TTL) do
+    cache.fetch("transitous:journey:v4:#{params.values_at(:fromPlace, :toPlace, :time).join(':')}", expires_in: TRIP_CACHE_TTL) do
       connection ||= SearchHttp.connection(PLAN_URL, timeout: 10)
       plan(connection, params).min_by { |journey| journey[:arrival] }
     end
   end
 
   # The trips back from a route to the origin, by the same way as the journey
-  # there, as { back:, last:, same_way: }, each trip like #journey's or nil.
+  # there, as { back:, last:, same_way:, trips: }, each trip like #journey's or nil.
   # back is home soonest while leaving at earliest or later, as after a hike, and
-  # last leaves latest while home by the deadline. The same way rides the
-  # journey's trains back between the same stations, with the same kinds of
-  # transit or the city's subway and light rail. Trips back that ride much longer
-  # than the journey there, as slow buses late in the evening do, don't count.
-  # Where the same way has no trip back after earliest, any way does, and
-  # same_way is false; it is nil when there is no journey to follow. Only when
-  # nothing leaves after earliest is the way back the last trip before it.
-  def self.ways_back(origin:, destination:, like:, earliest:, deadline:, connection: nil, cache: Rails.cache)
+  # last leaves latest while home by the deadline; trips are all those from back
+  # to last, in order. The same way rides the journey's trains back between the
+  # same stations, with the same kinds of transit or the city's subway and light
+  # rail. Trips back that ride much longer than the journey there, as slow buses
+  # late in the evening do, don't count. Where the same way has no trip back
+  # after earliest, any way does, and same_way is false; it is nil when there is
+  # no journey to follow, or follow is false, as for trips back from the far end
+  # of a route. Only when nothing leaves after earliest is the way back the last
+  # trip before it.
+  def self.ways_back(origin:, destination:, like:, earliest:, deadline:, follow: true, connection: nil, cache: Rails.cache)
     params = {
       fromPlace: place(origin), toPlace: place(destination), time: deadline.utc.iso8601, arriveBy: true,
       # Every trip that leaves from earliest until the last one is listed.
@@ -224,7 +226,7 @@ module TransitousService
       detailedLegs: false, maxPreTransitTime: MAX_POST_TRANSIT_SECONDS, maxPostTransitTime: MAX_POST_TRANSIT_SECONDS
     }
     trips_for = lambda do |query|
-      cache.fetch("transitous:ways-back:v2:#{Digest::SHA256.hexdigest(query.to_json)}", expires_in: TRIP_CACHE_TTL) do
+      cache.fetch("transitous:ways-back:v3:#{Digest::SHA256.hexdigest(query.to_json)}", expires_in: TRIP_CACHE_TTL) do
         connection ||= SearchHttp.connection(PLAN_URL, timeout: 15)
         plan(connection, query).select { |trip| trip[:arrival] <= params[:time] }
       end
@@ -232,7 +234,7 @@ module TransitousService
     longest = ride_seconds(like) * BACK_RIDE_FACTOR + BACK_RIDE_SLACK if like
     swift = ->(trips) { longest ? trips.select { |trip| ride_seconds(trip) <= longest } : trips }
 
-    constrained = params.merge(same_way(like))
+    constrained = follow ? params.merge(same_way(like)) : params
     same = []
     unless constrained == params
       same = begin
@@ -242,18 +244,46 @@ module TransitousService
         []
       end
       back = first_home(same, earliest)
-      return { back: back, last: last_trip(same), same_way: true } if back
+      return { back: back, last: last_trip(same), same_way: true, trips: timetable(same, back[:departure]) } if back
     end
     trips = trips_for.(params)
     other_way = (false unless constrained == params)
     after = trips.select { |trip| trip[:departure] >= earliest.utc.iso8601 }
     # A slow trip after the hike still beats a quick one that leaves before it's over.
     pool = swift.(after).presence || after
-    return { back: first_home(pool, earliest), last: last_trip(pool), same_way: other_way } if pool.any?
+    if pool.any?
+      back = first_home(pool, earliest)
+      return { back: back, last: last_trip(pool), same_way: other_way, trips: timetable(pool, back[:departure]) }
+    end
 
     # When no way back leaves after the hike, the last one is still the one to take, the same way if it can be.
     before = same.presence || swift.(trips).presence || trips
-    { back: last_trip(before), last: last_trip(before), same_way: same.any? || other_way }
+    last = last_trip(before)
+    { back: last, last: last, same_way: same.any? || other_way, trips: [last].compact }
+  end
+
+  # The trips there that leave from time until latest, like #journey's and in
+  # order, leaving out any that ride much longer than the quickest.
+  def self.departures(origin:, destination:, time:, latest:, connection: nil, cache: Rails.cache)
+    params = {
+      fromPlace: place(origin), toPlace: place(destination), time: time.utc.iso8601, arriveBy: false,
+      timetableView: true, searchWindow: (latest - time).clamp(1.hour, 12.hours).to_i, detailedLegs: false,
+      maxPostTransitTime: MAX_POST_TRANSIT_SECONDS
+    }
+    trips = cache.fetch("transitous:departures:v1:#{Digest::SHA256.hexdigest(params.to_json)}", expires_in: TRIP_CACHE_TTL) do
+      connection ||= SearchHttp.connection(PLAN_URL, timeout: 15)
+      plan(connection, params)
+    end
+    trips = trips.select { |trip| trip[:departure].between?(params[:time], latest.utc.iso8601) }
+    quickest = trips.map { |trip| ride_seconds(trip) }.min
+    timetable(trips.select { |trip| ride_seconds(trip) <= quickest * BACK_RIDE_FACTOR + BACK_RIDE_SLACK.to_i })
+  end
+
+  # The trips that leave from the time given on, in order, without any that
+  # leave at the same time as another but arrive later.
+  def self.timetable(trips, from = nil)
+    trips.select { |trip| from.nil? || trip[:departure] >= from }.group_by { |trip| trip[:departure] }
+      .map { |_, same| same.min_by { |trip| trip[:arrival] } }.sort_by { |trip| [trip[:departure], trip[:arrival]] }
   end
 
   # The trip home soonest that leaves at earliest or later, riding the least
@@ -309,8 +339,14 @@ module TransitousService
       names = leg.values_at("routeShortName", "routeLongName")
       names.reverse! if TRAIN_MODES.include?(leg["mode"])
       { mode: leg["mode"], name: text(names.first) || text(names.last) || text(leg["displayName"]),
-        agency: text(leg["agencyName"]), headsign: text(leg["headsign"]), from: stop_id(leg["from"]), to: stop_id(leg["to"]) }
+        agency: text(leg["agencyName"]), headsign: text(leg["headsign"]), from: stop_id(leg["from"]), to: stop_id(leg["to"]),
+        from_name: stop_name(leg["from"]), to_name: stop_name(leg["to"]),
+        departure: parse_time(leg["startTime"])&.utc&.iso8601, arrival: parse_time(leg["endTime"])&.utc&.iso8601 }
     end }
+  end
+
+  def self.stop_name(place)
+    text(place["name"]) if place.is_a?(Hash)
   end
 
   # A stop's id, which plans can be asked to go via, or nil.
