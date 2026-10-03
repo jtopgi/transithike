@@ -435,10 +435,16 @@ Push or merge to `master` to deploy.
 ```sh
 az webapp log tail -n transithike -g rg-transithike                       # stream logs
 az webapp restart -n transithike -g rg-transithike                        # restart
+az acr repository show-tags -n <registry> --repository transithike \
+  --orderby time_desc --top 5 -o tsv                                      # recent builds
 az webapp config container set -n transithike -g rg-transithike \
-  --container-image-name <registry>.azurecr.io/transithike:<previous-sha>  # roll back
+  --container-image-name <registry>.azurecr.io/transithike:<previous-tag>  # roll back
 az group delete -n rg-transithike                                         # remove everything
 ```
+
+Image tags are `<commit>-<run>-<attempt>`, one for each deployment, because the
+same commit is deployed again whenever the guides are rebuilt. Builds from
+before then are tagged with just the commit.
 
 ## License
 
