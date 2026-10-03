@@ -1,28 +1,35 @@
 #!/usr/bin/env bash
-# Downloads the published guides (the guides-data release's guides.tar.gz) into
-# db/guides. Before the first guides are published there are none to get, but
-# any other failure fails, so builds never go ahead without the guides.
+# Downloads the newest published guides (a guides-<time>.tar.gz file of the
+# guides-data release) into db/guides. Until guides are published there are
+# none to get, but any other failure fails, so builds never go ahead without
+# the published guides.
 set -euo pipefail
 
 mkdir -p db/guides tmp
-if ! release=$(gh release view guides-data --json tagName 2>&1); then
-  if grep --quiet --ignore-case "release not found" <<< "$release"; then
+release="repos/{owner}/{repo}/releases/tags/guides-data"
+newest='[.assets[] | select(.name | test("^guides-[0-9]+\\.tar\\.gz$"))] | sort_by(.name) | last | .name // ""'
+if ! file=$(gh api "$release" --jq "$newest" 2> tmp/guides-error.txt); then
+  if grep --quiet "HTTP 404" tmp/guides-error.txt; then
     echo "::warning::No guides are published yet."
     exit 0
   fi
-  echo "$release" >&2
+  cat tmp/guides-error.txt >&2
   exit 1
 fi
+if [ -z "$file" ]; then
+  echo "::warning::No guides are published yet."
+  exit 0
+fi
 
-# The workflow that publishes guides briefly removes the old file as it uploads the new one.
 for attempt in 1 2 3 4 5; do
-  if gh release download guides-data --pattern guides.tar.gz --dir tmp --clobber; then
-    tar --extract --gzip --file tmp/guides.tar.gz --directory db/guides
+  if gh release download guides-data --pattern "$file" --dir tmp --clobber; then
+    tar --extract --gzip --file "tmp/$file" --directory db/guides
+    echo "Downloaded $file:"
     ls db/guides
     exit 0
   fi
   echo "Download attempt $attempt failed; trying again."
   sleep $((attempt * 10))
 done
-echo "::error::The published guides couldn't be downloaded." >&2
+echo "::error::The published guides ($file) couldn't be downloaded." >&2
 exit 1

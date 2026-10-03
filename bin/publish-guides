@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Publishes db/guides as a new guides-<time>.tar.gz file of the guides-data
+# release, creating the release the first time, then removes older files, so
+# the release always has a complete set of guides to download.
+set -euo pipefail
+
+mkdir -p tmp
+file="guides-$(date -u +%Y%m%d%H%M%S).tar.gz"
+tar --create --gzip --file "tmp/$file" --directory db/guides .
+release="repos/{owner}/{repo}/releases/tags/guides-data"
+if gh api "$release" --silent 2> tmp/guides-error.txt; then
+  gh release upload guides-data "tmp/$file"
+elif grep --quiet "HTTP 404" tmp/guides-error.txt; then
+  gh release create guides-data "tmp/$file" --prerelease --title "Day-hike guides" \
+    --notes "The weekly guides to day hikes by train that the site serves, built by the Guides workflow."
+else
+  cat tmp/guides-error.txt >&2
+  exit 1
+fi
+echo "Published $file."
+
+gh api "$release" --jq ".assets[] | select(.name != \"$file\" and (.name | startswith(\"guides-\"))) | .id" |
+  while read -r asset; do
+    gh api --method DELETE "repos/{owner}/{repo}/releases/assets/$asset" --silent
+  done

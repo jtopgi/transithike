@@ -44,12 +44,6 @@ jobs:
           SECRET_KEY_BASE_DUMMY: "1"
           CITIES: ${{ inputs.cities }}
       - name: Publish the guides
-        run: |
-          tar --create --gzip --file tmp/guides.tar.gz --directory db/guides .
-          if ! gh release view guides-data > /dev/null 2>&1; then
-            gh release create guides-data --prerelease --title "Day-hike guides" \
-              --notes "The weekly guides to day hikes by train that the site serves, built by the Guides workflow."
-          fi
-          gh release upload guides-data tmp/guides.tar.gz --clobber
+        run: bin/publish-guides
       - name: Deploy them
         run: gh workflow run ci.yml --ref master --field indexnow=true
