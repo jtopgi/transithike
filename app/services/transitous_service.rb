@@ -211,10 +211,10 @@ module TransitousService
       fromPlace: place(origin), toPlace: place(destination), time: time.utc.iso8601,
       arriveBy: false, timetableView: false, detailedLegs: false, maxPostTransitTime: MAX_POST_TRANSIT_SECONDS
     }
-    latest = (time + MAX_TRAVEL_MINUTES.minutes).utc.iso8601
+    latest = time + MAX_TRAVEL_MINUTES.minutes
     cache.fetch("transitous:journey:v5:#{params.values_at(:fromPlace, :toPlace, :time).join(':')}", expires_in: TRIP_CACHE_TTL) do
       connection ||= SearchHttp.connection(PLAN_URL, timeout: 10)
-      by_train(connection, params, leave_after: time) { |journey| journey[:arrival] <= latest }
+      by_train(connection, params, leave_after: time, arrive_by: latest) { |journey| journey[:arrival] <= latest.utc.iso8601 }
         .min_by { |journey| costed_arrival(journey) }
     end
   end
@@ -282,22 +282,22 @@ module TransitousService
 
   # The trips there that leave from time until latest, like #journey's and in
   # order, leaving out any that ride much longer than the quickest; by train
-  # unless by_train is false, as when the journey there isn't.
-  def self.departures(origin:, destination:, time:, latest:, by_train: true, connection: nil, cache: Rails.cache)
+  # unless by_train is false, as when the journey there isn't. A ride at the
+  # end is only walked instead when the trip still arrives by arrive_by.
+  def self.departures(origin:, destination:, time:, latest:, arrive_by: nil, by_train: true, connection: nil,
+    cache: Rails.cache)
     params = {
       fromPlace: place(origin), toPlace: place(destination), time: time.utc.iso8601, arriveBy: false,
       timetableView: true, searchWindow: (latest - time).clamp(1.hour, 12.hours).to_i, detailedLegs: false,
       maxPostTransitTime: MAX_POST_TRANSIT_SECONDS
     }
-    key = Digest::SHA256.hexdigest(params.merge(latest: latest.utc.iso8601, by_train: by_train).to_json)
+    key = Digest::SHA256.hexdigest(params.merge(latest: latest.utc.iso8601, arrive_by: arrive_by&.utc&.iso8601,
+      by_train: by_train).to_json)
     trips = cache.fetch("transitous:departures:v2:#{key}", expires_in: TRIP_CACHE_TTL) do
       connection ||= SearchHttp.connection(PLAN_URL, timeout: 15)
       leaving = ->(trip) { trip[:departure].between?(params[:time], latest.utc.iso8601) }
-      if by_train
-        by_train(connection, params, leave_after: time, &leaving)
-      else
-        plan(connection, params, leave_after: time).select(&leaving)
-      end
+      bounds = { leave_after: time, arrive_by: arrive_by }
+      by_train ? by_train(connection, params, **bounds, &leaving) : plan(connection, params, **bounds).select(&leaving)
     end
     quickest = trips.map { |trip| ride_seconds(trip) }.min
     timetable(trips.select { |trip| ride_seconds(trip) <= quickest * BACK_RIDE_FACTOR + BACK_RIDE_SLACK.to_i })

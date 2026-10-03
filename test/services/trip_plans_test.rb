@@ -16,14 +16,14 @@ class TripPlansTest < ActiveSupport::TestCase
       { back: last, last: last, same_way: true, trips: [last] }
     end
 
-    def departures(origin:, destination:, time:, latest:, by_train:)
-      @timetables << by_train
+    def departures(origin:, destination:, time:, latest:, arrive_by:, by_train:)
+      @timetables << [by_train, arrive_by == latest]
       @departures
     end
   end
 
-  def trip(*modes)
-    { departure: "2026-09-26T15:10:00Z", arrival: "2026-09-26T16:40:00Z", legs: modes.map { |mode| { mode: mode, name: mode } } }
+  def trip(*modes, arrival: "2026-09-26T16:40:00Z")
+    { departure: "2026-09-26T15:10:00Z", arrival: arrival, legs: modes.map { |mode| { mode: mode, name: mode } } }
   end
 
   def plan(transit)
@@ -36,11 +36,16 @@ class TripPlansTest < ActiveSupport::TestCase
     by_train = trip("SUBWAY", "REGIONAL_RAIL")
     transit = FakeTransit.new(by_train, [by_train])
     assert_equal [by_train], plan(transit)[:departures]
-    assert_equal [true], transit.timetables
+    # Rides at the end are only walked where trips still arrive in time to hike.
+    assert_equal [[true, true]], transit.timetables
 
     by_bus = trip("REGIONAL_RAIL", "BUS")
     transit = FakeTransit.new(by_bus, [])
     assert_equal [by_bus], plan(transit)[:departures]
-    assert_equal [false], transit.timetables
+    assert_equal [[false, true]], transit.timetables
+
+    # A first trip there too late to hike before the last trip back isn't listed either.
+    too_late = trip("REGIONAL_RAIL", arrival: "2026-09-27T02:00:00Z")
+    assert_empty plan(FakeTransit.new(too_late, []))[:departures]
   end
 end

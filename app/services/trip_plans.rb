@@ -15,12 +15,14 @@ module TripPlans
     ways = transit.ways_back(origin: finish || start, destination: origin, like: there, earliest: arrival + hike,
       deadline: back_by, follow: finish.nil?)
     last = Time.iso8601(ways[:last][:departure]) if ways[:last]
+    # Trips there that arrive in time to hike before the last trip back.
+    in_time = ->(trip) { last.nil? || Time.iso8601(trip[:arrival]) + hike <= last }
     departures = if last && there
-      # No trip there that leaves later than this arrives in time to hike before the last trip back.
-      # The timetable goes by train only when the first trip there does, so it lists that trip.
-      transit.departures(origin: origin, destination: start, time: leave, latest: last - hike,
-        by_train: TransitousService.by_train?(there)).select { |trip| Time.iso8601(trip[:arrival]) + hike <= last }
+      # No trip there that leaves later than this arrives in time. The timetable
+      # goes by train only when the first trip there does, so it lists that trip.
+      transit.departures(origin: origin, destination: start, time: leave, latest: last - hike, arrive_by: last - hike,
+        by_train: TransitousService.by_train?(there)).select(&in_time)
     end
-    { there: there, ways: ways, departures: departures.presence || [there].compact }
+    { there: there, ways: ways, departures: departures.presence || [there].compact.select(&in_time) }
   end
 end

@@ -419,6 +419,21 @@ class TransitousServiceTest < ActiveSupport::TestCase
     assert_equal [["40"], [nil]], [trips.map { |trip| trip[:legs].sole[:name] }, requests]
     assert TransitousService.by_train?({ legs: [{ mode: "SUBWAY" }, { mode: "REGIONAL_RAIL" }] })
     refute TransitousService.by_train?({ legs: [{ mode: "REGIONAL_RAIL" }, { mode: "BUS" }] })
+
+    # The train reaches a station 18 minutes' walk from the route at 16:20, and a bus gets there at 16:30.
+    train = leg("REGIONAL_RAIL", "routeShortName" => "Sounder", "to" => stop("Station", 47.491),
+      "startTime" => "2026-09-23T15:10:00Z", "endTime" => "2026-09-23T16:20:00Z")
+    bus = leg("BUS", "routeShortName" => "40", "from" => stop("Station", 47.4911), "to" => stop("Trailhead", 47.4995),
+      "startTime" => "2026-09-23T16:24:00Z", "endTime" => "2026-09-23T16:30:00Z")
+    body = { "itineraries" => [itinerary("2026-09-23T15:10:00Z", "2026-09-23T16:30:00Z", [train, bus])], "direct" => [] }
+    rides = lambda do |arrive_by|
+      TransitousService.departures(origin: origin, destination: destination, time: DEPARTURE, latest: DEPARTURE + 2.hours,
+        arrive_by: arrive_by, connection: stub_connection(:get, body), cache: ActiveSupport::Cache::MemoryStore.new)
+        .sole[:legs].pluck(:name)
+    end
+    # Walking from the station gets there at 16:38, so the bus is only walked instead when that's in time.
+    assert_equal ["Sounder"], rides.(nil)
+    assert_equal %w[Sounder 40], rides.(Time.utc(2026, 9, 23, 16, 35))
   end
 
   test "the way back rides the journey's trains back from where they stopped to where they started, home soonest after the hike" do

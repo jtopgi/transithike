@@ -35,7 +35,7 @@ class GuideServiceTest < ActiveSupport::TestCase
       { back: trip, last: last, same_way: follow ? true : nil, trips: [trip, last] }
     end
 
-    def departures(origin:, destination:, time:, latest:, by_train: true)
+    def departures(origin:, destination:, time:, latest:, arrive_by: nil, by_train: true)
       [journey(origin: origin, destination: destination, time: time)]
     end
   end
