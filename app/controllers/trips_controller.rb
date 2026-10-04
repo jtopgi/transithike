@@ -1,7 +1,7 @@
 # The trains and other transit to a route and back the same way, when they
 # leave, and where the route is.
 class TripsController < ApplicationController
-  rate_limit to: 60, within: 1.minute, with: -> { head :too_many_requests }
+  rate_limit to: 60, within: 1.minute, with: -> { head :too_many_requests }, store: Rails.configuration.x.rate_limit_store
 
   # Trips show without where the route is when that takes longer.
   LOCATION_WAIT_SECONDS = 5

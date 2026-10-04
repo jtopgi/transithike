@@ -1,5 +1,5 @@
 class PhotosController < ApplicationController
-  rate_limit to: 120, within: 1.minute, with: -> { head :too_many_requests }
+  rate_limit to: 120, within: 1.minute, with: -> { head :too_many_requests }, store: Rails.configuration.x.rate_limit_store
   # Photos are looked for around at most this many points along a route.
   MAX_POINTS = 3
 

@@ -427,8 +427,9 @@ filters.
 [GitHub Actions](.github/workflows/ci.yml) runs these checks against PostgreSQL
 on every push and pull request. It also builds the production container image
 and smoke-tests it with a database, which it prepares as it starts, including a
-session-cookie round trip and the cache, and then without one, when the site
-still serves and the cache only misses.
+session-cookie round trip and the cache, and then with a database that turns
+every query away, when the site still serves, rate-limited pages still answer,
+and the cache only misses.
 Dependabot checks Ruby,
 JavaScript, and GitHub Actions dependencies weekly. Commit both lockfiles when
 updating dependencies.
@@ -493,8 +494,9 @@ from GitHub Actions:
   [Solid Cache](https://github.com/rails/solid_cache), so the hiking routes and
   searches it keeps outlive deploys; it holds up to 8 GB, each entry for at most
   120 days. The image's entrypoint creates the database and runs migrations
-  before the server starts, and starts the server even when the database can't
-  be reached, when the cache only misses. Only the web app's outbound addresses
+  before the server starts, trying three times, and starts the server even when
+  the database can't be reached: any database error is then a cache miss, and
+  rate limits are counted in the process, not the database. Only the web app's outbound addresses
   can reach the database, and `DATABASE_URL`, with its password, is only in the
   web app's settings.
 

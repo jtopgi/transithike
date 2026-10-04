@@ -70,10 +70,16 @@ class StationSearch
     search = RUNNING.compute_if_absent([keys[:day], *providers.values]) do
       started = new(station, departure_time, keys, providers, cache)
     end
-    # Only once it's listed does it run, so it can't finish before it's listed.
+    # Only once it's listed does it run, so it can't finish before it's listed,
+    # and a search that can't start isn't left listed, for others to wait on.
     if started
+      begin
+        started.run(pool)
+      rescue StandardError
+        RUNNING.delete_pair([keys[:day], *providers.values], started)
+        raise
+      end
       cache.write(keys[:tried], true, expires_in: REFRESH_INCOMPLETE_AFTER)
-      started.run(pool)
     end
     search
   end

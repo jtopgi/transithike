@@ -84,6 +84,8 @@ production:
   # Puma's, so the pool has room for them. DATABASE_URL, when set, says where
   # the database is.
   pool: <%= ENV.fetch("DATABASE_POOL") { 20 } %>
+  # A database that doesn't answer doesn't hold up searches for long.
+  connect_timeout: 5
   database: transithike_production
   username: transithike
   password: <%= ENV['TRANSITHIKE_DATABASE_PASSWORD'] %>

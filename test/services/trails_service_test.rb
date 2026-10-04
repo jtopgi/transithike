@@ -841,6 +841,20 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal 2, down.tile_requests.size
   end
 
+  test "a station's search that can't start isn't left for others to wait on" do
+    pool = Concurrent::FixedThreadPool.new(1).tap(&:shutdown)
+    pool.wait_for_termination(5)
+    hiking = FakeHiking.new([trail("a")])
+    departure = SATURDAY.in_time_zone("America/Los_Angeles")
+    start = lambda do |with|
+      StationSearch.start(STATION, departure, transit: FakeTransit.new(trips: { "a" => minutes(30) }), hiking: hiking,
+        elevation: FakeElevation.new, cache: ActiveSupport::Cache::MemoryStore.new, pool: with)
+    end
+    assert_raises(Concurrent::RejectedExecutionError) { start.(pool) }
+    assert_empty StationSearch::RUNNING.keys.select { |key| key.include?(hiking) }
+    assert_equal [["a"], true], shown(start.(Concurrent::ImmediateExecutor.new))
+  end
+
   test "the guide cities' stations are searched one at a time for the weekend, kept ready, and failures don't stop the rest" do
     guide = Struct.new(:name, :place, :time_zone)
     guides = [guide.new("Seattle", Place.new(latitude: 47.6, longitude: -122.3), "America/Los_Angeles"),

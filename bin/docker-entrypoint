@@ -1,9 +1,17 @@
 #!/bin/bash -e
 # Prepares the database, when there is one, before the server starts: creates it
-# and runs migrations. Searches work without it, only without keeping what they
-# find, so a database that can't be reached doesn't keep the server from starting.
+# and runs migrations, trying three times, as when the database is restarting.
+# Searches work without it, only without keeping what they find, so a database
+# that can't be reached doesn't keep the server from starting.
 if [ -n "${DATABASE_URL:-}" ] && [ "${*}" = "bundle exec puma -C config/puma.rb" ]; then
-  ./bin/rails db:prepare || echo "The database couldn't be prepared, so the server starts without it." >&2
+  for attempt in 1 2 3; do
+    ./bin/rails db:prepare && break
+    if [ "$attempt" = 3 ]; then
+      echo "The database couldn't be prepared, so the server starts without it." >&2
+    else
+      sleep 10
+    fi
+  done
 fi
 
 exec "$@"

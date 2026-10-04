@@ -57,4 +57,9 @@ Rails.application.configure do
   # Use an evented file watcher to asynchronously detect changes in source code,
   # routes, locales, etc. This feature depends on the listen gem.
   config.file_watcher = ActiveSupport::EventedFileUpdateChecker
+
+  # Visitors' requests are counted for rate limits in the process, not the
+  # database cache: the counts change with every request, and the limits hold
+  # even when the database is down.
+  config.x.rate_limit_store = ActiveSupport::Cache::MemoryStore.new(size: 16.megabytes)
 end

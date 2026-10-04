@@ -118,4 +118,9 @@ Rails.application.configure do
   # config.active_record.database_selector = { delay: 2.seconds }
   # config.active_record.database_resolver = ActiveRecord::Middleware::DatabaseSelector::Resolver
   # config.active_record.database_resolver_context = ActiveRecord::Middleware::DatabaseSelector::Resolver::Session
+
+  # Visitors' requests are counted for rate limits in the process, not the
+  # database cache: the counts change with every request, and the limits hold
+  # even when the database is down.
+  config.x.rate_limit_store = ActiveSupport::Cache::MemoryStore.new(size: 16.megabytes)
 end

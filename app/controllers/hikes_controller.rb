@@ -1,7 +1,7 @@
 # A hike found by a search, in detail: the route, its photos, and the
 # timetables of the trips there that leave time to hike it and of the trips back.
 class HikesController < ApplicationController
-  rate_limit to: 30, within: 1.minute, with: -> { head :too_many_requests }
+  rate_limit to: 30, within: 1.minute, with: -> { head :too_many_requests }, store: Rails.configuration.x.rate_limit_store
 
   PLANS = %w[loop out_and_back through].freeze
   # The page shows without the route's highlights, terrain, or photos when they take longer.

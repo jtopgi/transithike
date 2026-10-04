@@ -132,15 +132,22 @@ jobs:
           docker exec transithike bin/rails runner 'exit ActiveSupport::TimeZone["America/Los_Angeles"].now.zone.start_with?("P")'
           docker exec transithike bin/rails runner 'Rails.cache.write("ci", 1); exit Rails.cache.read("ci") == 1'
           docker stop transithike
-      - name: Smoke test the production image without a database
+      - name: Smoke test the production image when the database turns it away
         run: |
           set -euo pipefail
+          # A database that doesn't exist, started without preparing it, turns every query away, as a
+          # firewall or a missing cache table does.
           docker run --detach --name transithike-without-database --network host \
-            --env SECRET_KEY_BASE="$(openssl rand -hex 64)" transithike:ci
+            --env SECRET_KEY_BASE="$(openssl rand -hex 64)" \
+            --env DATABASE_URL=postgres://postgres@localhost:5432/transithike_missing \
+            transithike:ci bundle exec puma --config config/puma.rb
           curl --fail --silent --show-error --retry 30 --retry-delay 1 --retry-all-errors http://localhost:3000/up
-          curl --fail --silent --show-error --header "X-Forwarded-Proto: https" --output page.html http://localhost:3000/
+          https=(--silent --show-error --header "X-Forwarded-Proto: https")
+          curl --fail "${https[@]}" --output page.html http://localhost:3000/
           grep --quiet "Find hikes" page.html
-          # Without the database, the cache misses rather than failing.
+          # Rate limits are counted in the process, so pages that have them still answer.
+          test "$(curl "${https[@]}" --output /dev/null --write-out '%{http_code}' http://localhost:3000/trip)" = 400
+          # The cache misses rather than failing.
           docker exec transithike-without-database bin/rails runner \
             'Rails.cache.write("ci", 1); exit Rails.cache.read("ci").nil?'
       - name: Show container logs
