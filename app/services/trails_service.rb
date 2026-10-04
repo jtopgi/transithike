@@ -329,6 +329,17 @@ module TrailsService
       trail.transfers.to_i * 0.1
   end
 
+  # Where a hike is: the town or city and the state or region where transit
+  # reaches it, as "Cold Spring, New York", with the country too when it isn't
+  # the starting point's, or nil when nothing is mapped nearby. Raises when it
+  # can't be looked up.
+  def self.location(point, origin, places: PhotonService)
+    here = places.locality(point.latitude, point.longitude) or return
+    home = optional { places.locality(origin.latitude, origin.longitude) }
+    country = here[:country] if home && here[:country] != home[:country]
+    [here[:locality], here[:region], country].compact.uniq.join(", ").presence
+  end
+
   # Day trips by train often take up to three hours there and back; longer ones count against a hike.
   def self.travel_penalty(hours)
     [hours - 3, 0].max * 0.25 + [hours - 6, 0].max * 0.5

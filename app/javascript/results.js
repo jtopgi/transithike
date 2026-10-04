@@ -200,7 +200,12 @@ class Results {
     const response = await fetch(box.dataset.tripUrl, { headers: { Accept: "application/json" } })
     if (!response.ok) return
 
-    const { there, back, last, same_way: sameWay } = await response.json()
+    const { there, back, last, same_way: sameWay, location } = await response.json()
+    if (location) {
+      const line = card.querySelector("[data-location]")
+      line.querySelector("[data-location-text]").textContent = location
+      line.classList.remove("invisible")
+    }
     // The planned trips are exact to the minute, unlike the search's estimates,
     // whose travel times include waiting for the train.
     if (there && back) this.showTravel(card, rideMinutes(there), rideMinutes(back))

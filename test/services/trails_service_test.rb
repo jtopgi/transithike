@@ -207,7 +207,27 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal [{}, {}], hiking.reliefs
   end
 
-  test "results are reported as they are found: the place, each batch, and the final ranking" do
+  test "a hike's location is its town and region, with its country when it isn't the starting point's" do
+    places = Class.new do
+      def locality(latitude, _longitude)
+        raise SearchErrors::UpstreamError, "down" if latitude == 1
+
+        { 47 => { locality: "Seattle", region: "Washington", country: "United States" },
+          48 => { locality: "Mount Vernon", region: "Washington", country: "United States" },
+          49 => { locality: "Abbotsford", region: "British Columbia", country: "Canada" },
+          50 => { locality: "Hope", country: "Canada" } }[latitude]
+      end
+    end.new
+    at = ->(latitude) { Place.new(latitude: latitude, longitude: -122) }
+    assert_equal "Mount Vernon, Washington", TrailsService.location(at.(48), at.(47), places: places)
+    assert_equal "Abbotsford, British Columbia, Canada", TrailsService.location(at.(49), at.(47), places: places)
+    assert_equal "Hope", TrailsService.location(at.(50), at.(49), places: places)
+    # Without the starting point's country, the country is left out, and nothing nearby is no location.
+    assert_equal "Abbotsford, British Columbia", TrailsService.location(at.(49), at.(1), places: places)
+    assert_nil TrailsService.location(at.(51), at.(47), places: places)
+  end
+
+    test "results are reported as they are found: the place, each batch, and the final ranking" do
     trails = (1..5).map { |index| trail("route #{index}") }
     transit = FakeTransit.new(trips: trails.to_h { |trail| [trail.name, minutes(30)] })
     events = []

@@ -16,7 +16,11 @@
     </div>
     <div class="trail-gallery" role="group" aria-label="Photos near <%= trail.name %>" data-gallery hidden></div>
     <div class="card-body d-flex flex-column p-4">
-      <h2 class="card-title h5 mb-3"><%= trail.name %></h2>
+      <h2 class="card-title h5 mb-1"><%= trail.name %></h2>
+      <%# Where the route is shows once its trips are looked up, in space kept for it. %>
+      <p class="trail-location small text-body-secondary mb-3<%= " invisible" unless trail.location %>" data-location>
+        <span aria-hidden="true">📍</span> <span data-location-text><%= trail.location %></span>
+      </p>
       <div data-chips><%= render "searches/chips", trail: trail %></div>
       <dl class="trail-stats">
         <div>

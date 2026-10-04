@@ -13,7 +13,10 @@
       <% end %>
     <% end %>
     <div class="card-body d-flex flex-column p-4">
-      <h2 class="card-title h5 mb-3"><%= link_to hike.title, guide_hike_path(page.guide.slug, hike.slug), class: "stretched-link link-dark text-decoration-none" %></h2>
+      <h2 class="card-title h5 <%= trail.location ? "mb-1" : "mb-3" %>"><%= link_to hike.title, guide_hike_path(page.guide.slug, hike.slug), class: "stretched-link link-dark text-decoration-none" %></h2>
+      <% if trail.location %>
+        <p class="trail-location small text-body-secondary mb-3"><span aria-hidden="true">📍</span> <%= trail.location %></p>
+      <% end %>
       <%= render "searches/chips", trail: trail %>
       <dl class="trail-stats">
         <div>

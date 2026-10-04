@@ -9,8 +9,9 @@ the subway already reaches. The application is Rails-rendered with Bootstrap: a
 starting-point box that suggests places as you type (or uses the device's
 location) with a Saturday/Sunday choice, and a results page that shows at once
 and streams in hikes as they are found, most scenic first. Only hikes you can
-finish before the last trip back are shown. Each card has a map preview, photos
-taken nearby, highlights, how far the hike goes (a loop, out and back, or one way
+finish before the last trip back are shown. Each card has a map preview, where
+the hike is (its town or city and state or region, with the country when it
+isn't the starting point's), photos taken nearby, highlights, how far the hike goes (a loop, out and back, or one way
 to where transit leaves from the far end) and climbs, the round trip's travel
 time, the last trip back and how long that leaves there, and the trains and
 other transit there, the first trip back after the hike, and the last. Each hike
@@ -272,7 +273,11 @@ Place suggestions and typed searches use [Photon](https://photon.komoot.io),
 whose public instance asks for fair use: the page waits for three characters
 and a pause in typing, suggestions are cached for a day, and both favor places
 near the visitor's time zone without asking for their location, so a ZIP code
-such as 11101 finds Queens rather than a namesake abroad. Map previews
+such as 11101 finds Queens rather than a namesake abroad. Photon's reverse
+lookup also names where each hike is, from where transit reaches it, when its
+card's trips are planned, its details page loads, or its guide is built; places
+about a kilometer apart share a lookup, cached for 30 days. In Great Britain,
+the county stands in for England, Scotland, Wales, or Northern Ireland. Map previews
 load [OpenStreetMap tiles](https://operations.osmfoundation.org/policies/tiles/)
 only as cards scroll into view, and photos come from the
 [Wikipedia and Wikimedia Commons APIs](https://www.mediawiki.org/wiki/API:Etiquette)
@@ -320,7 +325,8 @@ planning, linked from the home page, the navigation, and an index of cities.
   for them. Search results and hike details from a search are `noindex`, since
   every starting point has its own. `sitemap.xml` lists the home page, the guides,
   and every hike's page, with when each guide was built, and `llms.txt` sums up
-  the site and its guides for AI assistants.
+  the site and its guides for AI assistants, and asks them to give people a link
+  to the guide, hike, or search they used, since trains change week to week.
 - **IndexNow.** After a deploy that the Guides workflow starts, CI submits the
   sitemap's pages to [IndexNow](https://www.indexnow.org), which tells Bing
   (whose index ChatGPT search, Copilot, and DuckDuckGo use), Yandex, and others
