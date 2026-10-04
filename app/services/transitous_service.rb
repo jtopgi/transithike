@@ -143,8 +143,10 @@ module TransitousService
       next if meters > radius
 
       importance = stop["importance"].is_a?(Numeric) && stop["importance"].finite? ? stop["importance"] : 0
-      { station: Station.new(name: station_name(stop["name"]), latitude: stop["lat"], longitude: stop["lon"], id: stop_id(stop)),
-        importance: importance, meters: meters }
+      # Coordinates to about 10 cm, without the provider's single-precision noise.
+      station = Station.new(name: station_name(stop["name"]), latitude: stop["lat"].to_f.round(6),
+        longitude: stop["lon"].to_f.round(6), id: stop_id(stop))
+      { station: station, importance: importance, meters: meters }
     end
     distinct = []
     found.sort_by { |stop| -stop[:importance] }.each do |stop|

@@ -164,7 +164,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_select "footer a[href='#{ElevationService::ATTRIBUTION_URL}']", text: "Terrain Tiles"
     assert_select "noscript", text: /needs JavaScript/
     assert_select "footer a[href='https://transitous.org/sources/']", text: "data sources"
-    assert_includes response.body, "a way back by 11 PM"
+    assert_includes response.body, "a way back to its station by 11 PM"
     assert_includes response.body, "at least 20 km"
 
     get search_path, params: { origin: "Seattle", day: "monday", tz: "Not a zone" }

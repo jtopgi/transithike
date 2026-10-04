@@ -165,8 +165,8 @@ module SearchesHelper
   # Transit directions to a station from the search's starting point, or,
   # when it started from the device's location, from wherever the device is.
   def station_directions_url(station, place)
-    origin = "#{place.latitude.to_f},#{place.longitude.to_f}" if place.name
-    params = { api: 1, origin: origin, destination: "#{station.latitude.to_f},#{station.longitude.to_f}", travelmode: "transit" }
+    origin = "#{place.latitude.to_f.round(6)},#{place.longitude.to_f.round(6)}" if place.name
+    params = { api: 1, origin: origin, destination: "#{station.latitude},#{station.longitude}", travelmode: "transit" }
     "https://www.google.com/maps/dir/?#{URI.encode_www_form(params.compact)}"
   end
 end

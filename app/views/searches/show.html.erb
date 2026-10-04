@@ -79,17 +79,19 @@
     <div class="empty-state text-center py-5" data-empty hidden>
       <div class="display-6 mb-3" aria-hidden="true">🧭</div>
       <p class="lead mb-2">No day hikes by train with a way back the same evening were found for this search.</p>
-      <p class="text-body-secondary mb-0">Try the other weekend day, or start from a station or a nearby neighborhood.</p>
+      <p class="text-body-secondary mb-0">Try the other weekend day, or start from a nearby city.</p>
     </div>
     <div class="alert alert-warning mt-4 mb-0" role="status" data-notices hidden></div>
     <% min_km = TrailsService::MIN_DISTANCE_METERS / 1000 %>
     <% min_miles = (TrailsService::MIN_DISTANCE_METERS / OverpassService::METERS_PER_MILE).round %>
     <p class="small text-body-secondary mt-4 mb-0">
-      Trips leave at 8 AM on the day you choose, from the timetables Transitous has for the region: commuter rail,
-      Amtrak, or other trains, with the subway or light rail to the station if you need them, and a walk rather than a
-      short ride where it's about as quick. Buses are only for where no train goes. Hikes are near stations
-      at least <%= min_km %> km (<%= min_miles %> miles) away, and hikes the subway or light rail reaches are left out,
-      since you likely know them already. Every hike shown has a way back by 11 PM that leaves time to hike it. Once
+      Trips leave at 8 AM on the day you choose from the major train stations near your starting point, each with
+      lines the others don't have, and getting to the station is up to you. They follow the timetables Transitous has
+      for the region: commuter rail, Amtrak, or other trains, and a walk rather than a short ride where it's about as
+      quick. Buses are only for where no train goes. Each hike shows from the station that gets there soonest.
+      Hikes are near stations at least <%= min_km %> km (<%= min_miles %> miles) out, and hikes the subway or light
+      rail reaches are left out, since you likely know them already. Every hike shown has
+      a way back to its station by 11 PM that leaves time to hike it. Once
       each card's trips are looked up, the way back rides the same trains back, home soonest after the hike, and the
       last trip back is the last that way; the round trip adds the rides there and back. Hikes with the grandest view
       or waterfall come first: views count for how far a route climbs and how far its high point stands above the
@@ -102,9 +104,12 @@
     </p>
   <% end %>
   <p class="small text-body-secondary mt-2 mb-0">
-    Each search looks for mapped hiking routes within a <%= TransitAccess::MAX_WALK_MINUTES %>-minute walk of the
-    stations trains reach within <%= duration_label(TransitousService::STATION_MINUTES * 60) %>, then checks trips for up to
+    From each of up to <%= TransitousService::MAX_STATIONS %> major stations within
+    <%= TransitousService::STATION_RADII.first / 1000 %> km, each search looks for mapped hiking routes within a
+    <%= TransitAccess::MAX_WALK_MINUTES %>-minute walk of the stations its trains reach within
+    <%= duration_label(TransitousService::STATION_MINUTES * 60) %>, then checks trips for up to
     <%= OverpassService::MAX_TRANSIT_ROUTES %> hikes of <%= OverpassService::MIN_LENGTH_MILES.round %> to
-    <%= OverpassService::MAX_LENGTH_MILES %> miles that aren't mostly paved.
+    <%= OverpassService::MAX_LENGTH_MILES %> miles that aren't mostly paved. Searches from a station are shared with
+    everyone who searches near it.
   </p>
 <% end %>

@@ -138,32 +138,34 @@ module OverpassService
   # its center, and its diagonal in meters. Each tile's routes are cached, and
   # uncached tiles are queried TILES_PER_QUERY neighbors at a time, each query
   # finding the routes of the region around its tiles once, then keeping those
-  # in the tiles. The routes of tiles whose query fails are left out, unless
-  # every tile's do, and each such failure is added to failures when given.
+  # in the tiles, while tiles another search is querying are waited for. The
+  # routes of tiles whose query fails are left out, unless every tile's do, and
+  # each such failure is added to failures when given.
   def self.routes_in(tiles, connections: nil, cache: Rails.cache, failures: nil)
     keys = tiles.to_h { |tile| [tile, "overpass:tile:v1:#{tile.join(':')}"] }
     found = keys.empty? ? {} : cache.read_multi(*keys.values)
     missing = tiles.reject { |tile| found.key?(keys[tile]) }
     tile_of = keys.invert
     error = nil
-    found.merge!(shared(missing.map { |tile| keys[tile] }) do |own|
-      looked_up = {}
-      own.map { |key| tile_of[key] }.sort.each_slice(TILES_PER_QUERY) do |group|
-        routes = elements(tiles_query(group), connections, cache, timeout: LONG_QUERY_SECONDS)
+    missing.sort.each_slice(TILES_PER_QUERY) do |group|
+      found.merge!(shared(group.map { |tile| keys[tile] }, cache) do |own|
+        own_tiles = own.map { |key| tile_of[key] }
+        routes = elements(tiles_query(own_tiles), connections, cache, timeout: LONG_QUERY_SECONDS)
           .filter_map { |element| candidate(element) }
-        group.each do |south, west|
-          looked_up[keys[[south, west]]] = routes.select do |route|
+        own_tiles.to_h do |south, west|
+          in_tile = routes.select do |route|
             route[:bounds][0] < south + TILE_DEGREES && route[:bounds][2] >= south &&
               route[:bounds][1] < west + TILE_DEGREES && route[:bounds][3] >= west
           end
-          cache.write(keys[[south, west]], looked_up[keys[[south, west]]], expires_in: TILE_CACHE_TTL)
+          cache.write(keys[[south, west]], in_tile, expires_in: TILE_CACHE_TTL)
+          [keys[[south, west]], in_tile]
         end
       rescue SearchErrors::UpstreamError => failure
         error ||= failure
         failures&.push(failure)
-      end
-      looked_up
-    end)
+        {}
+      end)
+    end
     # Tiles another search was looking up, but couldn't in time, are left out too.
     if error.nil? && missing.any? { |tile| !found.key?(keys[tile]) }
       error = SearchErrors::ProviderBusy.new(BUSY)
@@ -176,10 +178,11 @@ module OverpassService
 
   # The values the block finds for keys, as { key => value }, shared with
   # other searches in this process: the block is given the keys no other
-  # search is looking up, and returns what it found for them, while those
-  # another search is looking up are waited for, at most SHARED_WAIT_SECONDS.
-  # Keys whose lookup fails or takes longer are left out.
-  def self.shared(keys)
+  # search is looking up, and returns what it found for them, and then those
+  # another search is looking up are waited for, at most SHARED_WAIT_SECONDS,
+  # and read from the cache when that search stored them without saying so in
+  # time. Keys whose lookup fails or takes longer are left out.
+  def self.shared(keys, cache)
     keys = keys.uniq
     mine = Concurrent::Promises.resolvable_future
     others = keys.filter_map { |key| (other = LOOKING_UP.put_if_absent(key, mine)) && [key, other] }.to_h
@@ -191,12 +194,15 @@ module OverpassService
       own.each { |key| LOOKING_UP.delete_pair(key, mine) }
       mine.fulfill(found)
     end
+    return found if others.empty?
+
     TrailsService.settle(others.values.uniq, timeout: SHARED_WAIT_SECONDS)
     others.each do |key, other|
       value = other.value(0) if other.fulfilled?
       found[key] = value[key] if value&.key?(key)
     end
-    found
+    late = others.keys.reject { |key| found.key?(key) }
+    late.any? ? found.merge(cache.read_multi(*late)) : found
   end
 
   def self.tiles_query(tiles)
@@ -284,7 +290,7 @@ module OverpassService
     missing = ids.reject { |id| found.key?(keys[id]) }
     if missing.any?
       id_of = keys.invert
-      found.merge!(shared(missing.map { |id| keys[id] }) do |own|
+      found.merge!(shared(missing.map { |id| keys[id] }, cache) do |own|
         own_ids = own.map { |key| id_of[key] }
         fetched = fetch_routes(own_ids, connections, cache)
         own_ids.to_h do |id|
