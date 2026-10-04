@@ -306,8 +306,11 @@ planning, linked from the home page, the navigation, and an index of cities.
 - **Weekly builds.** The [Guides workflow](.github/workflows/guides.yml) runs on
   Wednesdays (and from the Actions tab, for some cities if you like). It runs
   `bin/rails guides:build`, which searches from each city with the live
-  providers (trying a city again after two minutes when a provider is busy),
-  plans every hike's trips there and back with `TripPlans`, finds their photos,
+  providers a minute apart, since Overpass limits how much each address asks
+  (trying a city again after two minutes when a provider is busy or some of its
+  hikes couldn't be checked, as when the farther tiles' routes don't load, and
+  keeping a complete build, or else the one with more hikes), plans every hike's
+  trips there and back with `TripPlans`, finds their photos and where they are,
   and writes `db/guides/<city>.json`. A city's guide is only
   replaced when the new one has at least 12 hikes and at least 60% as many as
   the last, so a provider's bad day doesn't empty its pages, and hikes keep their

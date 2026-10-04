@@ -95,7 +95,10 @@ module TrailsService
     relief = reliefs(routes, elevation)
     search.check(hiking.pick(routes, access: access, relief: relief).first(BATCH_SIZE))
     if farther
-      more = optional { finished(farther).value }.to_a.reject { |route| relief.key?(route[:id]) }
+      more = optional { finished(farther).value! }
+      # Without the other tiles' routes, the scenery farther out goes unchecked.
+      result.complete = false unless more
+      more = Array(more).reject { |route| relief.key?(route[:id]) }
       relief = relief.merge(reliefs(more, elevation))
       routes = (routes + more).uniq { |route| route[:id] }
     end

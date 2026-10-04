@@ -89,6 +89,31 @@ module GuideService
         hikes: hikes }
     end
 
+    # Builds a city's guide, trying once more after pause seconds when a
+    # provider fails or some hikes can't be checked, as when Overpass is busy,
+    # and saying how each try went with log. Returns the complete build, or else
+    # the one with more hikes, or nil when neither worked.
+    def rebuild(guide, pause:, log: ->(_line) {}, **providers)
+      best = nil
+      2.times do |attempt|
+        sleep pause if attempt.positive?
+        again = attempt.zero? ? ", trying again in #{pause}s" : ""
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        begin
+          data = build(guide, previous: previous(guide), **providers)
+        rescue SearchErrors::UpstreamError => error
+          log.("#{guide.name}: failed (#{error.message})#{again}")
+          next
+        end
+        seconds = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round
+        rank = ->(built) { [built[:complete] ? 1 : 0, built[:hikes].size] }
+        best = data if best.nil? || (rank.(data) <=> rank.(best)).positive?
+        log.("#{guide.name}: #{data[:hikes].size} hikes in #{seconds}s#{data[:complete] ? '' : ", but some couldn't be checked#{again}"}")
+        break if data[:complete]
+      end
+      best
+    end
+
     # Writes a city's new guide unless it has too few hikes, returning whether it did.
     def write(guide, data)
       file = directory.join("#{guide.slug}.json")

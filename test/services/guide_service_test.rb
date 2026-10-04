@@ -66,7 +66,46 @@ class GuideServiceTest < ActiveSupport::TestCase
     GuideService.guides.find { |candidate| candidate.slug == "new-york-city" }
   end
 
-  test "a photo lookup that fails is tried once more" do
+  # Searches that answer in turn: an exception is raised, and otherwise how many trails and whether all were checked.
+  class TurnsSearch < FakeSearch
+    def initialize(turns, trail)
+      @turns, @trail = turns, trail
+      super([])
+    end
+
+    def search(origin:, day:)
+      turn = @turns.shift
+      raise turn if turn.is_a?(Exception)
+
+      count, complete = turn
+      super.tap do |result|
+        result.trails = (1..count).map { |id| @trail.(id) }
+        result.complete = complete
+      end
+    end
+  end
+
+  test "a city's guide is built again when a provider fails or some hikes couldn't be checked" do
+    build = lambda do |*turns|
+      lines = []
+      search = TurnsSearch.new(turns, ->(id) { trail("Route #{id}", id) })
+      data = GuideService.rebuild(guide, pause: 0, log: ->(line) { lines << line }, search: search, transit: FakeTransit.new,
+        photos: FakePhotos.new, places: FakePlaces.new)
+      [data && [data[:hikes].size, data[:complete]], lines.map { |line| line.sub(/(hikes) in \d+s/, '\1') }]
+    end
+
+    assert_equal [[2, true], ["New York City: 2 hikes"]], build.([2, true])
+    assert_equal [[3, true], ["New York City: 4 hikes, but some couldn't be checked, trying again in 0s", "New York City: 3 hikes"]],
+      build.([4, false], [3, true])
+    assert_equal [[4, false], ["New York City: 4 hikes, but some couldn't be checked, trying again in 0s",
+      "New York City: 1 hikes, but some couldn't be checked"]], build.([4, false], [1, false])
+    assert_equal [[2, true], ["New York City: failed (busy), trying again in 0s", "New York City: 2 hikes"]],
+      build.(SearchErrors::UpstreamError.new("busy"), [2, true])
+    assert_equal [nil, ["New York City: failed (busy), trying again in 0s", "New York City: failed (busy)"]],
+      build.(SearchErrors::UpstreamError.new("busy"), SearchErrors::UpstreamError.new("busy"))
+  end
+
+    test "a photo lookup that fails is tried once more" do
     flaky = Class.new(FakePhotos) do
       attr_reader :calls
 

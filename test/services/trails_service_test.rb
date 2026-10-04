@@ -590,6 +590,8 @@ class TrailsServiceTest < ActiveSupport::TestCase
       search(transit: transit, hiking: FakeHiking.new([trail("a")], far: [trail("b")], release: slow, stuck: [:other_tiles]))
     end
     assert_equal ["a"], result.trails.map(&:name)
+    # The scenery farther out went unchecked.
+    refute result.complete
   ensure
     release&.set
     slow&.set
