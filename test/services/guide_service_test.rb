@@ -66,6 +66,24 @@ class GuideServiceTest < ActiveSupport::TestCase
     GuideService.guides.find { |candidate| candidate.slug == "new-york-city" }
   end
 
+  test "a photo lookup that fails is tried once more" do
+    flaky = Class.new(FakePhotos) do
+      attr_reader :calls
+
+      def photos_near(points)
+        @calls = @calls.to_i + 1
+        raise SearchErrors::UpstreamError, "slow" if @calls == 1
+
+        super
+      end
+    end.new
+    data = stub_const(GuideService, :PHOTO_RETRY_SECONDS, 0) do
+      GuideService.build(guide, search: FakeSearch.new([trail("Ridge Loop", 1)]), transit: FakeTransit.new, photos: flaky,
+        places: FakePlaces.new)
+    end
+    assert_equal [1, 2], [data[:hikes].sole[:photos].size, flaky.calls]
+  end
+
   test "a guide plans each hike's trips and photos, most scenic first, and tells plain or shared names apart by place" do
     trails = [trail("White Trail", 1, scenic: 1), trail("Breakneck Ridge Trail", 2, scenic: 4), trail("White Trail", 3),
       trail("Ridge Loop", 4, scenic: 2, plan: :through, loop: false, finish: [41.42, -73.9])]

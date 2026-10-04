@@ -207,12 +207,19 @@ test Overpass connectivity from your deployment before launching.
 - **Photos** are only of nature. Each card shows up to eight in a gallery of
   thumbnails, taken within 2 km of three points along the route (its middle and
   a sixth of the way from each end), which are not necessarily of the route: the
-  lead image of the nearest park or natural area's Wikipedia article, then photos
-  taken along the route from Wikimedia Commons, views and waterfalls first, then
-  the nearest, with at most two from a series (such as "Sugarloaf Mountain in
-  summer 2" and "3"). Articles count as natural areas by the kind of thing their
-  short description names first ("State park in New York" or "Range of hills in
-  central England", but not "Fort on the Hudson River", "Mountain village in
+  lead image of the nearest park or natural area's Wikipedia article within 5 km
+  (big parks' articles are placed at their middle), then photos taken along the
+  route from Wikimedia Commons, views and waterfalls first, then the nearest, with
+  at most two from a series (such as "Sugarloaf Mountain in summer 2" and "3").
+  Commons is asked for the type and size of 200 files near each point, then for
+  the credits and categories of the nearest 50 that could be photos of the
+  scenery, following its answers until every category is in, since near towns the
+  nearest files are mostly of streets and buildings. Commons gets 20 seconds to
+  answer and Wikipedia 10; a lookup that fails only leaves out its own photos, and
+  guide builds try a failed lookup once more after 10 seconds. Articles count as
+  natural areas by the kind of thing their short description names first ("State
+  park in New York" or "Range of hills in central England", but not "Fort on the
+  Hudson River", "Garden House in Dormansland, Surrey", "Mountain village in
   Switzerland", or "Series of chains across the Hudson River"), or by their title
   when they have none. Photos are JPEGs at least 800 px wide and at most three
   times wider than tall, whose title or a visible Commons category names a

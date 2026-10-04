@@ -12,6 +12,8 @@ module GuideService
   # bad day doesn't empty a city's pages.
   MIN_HIKES = 12
   KEEP_SHARE = 0.6
+  # A photo lookup that fails is tried again after this long, since Commons is slow at times.
+  PHOTO_RETRY_SECONDS = 10
   # Names made only of these words, such as "White Trail" or "Northern Section",
   # need a place to tell them apart.
   GENERIC_WORDS = %w[
@@ -109,7 +111,7 @@ module GuideService
     def hike_data(trail, place, result, transit, photos, places)
       trail.location ||= optional { TrailsService.location(trail, place, places: places) }
       trips = optional { TripPlans.plan(trail, origin: place, leave: result.departure_time, back_by: result.return_by, transit: transit) }
-      gallery = optional { photos.photos_near(trail.photo_points) }
+      gallery = gallery(trail, photos)
       fields = trail.to_h.slice(*TRAIL_FIELDS)
       fields[:arrival] = trail.arrival&.utc&.iso8601
       fields[:last_return] = trail.last_return&.utc&.iso8601
@@ -174,6 +176,20 @@ module GuideService
       yield
     rescue SearchErrors::UpstreamError
       nil
+    end
+
+    # The route's photos, looking again once when the lookup fails.
+    def gallery(trail, photos)
+      attempts = 0
+      begin
+        attempts += 1
+        photos.photos_near(trail.photo_points)
+      rescue SearchErrors::UpstreamError
+        return if attempts > 1
+
+        sleep PHOTO_RETRY_SECONDS
+        retry
+      end
     end
   end
 end

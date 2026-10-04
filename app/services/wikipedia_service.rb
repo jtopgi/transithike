@@ -5,14 +5,26 @@ module WikipediaService
   API_URL = "https://en.wikipedia.org/w/api.php"
   COMMONS_URL = "https://commons.wikimedia.org/w/api.php"
   RADIUS_METERS = 2_000
+  # Big parks' articles are placed at their middle, so the nearest park is looked for farther out.
+  AREA_RADIUS_METERS = 5_000
   THUMBNAIL_WIDTH = 500
+  # Commons answers queries about many files slowly, and Wikipedia a little faster.
+  COMMONS_TIMEOUT_SECONDS = 20
+  API_TIMEOUT_SECONDS = 10
+  # Answers continued for more categories are followed this many times at most.
+  MAX_CONTINUES = 10
   CACHE_TTL = 7.days
   CREDIT_CACHE_TTL = 30.days
   MAX_PHOTOS = 8
   # Photos in a series, such as "Sugarloaf Mountain in summer 2" and "3", look alike, so few of each are shown.
   MAX_PER_SERIES = 2
-  # Commons is asked for this many files near each point, and each point keeps this many photos.
-  FILES_PER_POINT = 50
+  # Commons is asked for the sizes of this many files near each point, then for
+  # the credits and categories of the nearest DETAILED_PER_POINT that could be
+  # photos of the scenery, and each point keeps PHOTOS_PER_POINT photos. Near
+  # towns, the nearest files are mostly of streets and buildings, and many are
+  # too small to show the scenery.
+  FILES_PER_POINT = 200
+  DETAILED_PER_POINT = 50
   PHOTOS_PER_POINT = 16
   # Photos smaller than this, or wider than this many times their height, don't show the scenery well.
   MIN_PHOTO_WIDTH = 800
@@ -51,15 +63,15 @@ module WikipediaService
   DESCRIPTION_PLACE = /\s(?:in|on|at|near|along|within|during|between|from|by|off|outside|overlooking|across|over|under|through|around|beside|above|below)\s.*/im
   # Places people live, as in "Mountain village" or "Suburb of Blue Mountains", aren't natural areas.
   SETTLEMENT = /\b(?:suburbs?|towns?|townships?|villages?|hamlets?|settlements?|communit(?:y|ies)|neighbou?rhoods?)\b/i
-  BUILT = /\b(?:schools?|station|university|college|church|hospital|airport|mall|stadium|library|museum|company|corporation|district|building|tower|bridge|hotel|apartments?|condominiums?|highway|interchange|railway|railroad|zoo|cemetery|memorial|monument)\b/i
+  BUILT = /\b(?:schools?|station|university|college|church|hospital|airport|mall|stadium|library|museum|company|corporation|district|building|tower|bridge|hotel|apartments?|condominiums?|highway|interchange|railway|railroad|zoo|cemetery|memorial|monument|houses?|castles?(?!\s+(?:point|rocks?|hills?|peaks?|crags?|mountains?))|palaces?|manors?|mansions?)\b/i
 
   # { title:, article_url:, image:, image_url: }, or nil when no park or
   # natural area is nearby; image is nil when its article has no free one.
   def self.nearby_area(latitude, longitude, connection: nil, cache: Rails.cache)
     # Routes joined within about 1 km of each other share one lookup.
     latitude, longitude = latitude.round(2), longitude.round(2)
-    cache.fetch("wikipedia:area:v3:#{latitude}:#{longitude}", expires_in: CACHE_TTL) do
-      connection ||= SearchHttp.connection(API_URL)
+    cache.fetch("wikipedia:area:v4:#{latitude}:#{longitude}", expires_in: CACHE_TTL) do
+      connection ||= SearchHttp.connection(API_URL, timeout: API_TIMEOUT_SECONDS)
       page = nearest_natural_page(latitude, longitude, connection)
       next unless page
 
@@ -74,18 +86,31 @@ module WikipediaService
   # natural area's title and article (nil when there is none) and up to
   # MAX_PHOTOS photos: its lead image, then photos taken within RADIUS_METERS
   # of the points, [latitude, longitude] pairs along the route with its middle
-  # first, views and waterfalls first and then the nearest. nil when there are none.
+  # first, views and waterfalls first and then the nearest. nil when there are
+  # none. A lookup that fails only leaves out its photos, unless there are none
+  # at all, when it raises.
   def self.photos_near(points, connection: nil, commons: nil, cache: Rails.cache)
-    connection ||= SearchHttp.connection(API_URL)
-    area = nearby_area(*points.first, connection: connection, cache: cache)
-    lead = lead_photo(area, connection, cache)
-    taken = points.flat_map { |latitude, longitude| commons_photos(latitude, longitude, commons, cache) }
+    connection ||= SearchHttp.connection(API_URL, timeout: API_TIMEOUT_SECONDS)
+    errors = []
+    area = surviving(errors) { nearby_area(*points.first, connection: connection, cache: cache) }
+    lead = surviving(errors) { lead_photo(area, connection, cache) }
+    taken = points.flat_map { |latitude, longitude| surviving(errors) { commons_photos(latitude, longitude, commons, cache) } || [] }
       .sort_by { |photo| [photo[:scenery] ? 0 : 1, photo[:meters]] }
     shown = Hash.new(0)
     photos = [lead, *taken].compact.uniq { |photo| photo[:file_url] }
       .select { |photo| (shown[series(photo[:caption])] += 1) <= MAX_PER_SERIES }
       .first(MAX_PHOTOS).map { |photo| photo.except(:scenery, :meters) }
+    raise errors.first if photos.empty? && errors.any?
+
     { title: area&.dig(:title), article_url: area&.dig(:article_url), photos: photos } if photos.any?
+  end
+
+  # The block's value, or nil when its lookup fails, noting the failure.
+  def self.surviving(errors)
+    yield
+  rescue SearchErrors::UpstreamError => error
+    errors << error
+    nil
   end
 
   # The lead image of the park or natural area's article, when it's a photo of nature.
@@ -103,25 +128,45 @@ module WikipediaService
   # view or waterfall. Each point's photos are shared by routes within about 1 km.
   def self.commons_photos(latitude, longitude, connection, cache)
     latitude, longitude = latitude.round(2), longitude.round(2)
-    cache.fetch("wikipedia:commons:v3:#{latitude}:#{longitude}", expires_in: CACHE_TTL) do
-      connection ||= SearchHttp.connection(COMMONS_URL)
-      files = query(connection,
+    cache.fetch("wikipedia:commons:v4:#{latitude}:#{longitude}", expires_in: CACHE_TTL) do
+      connection ||= SearchHttp.connection(COMMONS_URL, timeout: COMMONS_TIMEOUT_SECONDS)
+      # Which files nearby could be photos of the scenery, by their type and size...
+      sized = query(connection,
         generator: "geosearch", ggscoord: "#{latitude}|#{longitude}", ggsradius: RADIUS_METERS, ggsnamespace: 6,
-        ggslimit: FILES_PER_POINT, prop: "imageinfo|coordinates|categories", iiprop: "url|extmetadata|mime|size",
-        iiurlwidth: THUMBNAIL_WIDTH, iiextmetadatafilter: "Artist|LicenseShortName", colimit: "max",
-        clshow: "!hidden", cllimit: "max")
+        ggslimit: FILES_PER_POINT, prop: "imageinfo|coordinates", iiprop: "mime|size", colimit: "max")
+        .select { |file| file["pageid"].is_a?(Integer) && photo_sized?(file) }
+        .min_by(DETAILED_PER_POINT) { |file| meters_from(file, latitude, longitude) }
+      next [] if sized.empty?
+
+      # ...then the nearest of those, with their credits and categories.
+      files = query(connection,
+        pageids: sized.map { |file| file["pageid"] }.join("|"), prop: "imageinfo|coordinates|categories",
+        iiprop: "url|extmetadata|mime|size", iiurlwidth: THUMBNAIL_WIDTH, iiextmetadatafilter: "Artist|LicenseShortName",
+        colimit: "max", clshow: "!hidden", cllimit: "max")
       files.filter_map { |file| commons_photo(file, latitude, longitude) }
         .sort_by { |photo| [photo[:scenery] ? 0 : 1, photo[:meters]] }.first(PHOTOS_PER_POINT)
     end
+  end
+
+  # Whether a file is a JPEG big enough, and not too wide, to show the scenery.
+  def self.photo_sized?(file)
+    info = value_at(file, "imageinfo", 0)
+    info.is_a?(Hash) && info["mime"] == "image/jpeg" && info["width"].is_a?(Integer) && info["height"].is_a?(Integer) &&
+      info["width"] >= MIN_PHOTO_WIDTH && info["height"].positive? && info["width"] <= info["height"] * MAX_ASPECT
+  end
+
+  def self.meters_from(file, latitude, longitude)
+    point = value_at(file, "coordinates", 0)
+    return Float::INFINITY unless point.is_a?(Hash) && SearchHttp.coordinates?(point["lat"], point["lon"])
+
+    OverpassService.distance(latitude, longitude, point["lat"], point["lon"])
   end
 
   def self.commons_photo(file, latitude, longitude)
     title = file["title"].delete_prefix("File:") if file["title"].is_a?(String)
     info = value_at(file, "imageinfo", 0)
     point = value_at(file, "coordinates", 0)
-    return unless title && info.is_a?(Hash) && info["mime"] == "image/jpeg" && !title.match?(SPECIES) &&
-      info["width"].is_a?(Integer) && info["height"].is_a?(Integer) &&
-      info["width"] >= MIN_PHOTO_WIDTH && info["height"].positive? && info["width"] <= info["height"] * MAX_ASPECT &&
+    return unless title && photo_sized?(file) && !title.match?(SPECIES) &&
       point.is_a?(Hash) && SearchHttp.coordinates?(point["lat"], point["lon"]) &&
       wikimedia_url?(info["thumburl"]) && wikimedia_url?(info["descriptionurl"])
 
@@ -185,7 +230,7 @@ module WikipediaService
 
   def self.nearest_natural_page(latitude, longitude, connection)
     pages = query(connection,
-      generator: "geosearch", ggscoord: "#{latitude}|#{longitude}", ggsradius: RADIUS_METERS, ggslimit: 20,
+      generator: "geosearch", ggscoord: "#{latitude}|#{longitude}", ggsradius: AREA_RADIUS_METERS, ggslimit: 50,
       prop: "pageimages|coordinates|info|description", piprop: "thumbnail|name", pithumbsize: THUMBNAIL_WIDTH,
       pilicense: "free", inprop: "url", colimit: "max")
     pages.select { |page| natural?(page) }.min_by do |page|
@@ -229,12 +274,29 @@ module WikipediaService
     end
   end
 
+  # The pages a query finds. Answers are continued when a page's categories don't
+  # all fit, and the rest are added to its page, so none goes unchecked.
   def self.query(connection, **params)
-    data = SearchHttp.json do
-      connection.get { |request| request.params = { action: "query", format: "json", formatversion: 2, **params } }
+    pages, continued = {}, {}
+    MAX_CONTINUES.times do
+      data = SearchHttp.json do
+        connection.get { |request| request.params = { action: "query", format: "json", formatversion: 2, **params, **continued } }
+      end
+      found = data["query"]["pages"] if data["query"].is_a?(Hash)
+      Array(found).each do |page|
+        next unless page.is_a?(Hash)
+
+        merged = pages[page["pageid"] || page["title"]] ||= page
+        next if merged.equal?(page)
+
+        merged["categories"] = Array(merged["categories"]) + Array(page["categories"])
+        page.each { |key, value| merged[key] = value unless merged.key?(key) }
+      end
+      break unless data["continue"].is_a?(Hash)
+
+      continued = data["continue"].to_h { |key, value| [key.to_sym, value] }
     end
-    pages = data["query"]["pages"] if data["query"].is_a?(Hash)
-    pages.is_a?(Array) ? pages.select { |page| page.is_a?(Hash) } : []
+    pages.values
   end
 
   # Short descriptions such as "Park in Seattle" or "Heritage streetcar in Washington"
