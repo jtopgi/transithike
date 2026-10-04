@@ -8,7 +8,8 @@
 # `az group delete --name rg-transithike` removes it all. Optional settings:
 #   AZURE_LOCATION (default eastus), AZURE_RESOURCE_GROUP, AZURE_WEBAPP (which also
 #   names https://<AZURE_WEBAPP>.azurewebsites.net, so it must be globally unique),
-#   and AZURE_WEBAPP_LOCATION (default AZURE_LOCATION). App Service quotas vary by
+#   AZURE_WEBAPP_LOCATION (default AZURE_LOCATION), and AZURE_DATABASE_SERVER (which names
+#   <AZURE_DATABASE_SERVER>.postgres.database.azure.com, so it must be globally unique too). App Service quotas vary by
 #   region on credit-based subscriptions: if creating the plan fails for lack of
 #   quota, try another region, such as centralus.
 set -euo pipefail
@@ -46,7 +47,8 @@ assign_role() { # principal-id role scope
 }
 
 step "Registering resource providers (first run can take a few minutes)"
-for namespace in Microsoft.Web Microsoft.ContainerRegistry Microsoft.ManagedIdentity Microsoft.OperationalInsights Microsoft.Insights; do
+for namespace in Microsoft.Web Microsoft.ContainerRegistry Microsoft.ManagedIdentity Microsoft.OperationalInsights Microsoft.Insights \
+    Microsoft.DBforPostgreSQL; do
   az provider register --namespace "$namespace" --wait --output none
 done
 
@@ -126,6 +128,57 @@ current="$(az webapp config appsettings list --resource-group "$group" --name "$
 if [ "$current" != "$connection" ]; then
   az webapp config appsettings set --resource-group "$group" --name "$app" --output none \
     --settings "APPLICATIONINSIGHTS_CONNECTION_STRING=$connection"
+fi
+
+step "Database: Azure Database for PostgreSQL flexible server, Burstable B1ms with 32 GB (about \$16 a month)"
+# Keeps the cache, and with it the hiking routes and searches, across deploys. It
+# lives where the web app does, and only the web app's outbound addresses can reach it.
+database_server="${AZURE_DATABASE_SERVER:-psql-$app-$(printf %s "$subscription" | cksum | cut -d ' ' -f 1)}"
+database_location="$(az webapp show --resource-group "$group" --name "$app" --query location --output tsv |
+  tr -d ' ' | tr '[:upper:]' '[:lower:]')"
+password=""
+if ! az postgres flexible-server show --resource-group "$group" --name "$database_server" --output none 2>/dev/null; then
+  # Hex digits, with an uppercase letter so it has the three kinds of character Azure asks for.
+  password="$(openssl rand -hex 24)X"
+  az postgres flexible-server create --resource-group "$group" --name "$database_server" \
+    --location "$database_location" --tier Burstable --sku-name Standard_B1ms --storage-size 32 --version 16 \
+    --admin-user transithike --admin-password "$password" --public-access None --backup-retention 7 \
+    --yes --output none
+fi
+if ! az postgres flexible-server db show --resource-group "$group" --server-name "$database_server" \
+    --name transithike_production --output none 2>/dev/null; then
+  az postgres flexible-server db create --resource-group "$group" --server-name "$database_server" \
+    --name transithike_production --output none
+fi
+# Public access lets the firewall rules below through, and nothing else.
+if [ "$(az postgres flexible-server show --resource-group "$group" --name "$database_server" \
+    --query network.publicNetworkAccess --output tsv)" != Enabled ]; then
+  az postgres flexible-server update --resource-group "$group" --name "$database_server" --public-access Enabled \
+    --output none
+fi
+for ip in $(az webapp show --resource-group "$group" --name "$app" --query possibleOutboundIpAddresses \
+    --output tsv | tr ',' ' '); do
+  az postgres flexible-server firewall-rule create --resource-group "$group" --server-name "$database_server" \
+    --name "app-${ip//./-}" --start-ip-address "$ip" --end-ip-address "$ip" --output none
+done
+current="$(az webapp config appsettings list --resource-group "$group" --name "$app" \
+  --query "[?name=='DATABASE_URL'].value" --output tsv)"
+# The password is only known when it's set, so without the setting, it's set anew.
+if [ -z "$current" ]; then
+  if [ -z "$password" ]; then
+    password="$(openssl rand -hex 24)X"
+    az postgres flexible-server update --resource-group "$group" --name "$database_server" \
+      --admin-password "$password" --output none
+  fi
+  database_host="$(az postgres flexible-server show --resource-group "$group" --name "$database_server" \
+    --query fullyQualifiedDomainName --output tsv)"
+  az webapp config appsettings set --resource-group "$group" --name "$app" --output none --settings \
+    "DATABASE_URL=postgres://transithike:$password@$database_host:5432/transithike_production?sslmode=require"
+fi
+# The web server keeps searches from the guide cities ready (see SearchWarmer).
+if [ -z "$(az webapp config appsettings list --resource-group "$group" --name "$app" \
+    --query "[?name=='WARM_SEARCHES'].value" --output tsv)" ]; then
+  az webapp config appsettings set --resource-group "$group" --name "$app" --output none --settings WARM_SEARCHES=1
 fi
 
 step "GitHub environment 'production' in $repository (deploys only from $branch)"

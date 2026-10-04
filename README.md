@@ -57,8 +57,8 @@ builds assets, and prepares the database. For frontend development, run
 `yarn build --watch` in a second terminal. No separate webpack server is needed.
 
 Rails also accepts `DATABASE_URL` when PostgreSQL is not available through a
-local socket. Use a separate database for tests. No application records or seed
-data are required.
+local socket. Use a separate database for tests. The only table is the cache's
+(`solid_cache_entries`), and no seed data is required.
 
 ## External services and changed behavior
 
@@ -121,12 +121,24 @@ test Overpass connectivity from your deployment before launching.
 - **Shared searches.** Each major station's search runs in the background, at
   most three at once per server process, and is shared by every search that
   starts there at the same time, so everyone near Grand Central waits on the same
-  one. It finishes, and is kept for 12 hours (a minute when some routes couldn't
-  be checked), even when the visitor who started it leaves. A hike that several
-  stations reach shows from the one that gets there soonest, counting the trip
-  across the city to each station at about 15 km/h, and a card is replaced when a
-  station that gets there sooner finds it. While nothing new is found, the
-  stream sends a comment every 15 seconds to keep the connection open.
+  one. It finishes, and is kept in the database for 8 days, even when the visitor
+  who started it leaves. Kept searches show at once, and once 12 hours old (10
+  minutes when some routes couldn't be checked), the station is searched again
+  in the background for later visitors, keeping routes an earlier search found
+  that the new one couldn't check. Where a station hasn't been searched for the
+  day yet, its search for the same weekday and time from up to two weeks before
+  shows at once, moved to the day, while the day is searched in the background:
+  timetables rarely change from one week to the next, and each card plans its
+  trips for the day. Background searches wait while two others are queued, and a
+  station isn't searched again within 10 minutes of the last try. A hike that
+  several stations reach shows from the one that gets there soonest, counting
+  the trip across the city to each station at about 15 km/h, and a card is
+  replaced when a station that gets there sooner finds it. While nothing new is
+  found, the stream sends a comment every 15 seconds to keep the connection open.
+- **Ready ahead.** With `WARM_SEARCHES=1`, the web server searches each guide
+  city's major stations for the next Saturday and Sunday every 6 hours, one at a
+  time and starting 2 minutes after it boots, unless their kept searches are
+  recent and complete, so the first visitor near them doesn't wait.
 - **Weekend trips.** Searches are for Saturday or Sunday: the one chosen, or
   whichever comes first. Trips leave at **8 AM** that day in the time zone
   Transitous reports for the origin (UTC when unknown), or now (rounded to the
@@ -277,11 +289,12 @@ to 30 seconds for a slot, and highlights are skipped when none is free. When it 
 instead, and prefer it for five minutes. When both turn a query away within 15
 seconds, as they do when briefly overloaded, the preferred one is asked once more
 after a 3-second pause (highlights excepted). Provider calls have bounded timeouts and
-result limits. Each tile's routes are cached for **three days** and shared by every
-search, and each route's details and highlights for **a week**; production uses a
-bounded, process-local memory store. Searches that need the same tiles or routes
-at once share one query, waiting up to 90 seconds for another search's. Failures
-are never cached.
+result limits. Searches keep their own copy of each tile's routes in the
+database for **90 days**, shared by every search, and once a tile's copy is 30
+days old, look it up again in the background while searches go on using it, so
+they rarely wait for Overpass. Each route's details and highlights are kept for
+**two months**. Searches that need the same tiles or routes at once share one
+query, waiting up to 90 seconds for another search's. Failures are never kept.
 
 Transit travel times come from [Transitous](https://transitous.org), a free,
 community-run [MOTIS](https://github.com/motis-project/motis) service built on
@@ -413,7 +426,9 @@ filters.
 
 [GitHub Actions](.github/workflows/ci.yml) runs these checks against PostgreSQL
 on every push and pull request. It also builds the production container image
-and smoke-tests it without a database, including a session-cookie round trip.
+and smoke-tests it with a database, which it prepares as it starts, including a
+session-cookie round trip and the cache, and then without one, when the site
+still serves and the cache only misses.
 Dependabot checks Ruby,
 JavaScript, and GitHub Actions dependencies weekly. Commit both lockfiles when
 updating dependencies.
@@ -472,9 +487,19 @@ from GitHub Actions:
   cannot use Container Registry build tasks.
 - A Linux B1 plan keeps one instance always on, so there are no cold starts.
   App Service terminates HTTPS and health-checks `/up`.
+- The cache lives in an
+  [Azure Database for PostgreSQL flexible server](https://learn.microsoft.com/azure/postgresql/flexible-server/)
+  (Burstable B1ms, 32 GB, 7 days of backups), through
+  [Solid Cache](https://github.com/rails/solid_cache), so the hiking routes and
+  searches it keeps outlive deploys; it holds up to 8 GB, each entry for at most
+  120 days. The image's entrypoint creates the database and runs migrations
+  before the server starts, and starts the server even when the database can't
+  be reached, when the cache only misses. Only the web app's outbound addresses
+  can reach the database, and `DATABASE_URL`, with its password, is only in the
+  web app's settings.
 
-Expected cost is about **US$18/month**: roughly US$13 for the B1 plan and US$5
-for the Basic registry.
+Expected cost is about **US$34/month**: roughly US$13 for the B1 plan, US$5
+for the Basic registry, and US$16 for the database.
 
 ### One-time setup
 
@@ -489,8 +514,10 @@ bin/azure-setup
 The idempotent script creates the `rg-transithike` resource group with the
 registry, App Service plan and web app, two managed identities (one pulls
 images, and the other is trusted only by this repository's `production` GitHub
-environment to deploy), and the Application Insights resource that counts
-visits, with its Log Analytics workspace. It stores a generated `SECRET_KEY_BASE` as an app setting
+environment to deploy), the Application Insights resource that counts
+visits, with its Log Analytics workspace, and the PostgreSQL server with its
+firewall rules. It stores a generated `SECRET_KEY_BASE`, the database's
+`DATABASE_URL` with a generated password, and `WARM_SEARCHES=1` as app settings
 and restricts that GitHub environment to the default branch. It keeps the short
 `<app>.azurewebsites.net` host name, so set `AZURE_WEBAPP` if `transithike` is
 taken. Credit-based subscriptions have no App Service quota in some regions; the

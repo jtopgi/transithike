@@ -80,11 +80,13 @@ module GuideService
 
     # Searches from the city's major stations for next Saturday, then plans
     # each hike's trips from its station and finds its photos, as JSON-ready
-    # data. Hikes keep the slugs they had in the last guide. Raises when the
-    # search fails.
-    def build(guide, previous: nil, search: TrailsService, transit: TransitousService, photos: WikipediaService, places: PhotonService)
+    # data. Hikes keep the slugs they had in the last guide. With fresh, the
+    # stations are searched again unless their kept searches are recent and
+    # complete. Raises when the search fails.
+    def build(guide, previous: nil, fresh: false, search: TrailsService, transit: TransitousService, photos: WikipediaService,
+      places: PhotonService)
       place = guide.place
-      result = search.search(origin: place, day: "saturday")
+      result = search.search(origin: place, day: "saturday", fresh: fresh)
       trails = result.trails.sort_by { |trail| [-TrailsService.scenic(trail), -trail.score.to_f, trail.duration.to_i] }
       hikes = trails.map { |trail| hike_data(trail, place, result, transit, photos, places) }
       titled(hikes, previous)
@@ -104,7 +106,8 @@ module GuideService
         again = attempt.zero? ? ", trying again in #{pause}s" : ""
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         begin
-          data = build(guide, previous: previous(guide), **providers)
+          # The second try searches again where the first couldn't check every route.
+          data = build(guide, previous: previous(guide), fresh: attempt.positive?, **providers)
         rescue SearchErrors::UpstreamError => error
           log.("#{guide.name}: failed (#{error.message})#{again}")
           next

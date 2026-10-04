@@ -748,6 +748,126 @@ class TrailsServiceTest < ActiveSupport::TestCase
     release&.set
   end
 
+  # Starts the station's search for Saturday, running it at once rather than in the background.
+  def station_search(hiking, transit: FakeTransit.new(trips: %w[a b c].to_h { |name| [name, minutes(30)] }), departure: SATURDAY,
+    **options)
+    @station_cache ||= ActiveSupport::Cache::MemoryStore.new
+    @station_pool ||= Class.new(Concurrent::ImmediateExecutor) { attr_accessor :queue_length }.new.tap { |pool| pool.queue_length = 0 }
+    StationSearch.start(STATION, departure.in_time_zone("America/Los_Angeles"), transit: transit, hiking: hiking,
+      elevation: FakeElevation.new, cache: @station_cache, pool: @station_pool, **options)
+  end
+
+  # The routes a search shows, by name, and whether it ran rather than being kept.
+  def shown(search)
+    events = search.events_since(0).first
+    [events.select { |event, _| event == :trails }.flat_map(&:last).map(&:name).sort, events.any? { |event, _| event == :checking }]
+  end
+
+  test "a kept search is served at once, and searched again in the background once it's half a day old" do
+    a, b = trail("a"), trail("b")
+    assert_equal [["a"], true], shown(station_search(FakeHiking.new([a])))
+    both = FakeHiking.new([a, b])
+    travel 1.hour
+    assert_equal [["a"], false], shown(station_search(both))
+    assert_empty both.batches
+
+    # Half a day on, the kept search shows at once, while the station is searched again for later visits.
+    travel 11.hours + 1.minute
+    assert_equal [["a"], false], shown(station_search(both))
+    assert_equal 1, both.batches.size
+    assert_equal [%w[a b], false], shown(station_search(both))
+  end
+
+  test "a search that couldn't check every route is searched again ten minutes on, keeping the routes it found" do
+    a, b, c = trail("a"), trail("b"), trail("c")
+    assert_equal [%w[a b], true], shown(station_search(FakeHiking.new([a, b, c], failing: [c.osm_id])))
+    travel 5.minutes
+    assert_equal [%w[a b], false], shown(station_search(FakeHiking.new([a, b, c], failing: [b.osm_id])))
+    travel 6.minutes
+    # This time b couldn't be checked, but the last search found it.
+    again = FakeHiking.new([a, b, c], failing: [b.osm_id])
+    assert_equal [%w[a b], false], shown(station_search(again))
+    assert_equal 3, again.batches.size
+    assert_equal [%w[a b c], false], shown(station_search(again))
+  end
+
+  test "with fresh, as for guides, kept searches are only used while they're recent and complete" do
+    a, b = trail("a"), trail("b")
+    station_search(FakeHiking.new([a]))
+    hiking = FakeHiking.new([a, b])
+    assert_equal [["a"], false], shown(station_search(hiking, fresh: true))
+    travel 12.hours + 1.minute
+    assert_equal [%w[a b], true], shown(station_search(hiking, fresh: true))
+
+    station_search(FakeHiking.new([a, b], failing: [b.osm_id]), departure: SATURDAY + 1.day)
+    assert_equal [%w[a b], true], shown(station_search(FakeHiking.new([a, b]), departure: SATURDAY + 1.day, fresh: true))
+  end
+
+  test "a station not yet searched for the day shows its search from a week before, moved to the day, while it's searched" do
+    a, b = trail("a"), trail("b")
+    station_search(FakeHiking.new([a]))
+    travel 7.days
+    later = FakeHiking.new([a, b])
+    moved = station_search(later, departure: SATURDAY + 7.days)
+    assert_equal [["a"], false], shown(moved)
+    trail = moved.events_since(0).first.first.last.sole
+    assert_equal [SATURDAY + 7.days + 30.minutes, Time.utc(2026, 10, 4, 4)], [trail.arrival, trail.last_return]
+    assert_equal SATURDAY + 7.days, moved.events_since(0).first.last.last.departure_time
+    # The day itself was searched meanwhile, for the next visitor.
+    assert_equal 1, later.batches.size
+    assert_equal [%w[a b], false], shown(station_search(later, departure: SATURDAY + 7.days))
+    # With fresh, a week before doesn't count.
+    assert_equal [%w[a b], true], shown(station_search(FakeHiking.new([a, b]), departure: SATURDAY + 14.days, fresh: true))
+  end
+
+  test "searches in the background wait for a quiet pool, and a station isn't tried again soon after it fails" do
+    a = trail("a")
+    station_search(FakeHiking.new([a]))
+    travel 12.hours + 1.minute
+    busy = FakeHiking.new([a])
+    @station_pool.queue_length = StationSearch::MAX_WAITING
+    station_search(busy)
+    assert_empty busy.tile_requests
+
+    @station_pool.queue_length = 0
+    down = FakeHiking.new(SearchErrors::UpstreamError.new("down"))
+    assert_equal [["a"], false], shown(station_search(down))
+    assert_equal 1, down.tile_requests.size
+    # The kept search still shows, and the station isn't searched again for ten minutes.
+    station_search(down)
+    assert_equal 1, down.tile_requests.size
+    travel 10.minutes + 1.second
+    station_search(down)
+    assert_equal 2, down.tile_requests.size
+  end
+
+  test "the guide cities' stations are searched one at a time for the weekend, kept ready, and failures don't stop the rest" do
+    guide = Struct.new(:name, :place, :time_zone)
+    guides = [guide.new("Seattle", Place.new(latitude: 47.6, longitude: -122.3), "America/Los_Angeles"),
+      guide.new("Down", Place.new(latitude: 1, longitude: 1), "UTC")]
+    transit = Class.new do
+      def major_stations(origin:, departure_time:)
+        raise SearchErrors::UpstreamError, "down" if origin.latitude == 1
+
+        [STATION, EASTSIDE]
+      end
+    end.new
+    started = []
+    searches = Class.new do
+      define_method(:start) do |station, departure, fresh:, transit:|
+        started << [station.name, departure.strftime("%a %-l %p"), fresh]
+        StationSearch.finished(TrailsService::Result.new(trails: []))
+      end
+    end.new
+    log = StringIO.new
+    count = SearchWarmer.warm(guides: guides, transit: transit, searches: searches, log: Logger.new(log), wait: 1)
+
+    assert_equal 4, count
+    assert_equal [["King Street", "Sat 8 AM", true], ["Eastside", "Sat 8 AM", true], ["King Street", "Sun 8 AM", true],
+      ["Eastside", "Sun 8 AM", true]], started
+    assert_equal 2, log.string.scan("Searches from Down for").size
+  end
+
   test "routes are shown without highlights when they cannot be looked up" do
     transit = FakeTransit.new(trips: { "loop" => minutes(10) })
     result = search(transit: transit, hiking: FakeHiking.new([trail("loop")], highlights: SearchErrors::UpstreamError.new("busy")))

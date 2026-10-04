@@ -1,0 +1,17 @@
+# Solid Cache keeps the cache in the application's database, so what searches
+# find outlives deploys. Hiking routes are kept for months and refreshed in the
+# background, so entries live up to 120 days, and the cache stays under 8 GB.
+default: &default
+  store_options:
+    max_age: <%= 120.days.to_i %>
+    max_size: <%= 8.gigabytes %>
+    namespace: <%= Rails.env %>
+
+development:
+  <<: *default
+
+test:
+  <<: *default
+
+production:
+  <<: *default

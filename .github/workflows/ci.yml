@@ -73,6 +73,18 @@ jobs:
 
   image:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -86,11 +98,12 @@ jobs:
             APP_BUILD=ci-${{ github.run_id }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Smoke test the production image without a database
+      - name: Smoke test the production image with a database
         run: |
           set -euo pipefail
-          docker run --detach --name transithike --publish 3000:3000 \
-            --env SECRET_KEY_BASE="$(openssl rand -hex 64)" transithike:ci
+          # The image prepares the database as it starts, and keeps the cache there.
+          docker run --detach --name transithike --network host --env SECRET_KEY_BASE="$(openssl rand -hex 64)" \
+            --env DATABASE_URL=postgres://postgres@localhost:5432/transithike_production transithike:ci
           # Health probes use plain HTTP; everything else must be redirected to HTTPS.
           curl --fail --silent --show-error --retry 30 --retry-delay 1 --retry-all-errors \
             http://localhost:3000/up
@@ -117,9 +130,24 @@ jobs:
           grep --quiet "https://transitous.org/sources/" search.html
           # Origins' local times need the container's time zone data.
           docker exec transithike bin/rails runner 'exit ActiveSupport::TimeZone["America/Los_Angeles"].now.zone.start_with?("P")'
+          docker exec transithike bin/rails runner 'Rails.cache.write("ci", 1); exit Rails.cache.read("ci") == 1'
+          docker stop transithike
+      - name: Smoke test the production image without a database
+        run: |
+          set -euo pipefail
+          docker run --detach --name transithike-without-database --network host \
+            --env SECRET_KEY_BASE="$(openssl rand -hex 64)" transithike:ci
+          curl --fail --silent --show-error --retry 30 --retry-delay 1 --retry-all-errors http://localhost:3000/up
+          curl --fail --silent --show-error --header "X-Forwarded-Proto: https" --output page.html http://localhost:3000/
+          grep --quiet "Find hikes" page.html
+          # Without the database, the cache misses rather than failing.
+          docker exec transithike-without-database bin/rails runner \
+            'Rails.cache.write("ci", 1); exit Rails.cache.read("ci").nil?'
       - name: Show container logs
         if: always()
-        run: docker logs transithike || true
+        run: |
+          docker logs transithike || true
+          docker logs transithike-without-database || true
 
   deploy:
     needs: [test, security, image]

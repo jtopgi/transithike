@@ -26,6 +26,8 @@ gem 'bootsnap', '~> 1.26', require: false
 
 # HTTP/REST API client library.
 gem 'faraday', '~> 2.14'
+# Keeps the cache in the database, so what searches find outlives deploys.
+gem 'solid_cache', '~> 1.0'
 
 group :development, :test do
   gem 'brakeman', '~> 8.0', require: false

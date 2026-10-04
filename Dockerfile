@@ -77,4 +77,6 @@ ENV APP_REVISION="${APP_REVISION}" \
     APP_BUILD="${APP_BUILD}"
 
 EXPOSE 3000
+# Prepares the database, when there is one, then starts the server.
+ENTRYPOINT ["/rails/bin/docker-entrypoint"]
 CMD ["bundle", "exec", "puma", "-C", "config/puma.rb"]
