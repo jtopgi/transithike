@@ -447,9 +447,10 @@ bin/azure-setup
 ```
 
 The idempotent script creates the `rg-transithike` resource group with the
-registry, App Service plan and web app, and two managed identities: one pulls
+registry, App Service plan and web app, two managed identities (one pulls
 images, and the other is trusted only by this repository's `production` GitHub
-environment to deploy. It stores a generated `SECRET_KEY_BASE` as an app setting
+environment to deploy), and the Application Insights resource that counts
+visits, with its Log Analytics workspace. It stores a generated `SECRET_KEY_BASE` as an app setting
 and restricts that GitHub environment to the default branch. It keeps the short
 `<app>.azurewebsites.net` host name, so set `AZURE_WEBAPP` if `transithike` is
 taken. Credit-based subscriptions have no App Service quota in some regions; the
@@ -471,6 +472,41 @@ az group delete -n rg-transithike                                         # remo
 Image tags are `<commit>-<run>-<attempt>`, one for each deployment, because the
 same commit is deployed again whenever the guides are rebuilt. Builds from
 before then are tagged with just the commit.
+
+## Visits
+
+TransitHike counts visits in [Application Insights](https://learn.microsoft.com/azure/azure-monitor/app/app-insights-overview)
+from the server, with no cookies or anything else kept in visitors' browsers
+(`VisitTracker`), so it needs no consent banner. After each response, a
+background thread sends:
+
+- a **page view** for each page a person sees: its path without the query
+  string (so no typed addresses), the site they came from (its host name only),
+  their kind of device, browser, system, and language, and their country and
+  city, which Application Insights works out from the IP address and keeps
+  instead of it;
+- a **search** for each finished search: the area it starts from, as
+  "Seattle, Washington, United States", the day, how many hikes it found, and
+  how long it took;
+- a **crawler visit** for each request from a search engine, AI assistant, or
+  other bot, named by its user agent (Google, Bing, ChatGPT, Claude,
+  Perplexity, and so on), with the path, so you can see which pages they read.
+
+Visitors are told apart for a day by a hash of their IP address and browser
+with a random salt that is replaced daily and only kept in memory, so the same
+person can't be followed from one day to the next: a visitor counts once a day,
+and a restart starts a new salt. Prefetches and Azure's own checks aren't
+counted. Nothing is counted without the `APPLICATIONINSIGHTS_CONNECTION_STRING`
+app setting, as in development and tests.
+
+To see the numbers, run `bin/stats` (or `bin/stats 7` for a week) after
+`az login`, for visitors and page views by day, the most-seen pages, the sites
+people come from, countries and cities, devices, where searches start, and
+crawlers' visits. The Azure portal shows the same under the `appi-transithike`
+resource: **Usage → Users** and **Events**, or **Logs** for queries such as
+`pageViews | summarize dcount(user_Id) by bin(timestamp, 1d)`. Data is kept for
+90 days, and ingestion is capped at 100 MB a day, well within the free 5 GB a
+month.
 
 ## License
 

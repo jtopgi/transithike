@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Prints who visits TransitHike, from Application Insights: visitors and page
+# views by day, the most-seen pages, the sites people come from, countries and
+# cities, devices, where searches start, and which crawlers read the site.
+# A visitor counts once a day, since visitors can't be followed from one day to
+# the next. Usage: bin/stats [days], 30 by default. Requires the Azure CLI
+# (run `az login` first); AZURE_RESOURCE_GROUP and AZURE_APP_INSIGHTS pick
+# other resources than rg-transithike and appi-transithike.
+set -euo pipefail
+
+days="${1:-30}"
+if ! [[ "$days" =~ ^[0-9]+$ ]] || [ "$days" -lt 1 ] || [ "$days" -gt 90 ]; then
+  echo "Usage: bin/stats [days], from 1 to 90" >&2
+  exit 1
+fi
+group="${AZURE_RESOURCE_GROUP:-rg-transithike}"
+app="${AZURE_APP_INSIGHTS:-appi-transithike}"
+az extension show --name application-insights --output none 2>/dev/null ||
+  az extension add --name application-insights --only-show-errors
+
+# Prints a table under a heading, from a query's column names and rows.
+report() {
+  local title="$1" columns="$2" query="$3"
+  printf '\n== %s\n' "$title"
+  {
+    printf '%s\n' "$columns"
+    az monitor app-insights query --app "$app" --resource-group "$group" --offset "P${days}D" \
+      --analytics-query "$query" --query "tables[0].rows" --output tsv
+  } | column -t -s $'\t'
+}
+
+echo "TransitHike visits in the last $days days"
+report "Visitors and page views by day" $'Day\tVisitors\tViews' \
+  "pageViews | summarize Visitors = dcount(user_Id), Views = count() by Day = format_datetime(bin(timestamp, 1d), 'yyyy-MM-dd') | order by Day desc"
+report "Most-seen pages" $'Page\tViews\tVisitors' \
+  "pageViews | summarize Views = count(), Visitors = dcount(user_Id) by name | top 15 by Views"
+report "Sites people come from" $'Site\tVisitors' \
+  "pageViews | extend Site = tostring(customDimensions.referrer) | where isnotempty(Site) | summarize Visitors = dcount(user_Id) by Site | top 15 by Visitors"
+report "Countries and cities" $'Country\tCity\tVisitors' \
+  "pageViews | summarize Visitors = dcount(user_Id) by client_CountryOrRegion, client_City | top 15 by Visitors"
+report "Devices and browsers" $'Device\tBrowser\tVisitors' \
+  "pageViews | summarize Visitors = dcount(user_Id) by Device = tostring(customDimensions.device), Browser = tostring(customDimensions.browser) | order by Visitors desc"
+report "Where searches start" $'Area\tSearches\tHikes found, on average' \
+  "customEvents | where name == 'Search' | summarize Searches = count(), Hikes = round(avg(toint(customDimensions.hikes)), 1) by Area = tostring(customDimensions.area) | top 15 by Searches"
+report "Crawlers" $'Crawler\tVisits\tPages\tLast visit' \
+  "customEvents | where name == 'Crawler' | summarize Visits = count(), Pages = dcount(tostring(customDimensions.path)), Last = format_datetime(max(timestamp), 'yyyy-MM-dd HH:mm') by Crawler = tostring(customDimensions.crawler) | order by Visits desc"
