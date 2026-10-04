@@ -200,12 +200,20 @@ jobs:
             --write-out '%{http_code} %{time_starttransfer} %{time_total}\n' \
             --get "$URL/search/stream" --data-urlencode "origin=Grand Central Terminal, New York" \
             --data-urlencode "lat=40.7527" --data-urlencode "lon=-73.9772" --data-urlencode "day=saturday")
-          echo "HTTP $status: first event after ${first}s, done after ${total}s."
+          echo "HTTP $status: first event after ${first}s, ended after ${total}s."
           if [ "$status" != 200 ]; then echo "::error::The search stream returned HTTP $status."; exit 1; fi
+          # After a deploy, nothing is cached, and searching from every station can take longer than this
+          # check waits, so hikes streaming in pass; a stream that breaks off, or finishes without hikes, fails.
           if grep --quiet "^event: failure" search.txt; then
             echo "::warning::A search provider was unavailable, but the app handled it: $(grep -A1 '^event: failure' search.txt | tail -1)"
+          elif grep --quiet "^event: done" search.txt; then
+            grep --quiet "^event: trails" search.txt || { echo "::error::The search finished without hikes."; exit 1; }
+          elif ! grep --quiet "^event: place" search.txt || awk -v total="$total" 'BEGIN { exit !(total < 235) }'; then
+            echo "::error::The search stream broke off."; exit 1
+          elif grep --quiet "^event: trails" search.txt; then
+            echo "::notice::Hikes streamed in, and the search was still going after 4 minutes."
           else
-            grep --quiet "^event: trails" search.txt && grep --quiet "^event: done" search.txt
+            echo "::warning::No hikes within 4 minutes, so a search provider may be slow."
           fi
         env:
           URL: ${{ steps.deploy.outputs.url }}

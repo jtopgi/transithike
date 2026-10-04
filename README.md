@@ -461,8 +461,10 @@ from GitHub Actions:
   its commit in an `X-App-Revision` header and its build in `X-App-Build`, so the
   job waits until the new build serves traffic, loads the site twice with its
   session cookie, and runs one
-  real Saturday search from Grand Central Terminal; a provider outage there only
-  produces a warning. Deployments and
+  real Saturday search from Grand Central Terminal for up to 4 minutes. It fails
+  when the stream breaks off or finishes without hikes; a provider outage only
+  produces a warning, and hikes still streaming in at 4 minutes pass, since
+  nothing is cached after a deploy. Deployments and
   the app URL appear under the repository's `production` environment. If GitHub
   ever skips the run for a push to `master`, run the CI workflow on `master` from
   the Actions tab ("Run workflow"), which tests and deploys it the same way.
