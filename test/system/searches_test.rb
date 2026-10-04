@@ -289,6 +289,8 @@ class SearchesTest < ApplicationSystemTestCase
       assert_selector ".btn", text: /\ADetails\z/
       assert_selector ".btn", text: /\AOpenStreetMap\z/
     end
+    # Summaries are cut at two lines rather than three.
+    assert_equal "2", page.evaluate_script("getComputedStyle(document.querySelector('.trail-summary')).webkitLineClamp")
 
     click_button "Change search"
     assert_selector "#change-search", visible: true
