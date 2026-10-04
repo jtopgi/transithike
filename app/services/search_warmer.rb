@@ -10,27 +10,31 @@ module SearchWarmer
   # A station's search that takes longer is left to finish on its own.
   STATION_WAIT = 15.minutes
 
-  def self.start
+  def self.start(log: Rails.logger)
     Thread.new do
       sleep FIRST_WAIT
       loop do
-        warm
+        begin
+          warm
+        rescue StandardError => error
+          log.error("Searches weren't kept ready: #{error.class}: #{error.message}")
+        end
         sleep WARM_EVERY
       end
     end
   end
 
   # Searches each guide city's major stations for the next Saturday and
-  # Sunday, one station at a time, returning how many were searched.
+  # Sunday, one station at a time, returning how many were searched. Each
+  # station's search runs on the stations' pool, and is only waited for here.
   def self.warm(guides: GuideService.guides, transit: TransitousService, searches: StationSearch, log: Rails.logger,
     wait: STATION_WAIT)
     guides.product(TrailsService::WEEKEND_DAYS.keys).sum do |guide, day|
-      Rails.application.executor.wrap do
-        departure = TrailsService.departure_time(guide.time_zone, day: day)
-        transit.major_stations(origin: guide.place, departure_time: departure).count do |station|
-          search = searches.start(station, departure, fresh: true, transit: transit)
-          finished?(search, wait)
-        end
+      departure = TrailsService.departure_time(guide.time_zone, day: day)
+      stations = Rails.application.executor.wrap { transit.major_stations(origin: guide.place, departure_time: departure) }
+      stations.count do |station|
+        search = Rails.application.executor.wrap { searches.start(station, departure, fresh: true, transit: transit) }
+        finished?(search, wait)
       end
     rescue StandardError => error
       log.warn("Searches from #{guide.name} for #{day} weren't kept ready: #{error.class}: #{error.message}")
