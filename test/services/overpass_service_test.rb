@@ -131,6 +131,16 @@ class OverpassServiceTest < ActiveSupport::TestCase
     # Tiles whose query worked are cached; the others are asked again.
     routes_in(connection, tiles: tiles, cache: cache)
     assert_equal 5, queries.size
+    # Tiles another search finds while this one queries others aren't queried again.
+    later = [[49.0, -122.0], [49.5, -122.0], [50.0, -122.0], [50.5, -122.0], [51.0, -122.0]]
+    racing = stub_connection(:post, lambda { |request|
+      query = URI.decode_www_form(request.body).to_h.fetch("data")
+      queries << query
+      cache.write("overpass:tile:v1:51.0:-122.0", [{ id: 7 }]) if query.include?("relation.region(49.0,")
+      { "elements" => [] }
+    })
+    assert_equal [7], routes_in(racing, tiles: later, cache: cache).pluck(:id)
+    assert_equal 6, queries.size
     assert_raises(SearchErrors::UpstreamError) { routes_in(connection, tiles: [[48.0, -122.0]], cache: cache) }
   end
 

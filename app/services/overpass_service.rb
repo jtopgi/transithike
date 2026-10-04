@@ -147,8 +147,14 @@ module OverpassService
     missing = tiles.reject { |tile| found.key?(keys[tile]) }
     tile_of = keys.invert
     error = nil
-    missing.sort.each_slice(TILES_PER_QUERY) do |group|
-      found.merge!(shared(group.map { |tile| keys[tile] }, cache) do |own|
+    missing.sort.each_slice(TILES_PER_QUERY).with_index do |group, index|
+      group_keys = group.map { |tile| keys[tile] }
+      # Another search may have found some of them since this one began.
+      found.merge!(cache.read_multi(*group_keys)) if index.positive?
+      group_keys.reject! { |key| found.key?(key) }
+      next if group_keys.empty?
+
+      found.merge!(shared(group_keys, cache) do |own|
         own_tiles = own.map { |key| tile_of[key] }
         routes = elements(tiles_query(own_tiles), connections, cache, timeout: LONG_QUERY_SECONDS)
           .filter_map { |element| candidate(element) }
