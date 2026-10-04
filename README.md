@@ -11,11 +11,11 @@ location) with a Saturday/Sunday choice, and a results page that shows at once
 and streams in hikes as they are found, most scenic first. Trips leave from the
 major train stations near the starting point, which the page names with
 directions to each: getting to the station is up to you. Only hikes you can
-finish before the last trip back are shown. Each card has a map preview, where
+finish by sunset and before the last trip back are shown. Each card has a map preview, where
 the hike is (its town or city and state or region, with the country when it
 isn't the starting point's), photos taken nearby, highlights, how far the hike goes (a loop, out and back, or one way
 to where transit leaves from the far end) and climbs, the round trip's travel
-time, the last trip back and how long that leaves there, and the trains and
+time, the last trip back, the sunset, and how long they leave there, and the trains and
 other transit there, the first trip back after the hike, and the last. Each hike
 has a details page with timetables of every trip there that leaves time to hike
 it and every trip back. Hikes are listed most scenic first, and filtered with
@@ -147,9 +147,12 @@ test Overpass connectivity from your deployment before launching.
   next weekend day by the device's clock. Only routes reachable within **4
   hours** of leaving the station, waiting included, are shown, and only with a way
   back to it that arrives by **11 PM** the same day and leaves time to hike **all** of the
-  route at 2 mph with breaks (at least 1½ hours, to enjoy short ones) and still
-  leave the last trip back half an hour to spare. Routes too long for that, such
-  as 20-mile long-distance trails, are left out. Journeys may include up to 30
+  route at 2 mph with breaks (at least 1½ hours, to enjoy short ones) by sunset,
+  and still leave the last trip back half an hour to spare. Sunset is worked out
+  for the route and day (the sunrise equation, to within a minute or two); the
+  twilight after it leaves light for the walk to the station, and the trains back
+  can run after dark. Routes too long for that, such as 20-mile long-distance
+  trails, or short winter days, are left out. Journeys may include up to 30
   minutes' walk from the last stop, and from the route to the first stop on the
   way back.
 - **Loops, out and back, or one way.** Routes whose ends meet, or come within
@@ -175,7 +178,9 @@ test Overpass connectivity from your deployment before launching.
   arriving at most 10 minutes later, is walked, as a short bus home from the
   station is. The planner also looks to other days when nothing goes, so trips
   outside the day asked for are left out. The card shows the soonest trip there,
-  then the trips back that ride the same trains back between the same stations
+  leaving as late as still arrives that soon (from the planner's trips over the
+  next three hours, since an earlier train often just waits at a transfer for
+  the one a later train makes), then the trips back that ride the same trains back between the same stations
   (via the station where the last train stopped and the one where the first
   started), with the same kinds of transit or the subway and light rail for the
   ride home. Buses often stop across the street on the way back, so a trip there
@@ -190,7 +195,7 @@ test Overpass connectivity from your deployment before launching.
   of search engines, since every starting point has its own) with a map to
   explore, the hike's facts, its photos, and two timetables from its station, and
   back to it: every trip there
-  from 8 AM on that arrives in time to hike all of it before the last trip back,
+  from 8 AM on that arrives in time to hike all of it by sunset and before the last trip back,
   leaving out any that ride much longer than the quickest, and every trip back
   from the first after the hike, if you take the first trip there, to the last.
   Each row has when it leaves and arrives, how long it rides, and its transit with

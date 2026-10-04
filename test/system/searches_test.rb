@@ -153,7 +153,8 @@ class SearchesTest < ApplicationSystemTestCase
       assert_selector ".trail-trip", text: "Last back: 🚌 11 · leave 8:00 PM, home 9:15 PM"
       assert_selector "[data-travel-time]", text: "2 h 30 min"
       assert_selector "[data-travel-detail]", text: "1 h 15 min there · 1 h 15 min back"
-      assert_selector ".trail-return", text: "Last trip back 8:00 PM · up to 10 h there"
+      # The time there runs until sunset when that's sooner, which depends on the day searched.
+      assert_selector ".trail-return", text: /Last trip back 8:00 PM · 🌇 Sunset \d+:\d\d PM · up to (10 h|\d h of daylight) there/
     end
   end
 

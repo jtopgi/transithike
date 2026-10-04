@@ -254,26 +254,33 @@ class Results {
     card.dataset.travel = (there + back) * 60
   }
 
-  // The last trip back the same way, and the time that leaves there.
+  // The last trip back the same way, and the time that leaves there before it
+  // or sunset, whichever is first: the hike has to be done by sunset, and half
+  // an hour before the last trip back.
   showLast(card, last, there) {
     const line = card.querySelector(".trail-return")
-    if (!line.querySelector("strong")) {
+    const back = line.querySelector("[data-return]")
+    if (!back.querySelector("[data-last-return]")) {
       // The search couldn't check the way back, but the planner could.
       const from = card.dataset.plan === "through" ? " from the far end" : ""
-      line.replaceChildren(
-        Object.assign(document.createElement("span"), { ariaHidden: "true", textContent: "↩️" }), ` Last trip back${from} `,
-        document.createElement("strong"), " ", Object.assign(document.createElement("span"), { className: "text-body-secondary" })
-      )
-      line.firstChild.dataset.returnIcon = ""
-      line.lastChild.dataset.stayLabel = ""
+      const icon = Object.assign(document.createElement("span"), { ariaHidden: "true", textContent: "↩️" })
+      const time = document.createElement("strong")
+      icon.dataset.returnIcon = ""
+      time.dataset.lastReturn = ""
+      back.replaceChildren(icon, ` Last trip back${from} `, time)
     }
-    line.querySelector("strong").textContent = this.clock(last.departure)
+    back.querySelector("[data-last-return]").textContent = this.clock(last.departure)
     if (!there) return
 
-    const stay = Math.max(Math.floor((new Date(last.departure) - new Date(there.arrival)) / 60000), 0)
-    const tight = stay * 60 < Number(card.dataset.required)
-    line.querySelector("[data-stay-label]").textContent = `· ${tight ? "only" : "up to"} ${stayLabel(stay)} there`
-    line.querySelector("[data-return-icon]").textContent = tight ? "⚠️" : "↩️"
+    const sunset = line.querySelector("[data-sunset]")?.dataset.sunset
+    const dark = Boolean(sunset) && new Date(sunset) < new Date(last.departure)
+    const end = new Date(dark ? sunset : last.departure)
+    const stay = Math.max(Math.floor((end - new Date(there.arrival)) / 60000), 0)
+    const tight = stay * 60 < Number(dark ? card.dataset.hike : card.dataset.required)
+    line.querySelector("[data-stay-label]").textContent = `· ${tight ? "only" : "up to"} ${stayLabel(stay)}${dark ? " of daylight" : ""} there`
+    back.querySelector("[data-return-icon]").textContent = tight && !dark ? "⚠️" : "↩️"
+    const sunsetIcon = line.querySelector("[data-sunset-icon]")
+    if (sunsetIcon) sunsetIcon.textContent = tight && dark ? "⚠️" : "🌇"
   }
 
   tripLine(label, trip, end) {

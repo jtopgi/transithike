@@ -39,7 +39,9 @@ class GuidesTest < ActionDispatch::IntegrationTest
     assert breakneck.at_css("a[href='/day-hikes-by-train/new-york-city/breakneck-ridge-trail']")
     assert_match(/Each way 1 h 28 min Hudson Line train to Breakneck Ridge/, breakneck.text.squish)
     assert_match(/Hike ≈ 5.0 mi out and back/, breakneck.text.squish)
-    assert_match(/Last trip back 8:50 PM/, breakneck.text.squish)
+    assert_match(/Last trip back 8:50 PM · 🌇 Sunset 6:23 PM/, breakneck.text.squish)
+    # Guides built before sunsets were kept show without them.
+    assert_no_match(/Sunset/, cards.last.text)
     # Without a photo, a card previews its route once it scrolls into view.
     assert cards.last.at_css(".trail-map[data-lazy-map][data-path]")
     list = structured_data.fetch("ItemList")
@@ -92,6 +94,9 @@ class GuidesTest < ActionDispatch::IntegrationTest
     assert_select ".trail-location", "📍 Cold Spring, New York"
     assert_select "link[rel=canonical][href='http://www.example.com/day-hikes-by-train/new-york-city/breakneck-ridge-trail']"
     assert_select "[data-hike-map][data-path]"
+    assert_match(/Sunset 6:23 PM hike done by then/, css_select(".hike-facts").sole.text.squish)
+    assert_equal "Taking the first trip there, you arrive at 9:40 AM and have up to 8 h 43 min until sunset, with the last trip " \
+      "back at 8:50 PM, for a hike of about 2 h 30 min.", css_select(".hike-intro").sole.text.squish
     there, back = css_select("table.timetable tbody").map { |table| table.css("tr").map { |row| row.css("td").first.text } }
     assert_equal [["8:12 AM"], ["3:05 PM", "8:50 PM"]], [there, back]
     assert_select "td", text: /Hudson Line from Grand Central to Breakneck Ridge/

@@ -19,7 +19,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
   # latest returns by route name, with trips from some stations by their names
   # in from. A name missing from returns has no way back.
   class FakeTransit
-    attr_reader :departures, :planned, :station_requests, :return_requests, :city_requests, :major_requests
+    attr_reader :departures, :planned, :station_requests, :return_requests, :city_requests, :major_requests, :returned_for
 
     # By default, King Street station at the origin, one station 55 km north of
     # it, and no trips by city transit.
@@ -27,6 +27,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
       stations: [[47.5, -122.0, 60]], major: [STATION], from: {})
       @trips, @city, @returns, @area, @stations, @major, @from = trips, city, returns, area, stations, major, from
       @departures, @planned, @station_requests, @return_requests, @city_requests, @major_requests = [], [], [], [], [], []
+      @returned_for = []
     end
 
     def area(latitude, longitude)
@@ -72,6 +73,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
     # Without returns, every route has a way back at 9 PM.
     def latest_returns(origin:, destinations:, deadline:, earliest_return:)
       @return_requests << [deadline, earliest_return]
+      @returned_for.concat(destinations.map(&:name))
       raise @returns if @returns.is_a?(Exception)
 
       destinations.map { |destination| @returns ? @returns[destination.name] : deadline - 2.hours }
@@ -340,6 +342,27 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal [:through, Time.utc(2026, 9, 26, 22, 30)], found["late bus"].to_h.values_at(:plan, :last_return)
     # One request asks for the last trips back from every route and every linear route's far end.
     assert_equal [deadline, SATURDAY + 90.minutes], transit.return_requests.sole
+  end
+
+  test "hikes have to be done by sunset, while the trains back can run after dark" do
+    # It's Tuesday, December 15, so trips are for Saturday the 19th, when the sun sets at 4:20 PM PST there.
+    travel_to Time.utc(2026, 12, 15, 14, 2)
+    trails = [trail("short day"), trail("long day", length: 16), trail("late start", length: 5, loop: false)]
+    trips = { "short day" => minutes(60), "long day" => minutes(60), "late start" => minutes(210) }
+    transit = FakeTransit.new(trips: trips)
+    found = search(transit: transit, hiking: FakeHiking.new(trails)).trails.index_by(&:name)
+
+    # Arriving at 9 AM, 16 miles take until 5 PM, after dark, though the last trip back is at 9 PM.
+    assert_equal ["late start", "short day"], found.keys.sort
+    assert_equal Time.utc(2026, 12, 20, 0, 20), found["short day"].sunset
+    # Arriving at 11:30 AM, 10 miles out and back would take until 4:30 PM, so the route is hiked one way, done by 2 PM.
+    assert_equal :through, found["late start"].plan
+    # Routes without the daylight to hike even one way aren't asked about trips back.
+    assert_not_includes transit.returned_for, "long day"
+
+    # When the trips back can't be checked, hikes still have to be done by sunset.
+    unchecked = FakeTransit.new(trips: trips, returns: SearchErrors::UpstreamError.new("Transit is down"))
+    assert_equal ["short day"], search(transit: unchecked, hiking: FakeHiking.new(trails)).trails.map(&:name)
   end
 
   test "hikes take an hour every 2 miles, out and back twice the route, and at least an hour and a half" do
@@ -805,13 +828,16 @@ class TrailsServiceTest < ActiveSupport::TestCase
 
   test "a station not yet searched for the day shows its search from a week before, moved to the day, while it's searched" do
     a, b = trail("a"), trail("b")
-    station_search(FakeHiking.new([a]))
+    # From 8:30 AM, 20.8 miles take until 6:54 PM: before sunset at 6:58 PM, but not a week on, when it's at 6:44 PM.
+    c = trail("c", length: 20.8)
+    assert_equal [%w[a c], true], shown(station_search(FakeHiking.new([a, c])))
     travel 7.days
     later = FakeHiking.new([a, b])
     moved = station_search(later, departure: SATURDAY + 7.days)
     assert_equal [["a"], false], shown(moved)
     trail = moved.events_since(0).first.first.last.sole
-    assert_equal [SATURDAY + 7.days + 30.minutes, Time.utc(2026, 10, 4, 4)], [trail.arrival, trail.last_return]
+    assert_equal [SATURDAY + 7.days + 30.minutes, Time.utc(2026, 10, 4, 4), Time.utc(2026, 10, 4, 1, 44)],
+      [trail.arrival, trail.last_return, trail.sunset]
     assert_equal SATURDAY + 7.days, moved.events_since(0).first.last.last.departure_time
     # The day itself was searched meanwhile, for the next visitor.
     assert_equal 1, later.batches.size

@@ -19,8 +19,9 @@ module TrailsService
   # Routes are checked in batches, most promising first, so results show as they are found.
   BATCH_SIZE = 40
   # Hiking at 2 mph with breaks, a hike takes at least MIN_HIKE_HOURS, which
-  # leaves time to enjoy short ones, and the whole hike must be done
-  # RETURN_MARGIN before the last trip back leaves.
+  # leaves time to enjoy short ones, and the whole hike must be done by sunset
+  # and RETURN_MARGIN before the last trip back leaves. Twilight after sunset
+  # leaves light to walk from the trail to the station.
   HIKE_MPH = 2.0
   MIN_HIKE_HOURS = 1.5
   RETURN_MARGIN = 30.minutes
@@ -302,8 +303,10 @@ module TrailsService
 
       trail.duration, trail.transfers = trip.values_at(:duration, :transfers)
       trail.arrival = result.departure_time + trail.duration
+      trail.sunset = Daylight.sunset(result.departure_time, trail.latitude, trail.longitude)
       trail.origin = place.name
-      trail
+      # Routes there isn't the daylight to hike even one way are left out.
+      trail if daylight?(trail, [trail.length / HIKE_MPH, MIN_HIKE_HOURS].max)
     end
     reached = beyond_city_transit(place, reached, result.departure_time, transit)
     reached.each { |trail| trail.plan = loop?(trail) ? :loop : :out_and_back }
@@ -320,8 +323,8 @@ module TrailsService
         earliest_return: result.departure_time + MIN_HIKE_HOURS.hours)
     rescue SearchErrors::UpstreamError
       result.returns_checked = false
-      # Routes that couldn't be hiked by the deadline are still left out.
-      return reached.select { |trail| trail.arrival + required_hours(trail).hours <= result.return_by }
+      # Routes that couldn't be hiked by the deadline, or by sunset, are still left out.
+      return reached.select { |trail| trail.arrival + required_hours(trail).hours <= result.return_by && daylight?(trail) }
     end
     from_finish = linear.zip(latest.drop(reached.size)).to_h
     reached.each_with_index.filter_map do |trail, index|
@@ -347,7 +350,13 @@ module TrailsService
   end
 
   def self.time_to_hike?(trail)
-    trail.last_return - trail.arrival >= required_hours(trail).hours
+    trail.last_return - trail.arrival >= required_hours(trail).hours && daylight?(trail)
+  end
+
+  # Whether a hike of hours from when transit arrives is done by sunset, or
+  # there's no sunset that day.
+  def self.daylight?(trail, hours = hike_hours(trail))
+    trail.sunset.nil? || trail.arrival + hours.hours <= trail.sunset
   end
 
   # Whether the route ends where it starts, or near enough to walk back.

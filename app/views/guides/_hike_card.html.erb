@@ -40,10 +40,16 @@
           </div>
         <% end %>
       </dl>
-      <% if last %>
+      <% if last || trail.sunset %>
         <p class="trail-return mb-0">
-          <span aria-hidden="true">↩️</span> Last trip back<%= " from the far end" if trail.finish %>
-          <strong><%= last.in_time_zone(page.departure_time.time_zone).strftime("%-I:%M %p") %></strong>
+          <% if last %>
+            <span aria-hidden="true">↩️</span> Last trip back<%= " from the far end" if trail.finish %>
+            <strong><%= last.in_time_zone(page.departure_time.time_zone).strftime("%-I:%M %p") %></strong>
+          <% end %>
+          <% if trail.sunset %>
+            <span class="text-nowrap"><%= "· " if last %><span aria-hidden="true">🌇</span> Sunset
+              <strong><%= trail.sunset.in_time_zone(page.departure_time.time_zone).strftime("%-I:%M %p") %></strong></span>
+          <% end %>
         </p>
       <% end %>
     </div>

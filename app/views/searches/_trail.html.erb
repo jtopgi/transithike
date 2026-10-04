@@ -1,7 +1,7 @@
 <div class="col" data-trail data-osm-id="<%= trail.osm_id %>" data-score="<%= trail.score %>"
      data-scenic="<%= TrailsService.scenic(trail) %>" data-travel="<%= TrailsService.round_trip_seconds(trail).round %>"
      data-length="<%= TrailsService.hike_miles(trail).round(2) %>"
-     data-plan="<%= trail.plan %>"
+     data-plan="<%= trail.plan %>" data-hike="<%= (TrailsService.hike_hours(trail) * 3600).round %>"
      data-required="<%= (TrailsService.required_hours(trail) * 3600).round %>">
   <article class="card trail-card h-100 border-0 shadow-sm">
     <div class="trail-media">
@@ -49,14 +49,21 @@
           <dd data-climb><%= climb_label(trail) %></dd>
         </div>
       </dl>
+      <%# The hike has to be done by sunset; the walk to the station and the trains back can be after. %>
       <p class="trail-return">
-        <% if trail.last_return %>
-          <span aria-hidden="true" data-return-icon>↩️</span> Last trip back<%= " from the far end" if trail.finish %>
-          <strong><%= clock(trail.last_return, result) %></strong>
-          <span class="text-body-secondary" data-stay-label>· up to <%= stay_label(trail) %> there</span>
-        <% else %>
-          <span aria-hidden="true">⚠️</span> We couldn't check the way back. Check it before you go.
+        <span data-return>
+          <% if trail.last_return %>
+            <span aria-hidden="true" data-return-icon>↩️</span> Last trip back<%= " from the far end" if trail.finish %>
+            <strong data-last-return><%= clock(trail.last_return, result) %></strong>
+          <% else %>
+            <span aria-hidden="true">⚠️</span> We couldn't check the way back. Check it before you go.
+          <% end %>
+        </span>
+        <% if trail.sunset %>
+          <span class="text-nowrap" data-sunset="<%= trail.sunset.utc.iso8601 %>">·
+            <span aria-hidden="true" data-sunset-icon>🌇</span> Sunset <strong><%= clock(trail.sunset, result) %></strong></span>
         <% end %>
+        <span class="text-body-secondary" data-stay-label><%= "· #{stay_label(trail)}" if stay_label(trail) %></span>
       </p>
       <div class="trail-trip small" data-trip-url="<%= trip_lookup_path(trail, result) %>" aria-live="polite" hidden></div>
       <p class="card-text trail-summary text-body-secondary flex-grow-1"><%= trail.summary %></p>

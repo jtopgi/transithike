@@ -45,7 +45,7 @@ module GuideService
   Hike = Struct.new(:slug, :title, :trail, :area, :there, :ways, :departures, :photos, keyword_init: true)
 
   TRAIL_FIELDS = %i[name summary latitude longitude length osm_id path highlights notable paved loop duration transfers
-    arrival last_return terrain score plan finish location station].freeze
+    arrival last_return terrain score plan finish location station sunset].freeze
 
   class << self
     attr_writer :directory
@@ -149,6 +149,7 @@ module GuideService
       fields[:station] = trail.station&.to_h
       fields[:arrival] = trail.arrival&.utc&.iso8601
       fields[:last_return] = trail.last_return&.utc&.iso8601
+      fields[:sunset] = trail.sunset&.utc&.iso8601
       { trail: fields, area: gallery&.dig(:title)&.sub(/\s*\([^)]*\)\z/, ""), there: trips&.dig(:there),
         ways: (trips&.dig(:ways) || {}).slice(:back, :last, :same_way, :trips), departures: Array(trips&.dig(:departures)),
         photos: Array(gallery&.dig(:photos)) }
@@ -197,6 +198,7 @@ module GuideService
         fields = hike[:trail].slice(*TRAIL_FIELDS)
         fields[:arrival] = Time.iso8601(fields[:arrival]) if fields[:arrival]
         fields[:last_return] = Time.iso8601(fields[:last_return]) if fields[:last_return]
+        fields[:sunset] = Time.iso8601(fields[:sunset]) if fields[:sunset]
         fields[:plan] = fields[:plan]&.to_sym
         fields[:station] = Station.new(**fields[:station].slice(*Station.members)) if fields[:station]
         trail = OverpassService::Trail.new(**fields, origin: fields[:station]&.name || guide.origin)

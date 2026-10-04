@@ -70,6 +70,10 @@ module TransitousService
   # A ride has to save about this long to be worth taking: when choosing
   # between trips, each ride counts this much longer.
   RIDE_COST = 10.minutes
+  # Trips there are chosen from those leaving within this long of setting out,
+  # long enough for a later train to make the connections an earlier one
+  # waits for on weekend timetables.
+  JOURNEY_WINDOW = 3.hours
   # A ride at either end of a trip is walked instead when the walk takes at
   # most this long and arrives at most RIDE_COST later, or leaves at most that
   # much sooner, as walking home from the station rather than riding a bus does.
@@ -325,17 +329,22 @@ module TransitousService
   # agency:, headsign:, from:, to:, from_name:, to_name:, departure:, arrival: }] }
   # with ISO 8601 times, the ids and names of the stops each leg rides between
   # (nil when unknown), and only the legs on transit (none for walking the whole
-  # way), or nil when there is none. It leaves at time and arrives soonest.
+  # way), or nil when there is none. It leaves at time or later and arrives
+  # soonest, leaving as late as it can for that: the planner's trips over the
+  # next JOURNEY_WINDOW include the later trains that arrive as soon, which
+  # its first trip alone doesn't, as when a 9:10 train makes the connection an
+  # 8:03 one waits an hour at a transfer for.
   def self.journey(origin:, destination:, time:, connection: nil, cache: Rails.cache)
     params = {
       fromPlace: place(origin), toPlace: place(destination), time: time.utc.iso8601,
-      arriveBy: false, timetableView: false, detailedLegs: false, maxPostTransitTime: MAX_POST_TRANSIT_SECONDS
+      arriveBy: false, timetableView: true, searchWindow: JOURNEY_WINDOW.to_i, detailedLegs: false,
+      maxPostTransitTime: MAX_POST_TRANSIT_SECONDS
     }
     latest = time + MAX_TRAVEL_MINUTES.minutes
-    cache.fetch("transitous:journey:v5:#{params.values_at(:fromPlace, :toPlace, :time).join(':')}", expires_in: trip_cache_ttl(time)) do
+    cache.fetch("transitous:journey:v6:#{params.values_at(:fromPlace, :toPlace, :time).join(':')}", expires_in: trip_cache_ttl(time)) do
       connection ||= SearchHttp.connection(PLAN_URL, timeout: 10)
       by_train(connection, params, leave_after: time, arrive_by: latest) { |journey| journey[:arrival] <= latest.utc.iso8601 }
-        .min_by { |journey| costed_arrival(journey) }
+        .min_by { |journey| [costed_arrival(journey), -Time.iso8601(journey[:departure]).to_i] }
     end
   end
 

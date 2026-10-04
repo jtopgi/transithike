@@ -52,7 +52,7 @@ class HikesController < ApplicationController
     @results_path = search_path({ origin: @origin_name || SearchOrigin::CURRENT_LOCATION, lat: origin.latitude,
       lon: origin.longitude, day: @leave.saturday? ? "saturday" : "sunday", tz: @zone.tzinfo.name })
     trips = TripPlans.plan(@trail, origin: from, leave: leave, back_by: back_by)
-    @there, @ways, @departures = trips.values_at(:there, :ways, :departures)
+    @there, @ways, @departures, @trail.sunset = trips.values_at(:there, :ways, :departures, :sunset)
     TrailsService.settle([extras, where], timeout: EXTRAS_WAIT_SECONDS)
     highlights, @trail.terrain, @photos = extras.value(0) || []
     @trail.highlights = highlights || []

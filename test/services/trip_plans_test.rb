@@ -3,10 +3,10 @@ require "test_helper"
 class TripPlansTest < ActiveSupport::TestCase
   # The first trip there, a last trip back at 8 PM, and a timetable there that answers as given, recording how it's asked.
   class FakeTransit
-    attr_reader :timetables
+    attr_reader :timetables, :latest
 
     def initialize(there, departures)
-      @there, @departures, @timetables = there, departures, []
+      @there, @departures, @timetables, @latest = there, departures, [], []
     end
 
     def journey(origin:, destination:, time:) = @there
@@ -18,6 +18,7 @@ class TripPlansTest < ActiveSupport::TestCase
 
     def departures(origin:, destination:, time:, latest:, arrive_by:, by_train:)
       @timetables << [by_train, arrive_by == latest]
+      @latest << latest
       @departures
     end
   end
@@ -47,5 +48,16 @@ class TripPlansTest < ActiveSupport::TestCase
     # A first trip there too late to hike before the last trip back isn't listed either.
     too_late = trip("REGIONAL_RAIL", arrival: "2026-09-27T02:00:00Z")
     assert_empty plan(FakeTransit.new(too_late, []))[:departures]
+  end
+
+  test "trips there have to arrive in time to hike by sunset, before the last trip back" do
+    # The sun sets at 6:58 PM PDT, before the last trip back at 8 PM, so the hour and a half's hike starts by 5:28 PM.
+    in_time, dusk = trip("REGIONAL_RAIL", arrival: "2026-09-27T00:20:00Z"), trip("REGIONAL_RAIL", arrival: "2026-09-27T00:40:00Z")
+    transit = FakeTransit.new(in_time, [in_time, dusk])
+    plans = plan(transit)
+    assert_equal [in_time], plans[:departures]
+    assert_equal Time.utc(2026, 9, 27, 1, 58), plans[:sunset]
+    # The timetable only looks for trips that arrive by then.
+    assert_equal [Time.utc(2026, 9, 27, 0, 28)], transit.latest
   end
 end
