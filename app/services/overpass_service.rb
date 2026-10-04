@@ -77,14 +77,15 @@ module OverpassService
   # duration is in seconds; transfers is nil when walking the whole way is fastest.
   # paved is the share of the route's length on paved ways or roads, and loop is
   # true for routes that end where they start. arrival and last_return are the
-  # times transit gets there and last leaves for the origin. terrain is the
+  # times transit gets there and last leaves for the origin, and sunset is
+  # Daylight.sunset's there on the day. terrain is the
   # route's { climb:, relief: } in meters, from ElevationService. plan is how
   # it's hiked, :loop, :out_and_back, or :through to finish, the
   # [latitude, longitude] of its far end, where the trip back leaves. station
   # is the Station the trips there leave from and the trips back return to.
   Trail = Struct.new(:name, :summary, :latitude, :longitude, :length, :osm_id, :path, :highlights, :notable,
     :paved, :loop, :distance, :duration, :transfers, :arrival, :last_return, :origin, :terrain, :score, :plan, :finish,
-    :location, :station, keyword_init: true) do
+    :location, :station, :sunset, keyword_init: true) do
     # A point halfway along the route, in its area even where transit reaches it from town.
     def midpoint
       points = Array(path).flatten(1)

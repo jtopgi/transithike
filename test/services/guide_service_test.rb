@@ -67,7 +67,8 @@ class GuideServiceTest < ActiveSupport::TestCase
   def trail(name, osm_id, scenic: 0, **attributes)
     OverpassService::Trail.new(name: name, osm_id: osm_id, summary: "A route.", latitude: 41.4, longitude: -73.9, length: 3,
       path: [[[41.4, -73.9], [41.42, -73.9]]], loop: true, paved: 0, notable: false, duration: 5_400, transfers: 0,
-      arrival: Time.utc(2026, 10, 10, 13, 30), last_return: Time.utc(2026, 10, 11, 0), score: 1, plan: :loop,
+      arrival: Time.utc(2026, 10, 10, 13, 30), last_return: Time.utc(2026, 10, 11, 0), sunset: Time.utc(2026, 10, 10, 22, 23),
+      score: 1, plan: :loop,
       terrain: { climb: scenic * 100, relief: scenic * 100 }, highlights: [], **attributes)
   end
 
@@ -159,7 +160,7 @@ class GuideServiceTest < ActiveSupport::TestCase
     assert_nil data[:hikes].second.dig(:ways, :same_way)
     assert_equal ["2026-10-10T08:00:00-04:00", "2026-10-10T23:00:00-04:00"], data.values_at(:departure_time, :return_by)
     assert_equal({ climb: 400, relief: 400 }, hike.dig(:trail, :terrain))
-    assert_equal "2026-10-10T13:30:00Z", hike.dig(:trail, :arrival)
+    assert_equal ["2026-10-10T13:30:00Z", "2026-10-10T22:23:00Z"], hike.dig(:trail).values_at(:arrival, :sunset)
   end
 
   test "each hike's trips leave from the station it was found from, which the guide keeps" do
@@ -223,8 +224,8 @@ class GuideServiceTest < ActiveSupport::TestCase
     assert_equal ["New York City", "Midtown Manhattan"], [page.guide.name, page.guide.origin]
     assert_equal "Saturday, October 10, 8:00 AM EDT", page.departure_time.strftime("%A, %B %-d, %-l:%M %p %Z")
     hike = page.hike("breakneck-ridge-trail")
-    assert_equal [:out_and_back, 2.5, 5, Time.utc(2026, 10, 11, 0, 50)],
-      [hike.trail.plan, hike.trail.length, TrailsService.hike_miles(hike.trail), hike.trail.last_return]
+    assert_equal [:out_and_back, 2.5, 5, Time.utc(2026, 10, 11, 0, 50), Time.utc(2026, 10, 10, 22, 23)],
+      [hike.trail.plan, hike.trail.length, TrailsService.hike_miles(hike.trail), hike.trail.last_return, hike.trail.sunset]
     assert_equal "Midtown Manhattan", hike.trail.origin
     assert_equal [{ kind: "viewpoint", name: "Breakneck Ridge" }, { kind: "peak", name: "Sugarloaf Mountain" }], hike.trail.highlights
     assert_equal ["Hudson Line", 2], [hike.there[:legs].sole[:name], hike.ways[:trips].size]
@@ -232,5 +233,17 @@ class GuideServiceTest < ActiveSupport::TestCase
     assert_same page, GuideService.page("new-york-city")
     assert_nil GuideService.page("atlantis")
     assert_nil GuideService.page("london")
+  end
+
+  test "guides built before sunsets were kept work them out, and leave out hikes there isn't the daylight for" do
+    data = guide_data
+    # Arriving at 5:30 PM, 5 miles out and back take until 8 PM, well after the sunset at 6:23 PM.
+    data[:hikes].last[:trail][:arrival] = "2026-10-10T21:30:00Z"
+    write_guide(data)
+    assert_equal ["breakneck-ridge-trail"], GuideService.page("new-york-city").hikes.map(&:slug)
+
+    write_guide
+    white = GuideService.page("new-york-city").hike("white-trail-tarrytown-lakes")
+    assert_equal Time.utc(2026, 10, 10, 22, 23), white.trail.sunset
   end
 end

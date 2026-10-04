@@ -92,15 +92,17 @@ class StationSearch
     running(pool: pool, cache: cache, keys: keys, **search)
   end
 
-  # An earlier week's search as if for departure_time, its times moved by whole weeks.
+  # An earlier week's search as if for departure_time, its times moved by whole
+  # weeks, without the hikes the days drawing in leave too little daylight for.
   def self.moved(result, departure_time)
     shift = departure_time - result.departure_time
     trails = result.trails.map do |trail|
       trail.dup.tap do |moved|
         moved.arrival &&= moved.arrival + shift
         moved.last_return &&= moved.last_return + shift
+        moved.sunset = Daylight.sunset(departure_time, moved.latitude, moved.longitude)
       end
-    end
+    end.select { |trail| TrailsService.daylight?(trail) }
     result.dup.tap do |moved|
       moved.departure_time = departure_time
       moved.return_by = departure_time.change(hour: TrailsService::RETURN_BY_HOUR)

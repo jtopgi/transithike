@@ -1,7 +1,18 @@
 <%# A hike in detail: its route and photos, and the timetables of the trips there that leave time to hike all of it,
     and of the trips back. Shared by search results' detail pages and the cities' guides. %>
-<% last = ways[:last]
+<% # Where the sun doesn't rise, Daylight's sunset is before the day starts, and none is shown.
+   sunset = trail.sunset if trail.sunset && trail.sunset > leave
+   # Trips back only until the first after sunset, when sunset is the hike's deadline. Guides built before
+   # trips back stopped there have them all.
+   ways = TripPlans.until_sunset(ways, sunset)
+   last, dusk = ways.values_at(:last, :after_sunset)
    back_trips = Array(ways[:trips])
+   last_time = Time.iso8601(last[:departure]) if last
+   dark = TripPlans.sunset_first?(sunset, last_time)
+   deadline = dark ? sunset : last_time
+   # The trip back to show: the first after sunset, for hiking until then, or the last one when it's the deadline.
+   latest = dusk || last
+   latest_label = dusk && dusk[:departure] != last&.dig(:departure) ? "After sunset" : "Last trip back"
    finish_note = trail.finish ? " from the far end of the route" : "" %>
 <div class="container py-4">
   <div class="row g-4">
@@ -36,21 +47,31 @@
             </dd>
           </div>
         <% end %>
-        <% if last %>
+        <% if sunset %>
           <div>
-            <dt><span aria-hidden="true">↩️</span> Last trip back</dt>
+            <dt><span aria-hidden="true">🌇</span> Sunset</dt>
             <dd>
-              <%= trip_clock(last[:departure], zone) %>
-              <small class="trail-transfers"><%= "from #{boarding_stop(last)}" if boarding_stop(last) %></small>
+              <%= sunset.in_time_zone(zone).strftime("%-I:%M %p") %>
+              <small class="trail-transfers">hike done by then</small>
+            </dd>
+          </div>
+        <% end %>
+        <% if latest %>
+          <div>
+            <dt><span aria-hidden="true">↩️</span> <%= latest_label %></dt>
+            <dd>
+              <%= trip_clock(latest[:departure], zone) %>
+              <small class="trail-transfers"><%= "from #{boarding_stop(latest)}" if boarding_stop(latest) %></small>
             </dd>
           </div>
         <% end %>
       </dl>
-      <% if there && last %>
+      <% if there && deadline %>
         <p class="mb-2 hike-intro">
           Taking the first trip there, you arrive at <strong><%= trip_clock(there[:arrival], zone) %></strong> and have up to
-          <strong><%= duration_label(Time.iso8601(last[:departure]) - Time.iso8601(there[:arrival])) %></strong> until the last
-          trip back<%= finish_note %>, for a hike of about <%= duration_label(TrailsService.hike_hours(trail).hours, approximate: true) %>.
+          <strong><%= duration_label([deadline - Time.iso8601(there[:arrival]), 0].max) %></strong> until
+          <%= dark ? "sunset" : "the last trip back#{finish_note}" %>, for a hike of about
+          <%= duration_label(TrailsService.hike_hours(trail).hours, approximate: true) %>.
         </p>
       <% end %>
       <p class="text-body-secondary small"><%= trail.summary %></p>
@@ -75,13 +96,19 @@
     <% if departures.any? %>
       <p class="text-body-secondary">
         Trips from <%= origin_name %> that arrive in time to hike all
-        <%= number_with_precision(TrailsService.hike_miles(trail), precision: 1) %> miles before the last trip back.
+        <%= number_with_precision(TrailsService.hike_miles(trail), precision: 1) %> miles by sunset and before the last trip back.
         <% if there && (walk = walk_after(there)) %>
           From the last stop, it's about a <%= walk %>-minute walk to where the route starts.
         <% end %>
       </p>
-      <%= render "hikes/timetable", trips: departures, zone: zone, arrive_label: "Arrive", mark_last: false,
+      <%= render "hikes/timetable", trips: departures, zone: zone, arrive_label: "Arrive", last_label: nil,
             caption: "Trips there from #{origin_name}" %>
+    <% elsif there %>
+      <p class="text-body-secondary">
+        No trip from <%= origin_name %> arrives in time to hike all
+        <%= number_with_precision(TrailsService.hike_miles(trail), precision: 1) %> miles by sunset and before the last trip
+        back on <%= leave.strftime("%A, %B %-d") %>.
+      </p>
     <% else %>
       <p class="text-body-secondary">We couldn't find the trips there just now. Check the directions before you go.</p>
     <% end %>
@@ -91,14 +118,18 @@
     <h2 class="h4" id="back-heading">Coming back</h2>
     <% if back_trips.any? %>
       <p class="text-body-secondary">
-        Trips home<%= finish_note %>, from the first after the hike, if you take the first trip there, until the last one
-        that gets you home by <%= return_by.strftime("%-I %p") %>.
+        Trips home<%= finish_note %>, from the first after the hike, if you take the first trip there, until
+        <% if dusk %>
+          the first after sunset, for hiking until then.
+        <% else %>
+          the last one that gets you home by <%= return_by.strftime("%-I %p") %>.
+        <% end %>
         <% if ways[:same_way] == false %>
           The same way back doesn't run after the hike, or takes much longer, so these go another way.
         <% end %>
       </p>
-      <%= render "hikes/timetable", trips: back_trips, zone: zone, arrive_label: "Home", mark_last: true,
-            caption: "Trips back to #{origin_name}" %>
+      <%= render "hikes/timetable", trips: back_trips, zone: zone, arrive_label: "Home",
+            last_label: latest_label == "After sunset" ? "After sunset" : "Last", caption: "Trips back to #{origin_name}" %>
     <% else %>
       <p class="text-body-secondary">We couldn't find the trips back just now. Check the directions before you go.</p>
     <% end %>
@@ -106,7 +137,8 @@
 
   <p class="small text-body-secondary mt-4 mb-0">
     Times are for <%= leave.strftime("%A, %B %-d") %>, from Transitous; check them before you go. Hikes are timed at
-    about 2 miles an hour with breaks, and the last trip back leaves at least half an hour after. Routes start at their
-    first mapped point, which may not be an official trailhead.
+    about 2 miles an hour with breaks, to be done by sunset, with twilight left for the walk to the station, and at
+    least half an hour before the last trip back. Routes start at their first mapped point, which may not be an official
+    trailhead.
   </p>
 </div>

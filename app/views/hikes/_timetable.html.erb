@@ -1,4 +1,5 @@
-<%# A table of trips: when each leaves and arrives, how long it rides, and the transit it takes. %>
+<%# A table of trips: when each leaves and arrives, how long it rides, and the transit it takes, with the last
+    one marked last_label, unless that's nil. %>
 <div class="table-responsive timetable-scroll" tabindex="0" aria-label="<%= caption %>">
   <table class="table table-sm align-middle timetable mb-2">
     <caption class="visually-hidden"><%= caption %></caption>
@@ -12,7 +13,7 @@
     </thead>
     <tbody>
       <% trips.each do |trip| %>
-        <tr class="<%= 'timetable-last' if trip.equal?(trips.last) && mark_last %>">
+        <tr class="<%= 'timetable-last' if trip.equal?(trips.last) && last_label %>">
           <td class="text-nowrap fw-semibold"><%= trip_clock(trip[:departure], zone) %></td>
           <td class="text-nowrap"><%= trip_clock(trip[:arrival], zone) %></td>
           <td class="text-nowrap"><%= ride_label(trip) %></td>
@@ -28,8 +29,8 @@
                 </span>
               <% end %>
             <% end %>
-            <% if trip.equal?(trips.last) && mark_last %>
-              <span class="badge text-bg-warning ms-1">Last</span>
+            <% if trip.equal?(trips.last) && last_label %>
+              <span class="badge text-bg-warning ms-1"><%= last_label %></span>
             <% end %>
           </td>
         </tr>

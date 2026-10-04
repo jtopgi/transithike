@@ -337,6 +337,8 @@ class TransitousServiceTest < ActiveSupport::TestCase
     connection = stub_connection(:get, body) do |request|
       assert_equal ["47.6000000,-122.3000000", "47.5000000,-122.0000000", "2026-09-23T15:00:00Z", "false"],
         request.params.values_at("fromPlace", "toPlace", "time", "arriveBy")
+      # Every trip over the next three hours, so later trains that arrive as soon are among them.
+      assert_equal ["true", "10800"], request.params.values_at("timetableView", "searchWindow")
       # By train, with the subway or light rail to reach it, and the walk from the start as long as the one to the end.
       assert_equal TransitousService::TRIP_MODES.join(","), request.params["transitModes"]
       assert_equal ["1800", "1800"], request.params.values_at("maxPreTransitTime", "maxPostTransitTime")
@@ -353,6 +355,19 @@ class TransitousServiceTest < ActiveSupport::TestCase
       { mode: "RAIL", name: "8811", agency: nil, headsign: nil, from: nil, to: nil, from_name: nil, to_name: nil, **times },
       { mode: "BUS", name: "206", agency: "Skagit Transit", headsign: nil, from: nil, to: nil, from_name: nil, to_name: nil, **times }
     ] }, TransitousService.journey(origin: origin, destination: destination, time: DEPARTURE, connection: connection))
+  end
+
+  test "a journey there leaves as late as it can and still arrives soonest" do
+    train = ->(name) { leg("REGIONAL_RAIL", "routeLongName" => name) }
+    body = { "itineraries" => [
+      # The 8:03 waits an hour at a transfer for the train the 9:10 makes.
+      itinerary("2026-09-23T15:03:00Z", "2026-09-23T18:12:00Z", [train.("Coast"), train.("Main"), train.("Port Jervis")]),
+      itinerary("2026-09-23T16:10:00Z", "2026-09-23T18:12:00Z", [train.("Corridor"), train.("Main"), train.("Port Jervis")]),
+      itinerary("2026-09-23T17:10:00Z", "2026-09-23T19:40:00Z", [train.("Corridor"), train.("Port Jervis")])
+    ], "direct" => [] }
+    there = TransitousService.journey(origin: origin, destination: destination, time: DEPARTURE,
+      connection: stub_connection(:get, body), cache: ActiveSupport::Cache::MemoryStore.new)
+    assert_equal ["2026-09-23T16:10:00Z", "2026-09-23T18:12:00Z"], there.values_at(:departure, :arrival)
   end
 
   # A trip back on a bus or a train between two stops, leaving and arriving at

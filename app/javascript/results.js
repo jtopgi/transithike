@@ -186,15 +186,24 @@ class Results {
     range.style.setProperty("--low", percent(this.shortest))
     range.style.setProperty("--high", percent(this.longest))
     const cards = [...this.list.querySelectorAll("[data-trail]")]
-    let shown = 0
     cards.sort(mostScenic).forEach((card) => {
       const length = Number(card.dataset.length)
       card.hidden = !(length >= min && length <= max && Number(card.dataset.travel) <= maxTrip)
-      if (!card.hidden) shown += 1
       this.list.append(card)
     })
+    this.count()
+  }
+
+  count() {
+    const cards = [...this.list.querySelectorAll("[data-trail]")]
+    const shown = cards.filter((card) => !card.hidden).length
     this.toolbar.querySelector("[data-results-count]").textContent = `Showing ${shown} of ${cards.length} hikes`
     this.page.querySelector("[data-no-matches]").hidden = shown > 0 || cards.length === 0
+    // Once the search is done, taking off the page every hike it found leaves none.
+    if (this.done && cards.length === 0) {
+      this.toolbar.hidden = true
+      this.page.querySelector("[data-empty]").hidden = false
+    }
   }
 
   visible(entries, show) {
@@ -219,21 +228,28 @@ class Results {
     const response = await fetch(box.dataset.tripUrl, { headers: { Accept: "application/json" } })
     if (!response.ok) return
 
-    const { there, back, last, same_way: sameWay, location } = await response.json()
+    const { there, back, last, after_sunset: dusk, same_way: sameWay, location } = await response.json()
+    // The planned trips are exact to the minute, unlike the search's estimates:
+    // hikes they leave too little time for, by sunset or before the last trip back, aren't shown.
+    if (there && !this.timeToHike(card, there, last)) return this.drop(card)
+
     if (location) {
       const line = card.querySelector("[data-location]")
       line.querySelector("[data-location-text]").textContent = location
       line.classList.remove("invisible")
     }
-    // The planned trips are exact to the minute, unlike the search's estimates,
-    // whose travel times include waiting for the train.
+    // The search's travel times include waiting for the train.
     if (there && back) this.showTravel(card, rideMinutes(there), rideMinutes(back))
     if (last) this.showLast(card, last, there)
-    // The first trip back after the hike, and the last one, which leaves time to stay longer.
+    // The first trip back after the hike, then the first after sunset, for hiking until then, or
+    // where the last trip back is the deadline, that one.
     const from = card.dataset.plan === "through" ? " from the end" : ""
-    const lastToo = last && back && last.departure !== back.departure
-    const lines = [["There", there, "arrive"], [lastToo ? `First back${from}` : `Back${from}`, back, "home"],
-      [`Last back${from}`, lastToo ? last : null, "home"]]
+    const dark = last && this.sunsetFirst(card, last) && dusk
+    const latest = dark ? dusk : last
+    const latestToo = latest && back && latest.departure !== back.departure
+    const latestLabel = dark && dusk.departure !== last.departure ? "After sunset" : "Last back"
+    const lines = [["There", there, "arrive"], [latestToo ? `First back${from}` : `Back${from}`, back, "home"],
+      [`${latestLabel}${from}`, latestToo ? latest : null, "home"]]
       .filter(([, trip]) => trip)
       .map(([label, trip, end]) => this.tripLine(label, trip, end))
     if (back && sameWay === false) {
@@ -254,26 +270,60 @@ class Results {
     card.dataset.travel = (there + back) * 60
   }
 
-  // The last trip back the same way, and the time that leaves there.
+  // When the card's sunset is, if it has one.
+  sunset(card) {
+    const sunset = card.querySelector("[data-sunset]")?.dataset.sunset
+    return sunset ? new Date(sunset) : null
+  }
+
+  // Whether sunset is the hike's deadline rather than the last trip back, which
+  // has to leave the margin after the hike, like TripPlans.sunset_first?.
+  sunsetFirst(card, last) {
+    const sunset = this.sunset(card)
+    const margin = (Number(card.dataset.required) - Number(card.dataset.hike)) * 1000
+    return Boolean(sunset) && sunset <= new Date(last.departure) - margin
+  }
+
+  // Whether arriving by the trip there leaves time to hike by sunset and
+  // before the last trip back, where there is one, as searches require.
+  timeToHike(card, there, last) {
+    const arrival = new Date(there.arrival)
+    const sunset = this.sunset(card)
+    return (!last || new Date(last.departure) - arrival >= Number(card.dataset.required) * 1000) &&
+      (!sunset || sunset - arrival >= Number(card.dataset.hike) * 1000)
+  }
+
+  // Takes a hike its planned trips leave no time for off the page.
+  drop(card) {
+    this.previews.unobserve(card)
+    this.trips.unobserve(card)
+    card.remove()
+    this.count()
+  }
+
+  // The hike's deadline, sunset or the last trip back, once its trips are
+  // planned, and the time there until it.
   showLast(card, last, there) {
     const line = card.querySelector(".trail-return")
-    if (!line.querySelector("strong")) {
+    const back = line.querySelector("[data-return]")
+    if (!back.querySelector("[data-last-return]")) {
       // The search couldn't check the way back, but the planner could.
       const from = card.dataset.plan === "through" ? " from the far end" : ""
-      line.replaceChildren(
-        Object.assign(document.createElement("span"), { ariaHidden: "true", textContent: "↩️" }), ` Last trip back${from} `,
-        document.createElement("strong"), " ", Object.assign(document.createElement("span"), { className: "text-body-secondary" })
-      )
-      line.firstChild.dataset.returnIcon = ""
-      line.lastChild.dataset.stayLabel = ""
+      const time = document.createElement("strong")
+      time.dataset.lastReturn = ""
+      back.replaceChildren(Object.assign(document.createElement("span"), { ariaHidden: "true", textContent: "↩️" }),
+        ` Last trip back${from} `, time)
     }
-    line.querySelector("strong").textContent = this.clock(last.departure)
+    back.querySelector("[data-last-return]").textContent = this.clock(last.departure)
+    const dark = this.sunsetFirst(card, last)
+    back.hidden = dark
+    const sunsetPart = line.querySelector("[data-sunset]")
+    if (sunsetPart) sunsetPart.hidden = !dark
     if (!there) return
 
-    const stay = Math.max(Math.floor((new Date(last.departure) - new Date(there.arrival)) / 60000), 0)
-    const tight = stay * 60 < Number(card.dataset.required)
-    line.querySelector("[data-stay-label]").textContent = `· ${tight ? "only" : "up to"} ${stayLabel(stay)} there`
-    line.querySelector("[data-return-icon]").textContent = tight ? "⚠️" : "↩️"
+    const end = dark ? this.sunset(card) : new Date(last.departure)
+    const stay = Math.max(Math.floor((end - new Date(there.arrival)) / 60000), 0)
+    line.querySelector("[data-stay-label]").textContent = `· up to ${stayLabel(stay)}${dark ? " of daylight" : ""} there`
   }
 
   tripLine(label, trip, end) {
