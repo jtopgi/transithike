@@ -81,7 +81,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
     assert_equal [[15, 47.0], [3, 47.5], [2, 48.0]], few.group_by(&:first).map { |row, band| [band.size, row] }
   end
 
-  test "routes in tiles are found by querying the region around them, and each tile's routes are shared for days" do
+  test "routes in tiles are found by querying the region around them, and each tile's routes are kept and refreshed" do
     travel_to Time.utc(2026, 9, 22, 12) do
       cache = ActiveSupport::Cache::MemoryStore.new
       queries = []
@@ -103,7 +103,12 @@ class OverpassServiceTest < ActiveSupport::TestCase
 
       routes_in(connection, tiles: [[47.5, -122.0], [50.0, -122.0]], cache: cache)
       assert_includes queries.last, "(50.0,-122.0,50.5,-121.5)->.region;"
-      travel 3.days + 1.minute
+      # A month on, the kept routes are used at once while the tile is looked up again in the background.
+      travel 30.days + 1.minute
+      assert_equal [2], routes_in(connection, tiles: [[47.5, -122.0]], cache: cache).pluck(:id)
+      Timeout.timeout(5) { sleep 0.01 until cache.read("overpass:tile:v2:47.5:-122.0")[:at] > 1.minute.ago }
+      assert_equal 3, queries.size
+      assert_includes queries.last, "(47.5,-122.0,48.0,-121.5)->.region;"
       routes_in(connection, tiles: [[47.5, -122.0]], cache: cache)
       assert_equal 3, queries.size
     end
@@ -136,7 +141,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
     racing = stub_connection(:post, lambda { |request|
       query = URI.decode_www_form(request.body).to_h.fetch("data")
       queries << query
-      cache.write("overpass:tile:v1:51.0:-122.0", [{ id: 7 }]) if query.include?("relation.region(49.0,")
+      cache.write("overpass:tile:v2:51.0:-122.0", { routes: [{ id: 7 }], at: Time.current }) if query.include?("relation.region(49.0,")
       { "elements" => [] }
     })
     assert_equal [7], routes_in(racing, tiles: later, cache: cache).pluck(:id)
@@ -208,7 +213,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
       reads.reset
       waiting = Thread.new { routes_in(connection, tiles: [[47.0, -122.0]], cache: cache) }
       assert reads.wait(5)
-      cache.write("overpass:tile:v1:47.0:-122.0", [{ id: 9 }])
+      cache.write("overpass:tile:v2:47.0:-122.0", { routes: [{ id: 9 }], at: Time.current })
       assert_equal [9], waiting.join(5).value.pluck(:id)
     end
     # Only the first search asked Overpass.
@@ -504,7 +509,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
     assert_in_delta 0.345, trail.distance, 0.001
   end
 
-  test "route details are cached for a week, and only uncached routes are queried" do
+  test "route details are kept for two months, and only routes without them are queried" do
     travel_to Time.utc(2026, 9, 22, 12) do
       cache = ActiveSupport::Cache::MemoryStore.new
       nested = route_element(id: 2, name: "Nested Loop")
@@ -522,7 +527,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
       assert_equal "Forest Loop", trails.first.name
       assert_nil trails.first.duration
 
-      travel 7.days + 1.minute
+      travel 60.days + 1.minute
       trails_for([1], connection, cache: cache)
       assert_includes queries.last, "relation(id:1)->"
     end

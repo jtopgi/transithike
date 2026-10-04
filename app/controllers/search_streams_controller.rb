@@ -3,7 +3,7 @@ class SearchStreamsController < ApplicationController
   include ActionController::Live
   include SearchOrigin
 
-  rate_limit to: 20, within: 1.minute, with: -> { too_many_searches }
+  rate_limit to: 20, within: 1.minute, with: -> { too_many_searches }, store: Rails.configuration.x.rate_limit_store
 
   def show
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)

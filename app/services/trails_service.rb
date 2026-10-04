@@ -75,9 +75,10 @@ module TrailsService
   # there and back, or to have a quicker one than those already found, with
   # :update and the routes found once highlights and terrain rank them, and
   # with :waiting while nothing changes for a while. Each route is found from
-  # the station that gets there soonest. Returns the result, with every route
-  # found, best first.
-  def self.search(origin:, day: nil, near: nil, places: PhotonService, transit: TransitousService,
+  # the station that gets there soonest. Stations' searches are kept and
+  # shared (see StationSearch); with fresh, only recent complete ones are used.
+  # Returns the result, with every route found, best first.
+  def self.search(origin:, day: nil, near: nil, fresh: false, places: PhotonService, transit: TransitousService,
     hiking: OverpassService, elevation: ElevationService, &on_found)
     place = origin.is_a?(String) ? places.geocode(origin, near: near) : origin
     unless place
@@ -94,7 +95,7 @@ module TrailsService
     return result if stations.empty?
 
     searches = stations.map do |station|
-      StationSearch.start(station, departure_time, transit: transit, hiking: hiking, elevation: elevation)
+      StationSearch.start(station, departure_time, fresh: fresh, transit: transit, hiking: hiking, elevation: elevation)
     end
     follow(searches, result, &on_found)
   end

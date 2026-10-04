@@ -1,5 +1,5 @@
 class PlacesController < ApplicationController
-  rate_limit to: 60, within: 1.minute, with: -> { render json: [], status: :too_many_requests }
+  rate_limit to: 60, within: 1.minute, with: -> { render json: [], status: :too_many_requests }, store: Rails.configuration.x.rate_limit_store
 
   # Starting-point suggestions as the visitor types; tz ranks nearby places first.
   def index

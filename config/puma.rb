@@ -36,3 +36,7 @@ pidfile ENV.fetch("PIDFILE") { "tmp/pids/server.pid" }
 
 # Allow puma to be restarted by `rails restart` command.
 plugin :tmp_restart
+
+# Keeps searches from the guide cities' stations ready in the background, in
+# the web server only (see SearchWarmer).
+after_booted { SearchWarmer.start } if ENV["WARM_SEARCHES"] == "1"

@@ -14,8 +14,11 @@ class GuideServiceTest < ActiveSupport::TestCase
       @trails, @stations, @origins = trails, stations, []
     end
 
-    def search(origin:, day:)
+    attr_reader :fresh
+
+    def search(origin:, day:, fresh: false)
       @origins << [origin, day]
+      (@fresh ||= []) << fresh
       departure = ActiveSupport::TimeZone["America/New_York"].parse("2026-10-10 08:00")
       TrailsService::Result.new(place: origin, stations: @stations, departure_time: departure, return_by: departure.change(hour: 23),
         trails: @trails, returns_checked: true, complete: true)
@@ -79,9 +82,12 @@ class GuideServiceTest < ActiveSupport::TestCase
       super([])
     end
 
-    def search(origin:, day:)
+    def search(origin:, day:, fresh: false)
       turn = @turns.shift
-      raise turn if turn.is_a?(Exception)
+      if turn.is_a?(Exception)
+        (@fresh ||= []) << fresh
+        raise turn
+      end
 
       count, complete = turn
       super.tap do |result|
@@ -97,6 +103,8 @@ class GuideServiceTest < ActiveSupport::TestCase
       search = TurnsSearch.new(turns, ->(id) { trail("Route #{id}", id) })
       data = GuideService.rebuild(guide, pause: 0, log: ->(line) { lines << line }, search: search, transit: FakeTransit.new,
         photos: FakePhotos.new, places: FakePlaces.new)
+      # Only a second try searches again rather than using the first's kept searches.
+      assert_equal [false, true].first(search.fresh.to_a.size), search.fresh.to_a
       [data && [data[:hikes].size, data[:complete]], lines.map { |line| line.sub(/(hikes) in \d+s/, '\1') }]
     end
 

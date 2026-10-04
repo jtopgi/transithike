@@ -80,6 +80,14 @@ test:
 #
 production:
   <<: *default
+  # Searches look things up in the cache from background threads as well as
+  # Puma's, so the pool has room for them. DATABASE_URL, when set, says where
+  # the database is.
+  pool: <%= ENV.fetch("DATABASE_POOL") { 20 } %>
+  # A database that doesn't answer is given up on after one try of 5 seconds,
+  # and then left alone for a while (see config/initializers/solid_cache.rb).
+  connect_timeout: 5
+  connection_retries: 0
   database: transithike_production
   username: transithike
   password: <%= ENV['TRANSITHIKE_DATABASE_PASSWORD'] %>

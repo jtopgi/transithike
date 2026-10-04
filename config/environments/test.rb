@@ -49,4 +49,7 @@ Rails.application.configure do
 
   # Stubbed providers answer at once, so failing tests needn't wait to retry.
   config.x.overpass_retry_pause_seconds = 0
+
+  # Tests make requests without limits.
+  config.x.rate_limit_store = ActiveSupport::Cache::NullStore.new
 end

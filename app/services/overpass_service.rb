@@ -8,7 +8,7 @@ module OverpassService
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
   ].freeze
   # Routes are found in tiles this many degrees across that hold routes within
-  # a walk of the stations. Each tile's routes are shared by every search for days.
+  # a walk of the stations. Each tile's routes are shared by every search.
   TILE_DEGREES = 0.5
   # At most this many tiles are searched in each band of travel time, the
   # quickest first, so the scenery farther out is searched as well as the nearest.
@@ -17,7 +17,11 @@ module OverpassService
   # Where hiking routes are plentiful, as in the Alps, a tile lists a
   # megabyte of them, so a query lists at most this many tiles.
   TILES_PER_QUERY = 4
-  TILE_CACHE_TTL = 3.days
+  # Searches keep their own copy of each tile's routes for months, and once
+  # it's TILE_REFRESH_AFTER old, look the tile up again in the background, so
+  # searches rarely wait for Overpass, whose public instances are often busy.
+  TILE_KEEP = 90.days
+  TILE_REFRESH_AFTER = 30.days
   # Regions' routes and routes' geometry take a while to find, especially on the mirror.
   LONG_QUERY_SECONDS = 45
   # Trips are checked for at most this many routes per search, in batches; Transitous
@@ -33,8 +37,8 @@ module OverpassService
   # Longer routes are multi-day trails rather than hikes from a nearby start.
   MAX_LENGTH_MILES = 30
   METERS_PER_MILE = 1609.344
-  # Mapped routes rarely change, so each route's details are shared for a week.
-  ROUTE_CACHE_TTL = 7.days
+  # Mapped routes rarely change, so each route's details and highlights are kept for two months.
+  ROUTE_CACHE_TTL = 60.days
   # After an instance fails, searches start with the other one for a while.
   FAILOVER_KEY = "overpass:failover:v1"
   FAILOVER_TTL = 5.minutes
@@ -135,15 +139,18 @@ module OverpassService
 
   # The routes in the tiles, as { id:, name:, latitude:, longitude:, bounds:,
   # span:, notable: } with each route's [south, west, north, east] bounding box,
-  # its center, and its diagonal in meters. Each tile's routes are cached, and
-  # uncached tiles are queried TILES_PER_QUERY neighbors at a time, each query
-  # finding the routes of the region around its tiles once, then keeping those
-  # in the tiles, while tiles another search is querying are waited for. The
-  # routes of tiles whose query fails are left out, unless every tile's do, and
-  # each such failure is added to failures when given.
+  # its center, and its diagonal in meters. Each tile's routes are kept, and
+  # tiles without them are queried TILES_PER_QUERY neighbors at a time, each
+  # query finding the routes of the region around its tiles once, then keeping
+  # those in the tiles, while tiles another search is querying are waited for.
+  # Tiles kept for TILE_REFRESH_AFTER are looked up again in the background.
+  # The routes of tiles whose query fails are left out, unless every tile's
+  # do, and each such failure is added to failures when given.
   def self.routes_in(tiles, connections: nil, cache: Rails.cache, failures: nil)
-    keys = tiles.to_h { |tile| [tile, "overpass:tile:v1:#{tile.join(':')}"] }
+    keys = tiles.to_h { |tile| [tile, tile_key(tile)] }
     found = keys.empty? ? {} : cache.read_multi(*keys.values)
+    stale = tiles.select { |tile| found[keys[tile]] && found[keys[tile]][:at] < TILE_REFRESH_AFTER.ago }
+    refresh_tiles(stale, connections, cache) if stale.any?
     missing = tiles.reject { |tile| found.key?(keys[tile]) }
     tile_of = keys.invert
     error = nil
@@ -155,17 +162,7 @@ module OverpassService
       next if group_keys.empty?
 
       found.merge!(shared(group_keys, cache) do |own|
-        own_tiles = own.map { |key| tile_of[key] }
-        routes = elements(tiles_query(own_tiles), connections, cache, timeout: LONG_QUERY_SECONDS)
-          .filter_map { |element| candidate(element) }
-        own_tiles.to_h do |south, west|
-          in_tile = routes.select do |route|
-            route[:bounds][0] < south + TILE_DEGREES && route[:bounds][2] >= south &&
-              route[:bounds][1] < west + TILE_DEGREES && route[:bounds][3] >= west
-          end
-          cache.write(keys[[south, west]], in_tile, expires_in: TILE_CACHE_TTL)
-          [keys[[south, west]], in_tile]
-        end
+        fetch_tiles(own.map { |key| tile_of[key] }, connections, cache)
       rescue SearchErrors::UpstreamError => failure
         error ||= failure
         failures&.push(failure)
@@ -179,7 +176,42 @@ module OverpassService
     end
     raise error if error && keys.values.none? { |key| found.key?(key) }
 
-    keys.values.filter_map { |key| found[key] }.flatten(1).uniq { |route| route[:id] }
+    keys.values.filter_map { |key| found[key]&.dig(:routes) }.flatten(1).uniq { |route| route[:id] }
+  end
+
+  def self.tile_key(tile)
+    "overpass:tile:v2:#{tile.join(':')}"
+  end
+
+  # The tiles' routes, in one query, kept as { tile key => { routes:, at: } },
+  # when they were looked up.
+  def self.fetch_tiles(tiles, connections, cache)
+    routes = elements(tiles_query(tiles), connections, cache, timeout: LONG_QUERY_SECONDS).filter_map { |element| candidate(element) }
+    at = Time.current
+    tiles.to_h do |south, west|
+      within = routes.select do |route|
+        route[:bounds][0] < south + TILE_DEGREES && route[:bounds][2] >= south &&
+          route[:bounds][1] < west + TILE_DEGREES && route[:bounds][3] >= west
+      end
+      kept = { routes: within, at: at }
+      cache.write(tile_key([south, west]), kept, expires_in: TILE_KEEP)
+      [tile_key([south, west]), kept]
+    end
+  end
+
+  # Looks the tiles up again in the background, a query at a time, unless
+  # another search is already, for later searches. Failures leave them as they were.
+  def self.refresh_tiles(tiles, connections, cache)
+    tile_of = tiles.to_h { |tile| [tile_key(tile), tile] }.reject { |key, _| LOOKING_UP.key?(key) }
+    return if tile_of.empty?
+
+    TrailsService.start(TrailsService.overpass_pool) do
+      tile_of.keys.sort.each_slice(TILES_PER_QUERY) do |keys|
+        shared(keys, cache) { |own| fetch_tiles(tile_of.values_at(*own), connections, cache) }
+      rescue SearchErrors::UpstreamError
+        next
+      end
+    end
   end
 
   # The values the block finds for keys, as { key => value }, shared with
@@ -308,7 +340,8 @@ module OverpassService
       # Routes another search was looking up, but couldn't in time.
       raise SearchErrors::ProviderBusy, BUSY unless missing.all? { |id| found.key?(keys[id]) }
     end
-    ids.filter_map { |id| Trail.new(**found[keys[id]]) if found[keys[id]] }
+    # Kept details hold only the attributes a Trail still has.
+    ids.filter_map { |id| Trail.new(**found[keys[id]].slice(*Trail.members)) if found[keys[id]] }
   end
 
   # Plain route attributes by id, never transit results, using the ids of each route's paved ways.

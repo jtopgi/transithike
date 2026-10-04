@@ -113,7 +113,7 @@ module TransitousService
   # stops and boards are connections for finding stations and their trains.
   # Raises when the stations near the origin can't be looked up.
   def self.major_stations(origin:, departure_time:, stops: nil, boards: nil, cache: Rails.cache)
-    key = "transitous:stations:v1:#{origin.latitude.round(2)}:#{origin.longitude.round(2)}"
+    key = "transitous:stations:v1:#{CacheShape.of(Station)}:#{origin.latitude.round(2)}:#{origin.longitude.round(2)}"
     cached = cache.read(key)
     return cached if cached
 
