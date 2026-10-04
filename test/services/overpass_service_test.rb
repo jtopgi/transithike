@@ -12,8 +12,8 @@ class OverpassServiceTest < ActiveSupport::TestCase
 
   TILE = [47.0, -122.0].freeze
 
-  def routes_in(connection, tiles: [TILE], cache: Rails.cache)
-    OverpassService.routes_in(tiles, connections: [connection], cache: cache)
+  def routes_in(connection, tiles: [TILE], cache: Rails.cache, failures: nil)
+    OverpassService.routes_in(tiles, connections: [connection], cache: cache, failures: failures)
   end
 
   # Trails from the full route elements, through the tiles and details queries.
@@ -121,7 +121,10 @@ class OverpassServiceTest < ActiveSupport::TestCase
 
       { "elements" => [candidate_of(route_element(id: 1, latitude: 47.1)), candidate_of(route_element(id: 2, latitude: 48.1))] }
     })
-    assert_equal [1], routes_in(connection, tiles: tiles, cache: cache).pluck(:id)
+    failures = []
+    assert_equal [1], routes_in(connection, tiles: tiles, cache: cache, failures: failures).pluck(:id)
+    # The failure is told, so the search can say some hikes went unchecked.
+    assert_equal [SearchErrors::UpstreamError], failures.map(&:class)
     # The first four tiles from south to west, and then the other four, asked twice when that query fails quickly.
     assert_equal ["(46.0,-122.0,47.5,-121.0)->.region;", "(47.5,-122.0,48.5,-120.5)->.region;",
       "(47.5,-122.0,48.5,-120.5)->.region;"], queries.map { |query| query[/\([^()]*\)->\.region;/] }

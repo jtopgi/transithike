@@ -235,7 +235,9 @@ test Overpass connectivity from your deployment before launching.
   leave out the names Commons repeats in hidden elements.
 - Provider failures produce a friendly error, not misleading empty results. The
   origin's area, the tiles after the first four, highlights, terrain, and photos
-  only refine a search, which goes ahead without them. Highlights not found within
+  only refine a search, which goes ahead without them; when any tile's routes
+  don't load, the page says some hikes couldn't be checked, and guide builds try
+  that city again. Highlights not found within
   5 seconds of the last batch, and terrain not found within 8 seconds after that,
   are left out, and the lookups finish in the background so later searches have
   them. When the way back can't be looked up, hikes are shown with a notice saying

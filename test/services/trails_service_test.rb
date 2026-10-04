@@ -74,8 +74,9 @@ class TrailsServiceTest < ActiveSupport::TestCase
     attr_reader :access, :batches, :reliefs, :stations, :tile_requests, :threads
 
     # stuck names the lookups that wait for release: :first_tiles, :other_tiles, :trails_for, or :highlights.
-    def initialize(trails, far: [], highlights: {}, failing: [], release: nil, stuck: [:highlights])
+    def initialize(trails, far: [], highlights: {}, failing: [], release: nil, stuck: [:highlights], tiles_failing: [])
       @trails, @far, @highlights, @failing, @release, @stuck = trails, far, highlights, failing, release, stuck
+      @tiles_failing = tiles_failing
       @batches, @threads, @tile_requests, @reliefs = [], [], Concurrent::Array.new, []
     end
 
@@ -85,11 +86,14 @@ class TrailsServiceTest < ActiveSupport::TestCase
       (0...(@far.empty? ? 1 : 5)).map { |index| [47.5, -122.5 + index * 0.5] }
     end
 
-    def routes_in(tiles)
+    # Tiles failing names the lookups, :first_tiles or :other_tiles, some of whose tiles don't load.
+    def routes_in(tiles, failures: nil)
       first = tiles.include?(FIRST_TILE)
       @release&.wait(5) if @stuck.include?(first ? :first_tiles : :other_tiles)
       @tile_requests << tiles
       raise @trails if first && @trails.is_a?(Exception)
+
+      failures&.push(SearchErrors::UpstreamError.new("busy")) if @tiles_failing.include?(first ? :first_tiles : :other_tiles)
 
       (first ? @trails : @far).map { |trail| { id: trail.osm_id, latitude: trail.latitude, longitude: trail.longitude } }
     end
@@ -592,6 +596,14 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal ["a"], result.trails.map(&:name)
     # The scenery farther out went unchecked.
     refute result.complete
+
+    # As it does when only some of the tiles' routes load.
+    transit = FakeTransit.new(trips: { "a" => minutes(30), "b" => minutes(30) })
+    [:first_tiles, :other_tiles].each do |lookup|
+      result = search(transit: transit, hiking: FakeHiking.new([trail("a")], far: [trail("b")], tiles_failing: [lookup]))
+      assert_equal [%w[a b], false], [result.trails.map(&:name).sort, result.complete], lookup
+    end
+    assert search(transit: transit, hiking: FakeHiking.new([trail("a")], far: [trail("b")])).complete
   ensure
     release&.set
     slow&.set

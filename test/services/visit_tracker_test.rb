@@ -80,6 +80,8 @@ class VisitTrackerTest < ActiveSupport::TestCase
     assert_nil VisitTracker.crawler("Mozilla/5.0 (Linux; Android 11; CUBOT X50) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Mobile Safari/537.36")
     assert_equal "Link previews", VisitTracker.crawler("Mozilla/5.0 (compatible; Pinterestbot/1.0; +http://www.pinterest.com/bot.html)")
     assert_equal "Other bot", VisitTracker.crawler("Mozilla/5.0 (compatible; AhrefsBot/7.0; +http://ahrefs.com/robot/)")
+    assert_equal "Other bot", VisitTracker.crawler("Mozilla/5.0 (compatible; archive.org_bot +http://archive.org/details/archive.org_bot)")
+    assert_equal "Other bot", VisitTracker.crawler("ZoominfoBot (zoominfobot at zoominfo dot com)")
 
     VisitTracker.response(request_for("/robots.txt", agent: "Mozilla/5.0 (compatible; Googlebot/2.1)"), response_for(200, "text/plain"))
     crawl = @sent.sole

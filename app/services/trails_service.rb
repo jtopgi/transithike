@@ -87,22 +87,24 @@ module TrailsService
 
     access = TransitAccess.new(lat, lon, stations)
     tiles = hiking.tiles(stations)
-    nearby = start(overpass_pool) { hiking.routes_in(tiles.first(FIRST_TILES)) }
+    # Tiles whose routes don't load leave their scenery unchecked, and the search incomplete.
+    failures = Concurrent::Array.new
+    nearby = start(overpass_pool) { hiking.routes_in(tiles.first(FIRST_TILES), failures: failures) }
     # Routes in the other tiles only add to the search, so it goes ahead without them.
-    farther = start(overpass_pool) { hiking.routes_in(tiles.drop(FIRST_TILES)) } if tiles.size > FIRST_TILES
+    farther = start(overpass_pool) { hiking.routes_in(tiles.drop(FIRST_TILES), failures: failures) } if tiles.size > FIRST_TILES
     search = Search.new(place, access, result, transit, hiking, on_found)
     routes = finished(nearby).value!
     relief = reliefs(routes, elevation)
     search.check(hiking.pick(routes, access: access, relief: relief).first(BATCH_SIZE))
     if farther
       more = optional { finished(farther).value! }
-      # Without the other tiles' routes, the scenery farther out goes unchecked.
       result.complete = false unless more
       more = Array(more).reject { |route| relief.key?(route[:id]) }
       relief = relief.merge(reliefs(more, elevation))
       routes = (routes + more).uniq { |route| route[:id] }
     end
     search.check(hiking.pick(routes, access: access, relief: relief))
+    result.complete = false if failures.any?
     raise search.error if result.trails.empty? && search.error
     return result if result.trails.empty?
 

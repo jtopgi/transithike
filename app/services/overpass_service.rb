@@ -133,8 +133,8 @@ module OverpassService
   # uncached tiles are queried TILES_PER_QUERY neighbors at a time, each query
   # finding the routes of the region around its tiles once, then keeping those
   # in the tiles. The routes of tiles whose query fails are left out, unless
-  # every tile's do.
-  def self.routes_in(tiles, connections: nil, cache: Rails.cache)
+  # every tile's do, and each such failure is added to failures when given.
+  def self.routes_in(tiles, connections: nil, cache: Rails.cache, failures: nil)
     keys = tiles.to_h { |tile| [tile, "overpass:tile:v1:#{tile.join(':')}"] }
     found = keys.empty? ? {} : cache.read_multi(*keys.values)
     error = nil
@@ -150,6 +150,7 @@ module OverpassService
       end
     rescue SearchErrors::UpstreamError => failure
       error ||= failure
+      failures&.push(failure)
     end
     raise error if error && keys.values.none? { |key| found.key?(key) }
 
