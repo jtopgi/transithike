@@ -47,177 +47,241 @@ class TransitousServiceTest < ActiveSupport::TestCase
     end
   end
 
-  # Answers the stops transit reaches from the origin, and with transitModes,
-  # those trains reach from each hub by its id.
-  def rail_connection(hubs, rides, requests = [])
-    stub_connection(:get, lambda { |request|
-      requests << request.params.slice("one", "time", "maxTravelTime", "transitModes")
-      raise SearchErrors::UpstreamError, "down" if rides[request.params["one"]].is_a?(Exception)
+  def station(id: "king-street", latitude: 47.598, longitude: -122.33)
+    Station.new(name: "King Street", latitude: latitude, longitude: longitude, id: id)
+  end
 
-      { "all" => request.params["transitModes"] ? rides.fetch(request.params["one"]) : hubs }
+  # A stop as the map lists it.
+  def map_stop(name, latitude, longitude, importance, modes: ["REGIONAL_RAIL"])
+    { "name" => name, "stopId" => name.parameterize, "lat" => latitude, "lon" => longitude, "importance" => importance,
+      "modes" => modes }
+  end
+
+  # A train on line that leaves at 8 AM and stops at each [latitude, longitude,
+  # minutes later] in turn, ending at the last.
+  def departure(line, *stops)
+    leaves = Time.utc(2026, 9, 23, 15)
+    following = stops.map do |latitude, longitude, minutes|
+      { "lat" => latitude, "lon" => longitude, "arrival" => (leaves + minutes.minutes).iso8601 }
+    end
+    { "place" => { "departure" => leaves.iso8601 }, "routeId" => line, "nextStops" => following, "tripTo" => following.last }
+  end
+
+  # Answers the map's stops, and each stop's departures by its id; a stop
+  # whose departures are an exception can't be looked up.
+  def station_connections(stops, boards, requests = [])
+    map = stub_connection(:get, lambda { |request|
+      requests << [:stops, request.params.slice("min", "max", "modes", "grouped")]
+      stops.respond_to?(:call) ? stops.call(request) : stops
     })
+    times = stub_connection(:get, lambda { |request|
+      requests << [:board, request.params["stopId"]]
+      board = boards.fetch(request.params["stopId"], [])
+      raise board if board.is_a?(Exception)
+
+      { "stopTimes" => board }
+    })
+    [map, times]
   end
 
-  def rail_stations(connection, cache: ActiveSupport::Cache::MemoryStore.new, origin: self.origin)
-    TransitousService.rail_stations(origin: origin, departure_time: DEPARTURE, connection: connection, cache: cache)
+  def major_stations(stops, boards, requests = [], cache: ActiveSupport::Cache::MemoryStore.new, origin: self.origin)
+    map, times = station_connections(stops, boards, requests)
+    TransitousService.major_stations(origin: origin, departure_time: DEPARTURE, stops: map, boards: times, cache: cache)
   end
 
-  test "rail stations are those trains reach from the busiest stations transit reaches, timed from the origin" do
-    hubs = [
-      reached_stop(47.6, -122.33, 12, id: "king-street", importance: 0.5, modes: ["REGIONAL_RAIL", "BUS"]),
-      reached_stop(47.62, -122.32, 5, id: "bus-stop", importance: 0.9, modes: ["BUS"]),
-      # Next to King Street, so trains are boarded there only.
-      reached_stop(47.601, -122.331, 14, id: "sounder", importance: 0.4),
-      # King Street's trains get there within ten minutes of reaching it directly.
-      reached_stop(47.65, -122.35, 20, rides: 2, id: "north", importance: 0.3),
-      reached_stop(47.7, -122.4, 25, rides: 0, id: "local", importance: 0.01)
-    ]
-    rides = {
-      "king-street" => [reached_stop(47.6, -122.33, 0, rides: 0, id: "king-street"),
-        reached_stop(47.65, -122.35, 18, id: "north"), reached_stop(47.2, -122.4, 40, id: "tacoma"),
-        reached_stop(47.9, -122.2, 70.0, rides: 2, id: "everett"), reached_stop(47.3, -122.2, 20, modes: ["BUS"], id: "bus")],
-      "local" => [reached_stop(47.9, -122.2, 30, id: "everett"), reached_stop(48.7, -122.5, 120, id: "bellingham")]
+  # Seattle's stations: Everett and Tacoma are 40 km out, and Northgate is ten minutes up the line from King Street.
+  def seattle_boards
+    {
+      "king-street" => [departure("north", [47.65, -122.32, 10], [47.98, -122.2, 60]), departure("south", [47.25, -122.44, 50])],
+      "northgate" => [departure("north", [47.98, -122.2, 50]), departure("north", [47.598, -122.33, 10])],
+      "eastside" => [departure("east", [47.61, -121.7, 45])],
+      # Its trains end within the city.
+      "waterfront" => [departure("waterfront", [47.66, -122.4, 20])]
     }
-    requests = []
-    stations = rail_stations(rail_connection(hubs, rides, requests))
+  end
 
-    assert_equal [[47.65, -122.35, 30], [47.2, -122.4, 52], [47.9, -122.2, 55], [48.7, -122.5, 145]], stations
+  def seattle_stops
+    [
+      map_stop("KING STREET", 47.598, -122.33, 1.0), map_stop("King Street Hall 2", 47.5985, -122.3305, 0.95),
+      map_stop("Northgate", 47.65, -122.32, 0.8), map_stop("Eastside", 47.61, -122.2, 0.5),
+      map_stop("Waterfront", 47.605, -122.34, 0.4), map_stop("Small Halt", 47.62, -122.31, 0.1),
+      map_stop("Bus Depot", 47.6, -122.31, 0.9, modes: ["BUS"]),
+      # In the map's square, but over 10 km away.
+      map_stop("Corner", 47.68, -122.41, 0.9)
+    ]
+  end
+
+  test "searches start from the busiest and nearest train stations, each adding lines the others don't" do
+    requests = []
+    stations = major_stations(seattle_stops, seattle_boards, requests)
+
+    assert_equal [Station.new(name: "King Street", latitude: 47.598, longitude: -122.33, id: "king-street"),
+      Station.new(name: "Eastside", latitude: 47.61, longitude: -122.2, id: "eastside")], stations
+    # Northgate's trains are King Street's, ten minutes on, and Waterfront's only go across the city.
+    assert_equal [[:board, "king-street"], [:board, "northgate"], [:board, "waterfront"], [:board, "eastside"]],
+      requests.select { |kind, _| kind == :board }
+    stops = requests.find { |kind, _| kind == :stops }.last
+    assert_equal ["47.50956,-122.43412", "47.69044,-122.16588", TransitousService::TRAIN_MODES.join(","), "true"],
+      stops.values_at("min", "max", "modes", "grouped")
+  end
+
+  test "a station the trains of a chosen one reach quickly is chosen when enough of its trains are on other lines" do
+    boards = seattle_boards.merge("northgate" => [departure("north", [47.98, -122.2, 50]),
+      departure("north", [47.98, -122.2, 55]), departure("express", [48.2, -122.3, 40])])
+    assert_equal ["King Street", "Northgate", "Eastside"], major_stations(seattle_stops, boards).map(&:name)
+
+    # One train in five on another line is too few.
+    boards["northgate"].push(departure("north", [47.98, -122.2, 70]), departure("north", [47.98, -122.2, 75]))
+    assert_equal ["King Street", "Eastside"], major_stations(seattle_stops, boards).map(&:name)
+  end
+
+  test "stations farther out are looked for when none are near, and there are at most six" do
+    requests = []
+    # Tukwila is 16 km away, outside the first square.
+    near_none = lambda do |request|
+      Float(request.params["min"].split(",").first) > 47.45 ? [] : [map_stop("Tukwila", 47.46, -122.24, 0.6)]
+    end
+    stations = major_stations(near_none, { "tukwila" => [departure("south", [47.25, -122.44, 30])] }, requests)
+    assert_equal ["Tukwila"], stations.map(&:name)
+    assert_equal 2, requests.count { |kind, _| kind == :stops }
+
+    # Eight stations 2 km apart around the origin, whose trains don't reach each other.
+    stops = (0...8).map { |index| map_stop("Station #{index}", 47.6 + 0.018 * Math.cos(index), -122.3 + 0.027 * Math.sin(index), 1.0) }
+    boards = stops.to_h { |stop| [stop["stopId"], [departure("line #{stop['stopId']}", [48.2, -122.3, 60])]] }
+    assert_equal 6, major_stations(stops, boards).size
+  end
+
+  test "a place's stations are shared for days, unless some station's trains couldn't be looked up" do
+    travel_to Time.utc(2026, 9, 22, 12) do
+      cache = ActiveSupport::Cache::MemoryStore.new
+      requests = []
+      major_stations(seattle_stops, seattle_boards, requests, cache: cache)
+      major_stations(seattle_stops, seattle_boards, requests, cache: cache, origin: Place.new(latitude: 47.601, longitude: -122.301))
+      assert_equal 1, requests.count { |kind, _| kind == :stops }
+      travel 7.days + 1.minute
+      major_stations(seattle_stops, seattle_boards, requests, cache: cache)
+      assert_equal 2, requests.count { |kind, _| kind == :stops }
+
+      # Without Northgate's trains, it's left out, since King Street's trains reach it quickly, and Eastside isn't.
+      cache = ActiveSupport::Cache::MemoryStore.new
+      failing = seattle_boards.merge("northgate" => SearchErrors::UpstreamError.new("down"),
+        "eastside" => SearchErrors::UpstreamError.new("down"))
+      assert_equal ["King Street", "Eastside"], major_stations(seattle_stops, failing, cache: cache).map(&:name)
+      requests = []
+      major_stations(seattle_stops, seattle_boards, requests, cache: cache)
+      assert_equal 1, requests.count { |kind, _| kind == :stops }
+    end
+  end
+
+  test "without the map of stations, there are no stations to start from" do
+    map = stub_connection(:get, {}, status: 500)
+    times = stub_connection(:get, {}) { flunk "No request expected" }
+    assert_raises(SearchErrors::UpstreamError) do
+      TransitousService.major_stations(origin: origin, departure_time: DEPARTURE, stops: map, boards: times,
+        cache: ActiveSupport::Cache::MemoryStore.new)
+    end
+  end
+
+  test "stations are named as people know them" do
+    {
+      "HOBOKEN" => "Hoboken", "SECAUCUS LOWER LEVEL" => "Secaucus Lower Level", "Ny Moynihan Train Hall At Penn Station" => "Penn Station",
+      "Paris Gare de Lyon Hall 1 - 2" => "Paris Gare de Lyon", "S+U Alexanderplatz Bhf (Berlin)" => "Alexanderplatz",
+      "Berlin Hbf (tief)" => "Berlin Hbf", "MÜNCHEN OST" => "München Ost", "Zürich HB" => "Zürich HB", nil => "Station", " " => "Station"
+    }.each { |name, known| assert_equal known, TransitousService.station_name(name) }
+  end
+
+  def rail_stations(connection, cache: ActiveSupport::Cache::MemoryStore.new, station: self.station)
+    TransitousService.rail_stations(origin: station, departure_time: DEPARTURE, connection: connection, cache: cache)
+  end
+
+  test "rail stations are those trains reach from the station, quickest first" do
+    requests = []
+    all = [
+      reached_stop(47.598, -122.33, 0, rides: 0, id: "king-street"), reached_stop(47.65, -122.35, 18, id: "north"),
+      reached_stop(47.2, -122.4, 40, id: "tacoma"), reached_stop(47.9, -122.2, 70.0, rides: 2, id: "everett"),
+      reached_stop(47.3, -122.2, 20, modes: ["BUS"], id: "bus"), reached_stop(47.65, -122.35, 25, rides: 2, id: "north")
+    ]
+    connection = stub_connection(:get, { "all" => all }) { |request| requests << request.params }
+    assert_equal [[47.65, -122.35, 18], [47.2, -122.4, 40], [47.9, -122.2, 70.0]], rail_stations(connection)
+
     trains = TransitousService::TRAIN_MODES.join(",")
-    assert_equal [
-      { "one" => "47.6000000,-122.3000000", "time" => "2026-09-23T15:00:00Z", "maxTravelTime" => "60" },
-      { "one" => "king-street", "time" => "2026-09-23T15:12:00Z", "maxTravelTime" => "198", "transitModes" => trains },
-      { "one" => "local", "time" => "2026-09-23T15:25:00Z", "maxTravelTime" => "185", "transitModes" => trains }
-    ], requests
+    assert_equal [{ "one" => "king-street", "time" => "2026-09-23T15:00:00Z", "maxTravelTime" => "210", "transitModes" => trains }],
+      requests
     assert_includes trains.split(","), "REGIONAL_RAIL"
     assert_includes trains.split(","), "SUBURBAN"
     # Transitous's RAIL takes the subway too, and METRO is its old name for suburban trains.
     assert_empty trains.split(",") & %w[RAIL METRO SUBWAY TRAM BUS COACH]
+
+    rail_stations(connection, station: station(id: nil))
+    assert_equal "47.5980000,-122.3300000", requests.last["one"]
   end
 
-  test "where a hub's trains reach too many stations to list, those within 120 or 80 minutes are, and the limit that fits is remembered" do
+  test "where a station's trains reach too many stations to list, those within 120 or 80 minutes are, and the limit that fits is remembered" do
     travel_to Time.utc(2026, 9, 22, 12) do
       cache = ActiveSupport::Cache::MemoryStore.new
       limits = []
       connection = stub_connection(:get, lambda { |request|
-        next { "all" => [reached_stop(47.6, -122.33, 12, id: "hub")] } unless request.params["transitModes"]
-
         limits << request.params["maxTravelTime"]
         raise SearchErrors::ResponseTooLarge unless request.params["maxTravelTime"] == "80"
 
         { "all" => [reached_stop(48.0, -122.0, 70)] }
       })
-      assert_equal [[48.0, -122.0, 82]], rail_stations(connection, cache: cache)
-      assert_equal %w[198 120 80], limits
+      assert_equal [[48.0, -122.0, 70]], rail_stations(connection, cache: cache)
+      assert_equal %w[210 120 80], limits
 
-      rail_stations(connection, cache: cache, origin: Place.new(latitude: 47.64, longitude: -122.34))
-      assert_equal %w[198 120 80 80], limits
+      rail_stations(connection, cache: cache, station: station(id: "nearby", latitude: 47.62))
+      assert_equal %w[210 120 80 80], limits
       travel 1.day + 1.minute
-      rail_stations(connection, cache: cache, origin: Place.new(latitude: 47.62, longitude: -122.31))
-      assert_equal %w[198 120 80 80 198 120 80], limits
+      rail_stations(connection, cache: cache, station: station(id: "another"))
+      assert_equal %w[210 120 80 80 210 120 80], limits
 
-      too_many = rail_connection([reached_stop(47.6, -122.33, 12, id: "hub")], { "hub" => SearchErrors::ResponseTooLarge.new("huge") })
+      too_many = stub_connection(:get, {}) { raise SearchErrors::ResponseTooLarge }
       assert_raises(SearchErrors::UpstreamError) { rail_stations(too_many) }
     end
   end
 
-  test "trains are boarded at no more than three stations, and at their coordinates when they have no id" do
-    hubs = [47.7, 47.8, 47.9, 48.0].each_with_index.map do |latitude, index|
-      reached_stop(latitude, -122.3, 10 * (index + 1), importance: 1.0 / (index + 1))
-    end
-    requests = []
-    connection = stub_connection(:get, lambda { |request|
-      requests << request.params["one"]
-      { "all" => request.params["transitModes"] ? [reached_stop(48.5, -121.0, 60)] : hubs }
-    })
-    assert_equal [[48.5, -121.0, 70]], rail_stations(connection)
-    assert_equal ["47.6000000,-122.3000000", "47.7000000,-122.3000000", "47.8000000,-122.3000000", "47.9000000,-122.3000000"],
-      requests
-  end
-
-  test "where every stop within an hour is too many to list, stations within 40 or 25 minutes are, and the list that fits is remembered" do
+  test "rail stations are shared for hours by searches from the same station at the same time, and failures aren't" do
     travel_to Time.utc(2026, 9, 22, 12) do
       cache = ActiveSupport::Cache::MemoryStore.new
-      requests = []
-      connection = stub_connection(:get, lambda { |request|
-        requests << request.params["maxTravelTime"]
-        next { "all" => [reached_stop(48.5, -121.0, 60)] } if request.params["transitModes"]
-        raise SearchErrors::ResponseTooLarge unless request.params["maxTravelTime"] == "25"
-
-        { "all" => [reached_stop(47.6, -122.33, 12, id: "king-street")] }
-      })
-      assert_equal [[48.5, -121.0, 72]], rail_stations(connection, cache: cache)
-      assert_equal %w[60 40 25 198], requests
-
-      # Nearby searches go straight to the list that fits, for a day.
-      rail_stations(connection, cache: cache, origin: Place.new(latitude: 47.64, longitude: -122.34))
-      assert_equal %w[60 40 25 198 25 198], requests
-      travel 1.day + 1.minute
-      rail_stations(connection, cache: cache)
-      assert_equal %w[60 40 25 198 25 198 60 40 25 198], requests
-    end
-  end
-
-  test "where even stations within 25 minutes are too many to list, there are none for a day" do
-    calls = 0
-    huge = stub_connection(:get, { "all" => [] }) do
-      calls += 1
-      raise SearchErrors::ResponseTooLarge
-    end
-    cache = ActiveSupport::Cache::MemoryStore.new
-    assert_equal [], rail_stations(huge, cache: cache)
-    assert_equal [], rail_stations(huge, cache: cache, origin: Place.new(latitude: 47.64, longitude: -122.34))
-    assert_equal 3, calls
-  end
-
-  test "a hub whose trains can't be looked up is left out and the list isn't shared, and with no trains at all the search fails" do
-    hubs = [reached_stop(47.6, -122.33, 12, id: "king-street", importance: 0.5),
-      reached_stop(47.7, -122.4, 25, id: "north", importance: 0.1)]
-    cache = ActiveSupport::Cache::MemoryStore.new
-    requests = []
-    connection = rail_connection(hubs, { "king-street" => SearchErrors::UpstreamError.new("down"),
-      "north" => [reached_stop(48.0, -122.0, 20)] }, requests)
-    assert_equal [[48.0, -122.0, 45]], rail_stations(connection, cache: cache)
-    rail_stations(connection, cache: cache)
-    assert_equal 6, requests.size
-
-    connection = rail_connection(hubs, { "king-street" => SearchErrors::UpstreamError.new("down"),
-      "north" => SearchErrors::UpstreamError.new("down") })
-    assert_raises(SearchErrors::UpstreamError) { rail_stations(connection) }
-    assert_raises(SearchErrors::UpstreamError) { rail_stations(stub_connection(:get, {}, status: 500)) }
-  end
-
-  test "rail stations are shared for hours by searches from about the same place at the same time" do
-    travel_to Time.utc(2026, 9, 22, 12) do
-      cache = ActiveSupport::Cache::MemoryStore.new
-      requests = []
-      connection = rail_connection([reached_stop(47.6, -122.33, 12, id: "hub")], { "hub" => [reached_stop(48.0, -122.0, 20)] }, requests)
-      rail_stations(connection, cache: cache)
-      rail_stations(connection, cache: cache, origin: Place.new(latitude: 47.6004, longitude: -122.3004))
-      assert_equal 2, requests.size
-      rail_stations(connection, cache: cache, origin: Place.new(latitude: 47.61, longitude: -122.3))
-      assert_equal 4, requests.size
+      calls = 0
+      connection = stub_connection(:get, { "all" => [reached_stop(48.0, -122.0, 20)] }) { calls += 1 }
+      2.times { rail_stations(connection, cache: cache) }
+      assert_equal 1, calls
+      rail_stations(connection, cache: cache, station: station(id: "another"))
+      assert_equal 2, calls
       travel 6.hours + 1.minute
       rail_stations(connection, cache: cache)
-      assert_equal 6, requests.size
+      assert_equal 3, calls
+
+      failing = stub_connection(:get, {}, status: 500) { calls += 1 }
+      2.times { assert_raises(SearchErrors::UpstreamError) { rail_stations(failing, cache: cache, station: station(id: "down")) } }
+      assert_equal 5, calls
     end
   end
 
   test "reachable stops skip malformed entries, and a list must be one" do
     body = { "all" => [
-      reached_stop(47.61, -122.33, 12, modes: ["BUS"], id: "3rd-ave", importance: 0.2),
-      reached_stop(47.5, -122.0, 95.0, rides: 2, modes: ["SUBURBAN", "BUS"], importance: "high"),
+      reached_stop(47.61, -122.33, 12, modes: ["BUS"], id: "3rd-ave"),
+      reached_stop(47.5, -122.0, 95.0, rides: 2, modes: ["SUBURBAN", "BUS"]),
       reached_stop(47.4, -122.1, 40, modes: "REGIONAL_RAIL", id: "x" * 201),
       reached_stop(91, 0, 5), reached_stop(47.5, -122.0, -1), reached_stop(47.5, -122.0, 5, rides: "1"),
       { "place" => nil, "duration" => 5, "k" => 1 }, nil
     ] }
     stops = TransitousService.reachable(stub_connection(:get, body), {})
     assert_equal [
-      { key: "3rd-ave", id: "3rd-ave", latitude: 47.61, longitude: -122.33, minutes: 12, rides: 1, importance: 0.2, train: false },
-      { key: [47.5, -122.0], id: nil, latitude: 47.5, longitude: -122.0, minutes: 95.0, rides: 2, importance: 0, train: true },
-      { key: [47.4, -122.1], id: nil, latitude: 47.4, longitude: -122.1, minutes: 40, rides: 1, importance: 0, train: true }
+      { key: "3rd-ave", latitude: 47.61, longitude: -122.33, minutes: 12, rides: 1, train: false },
+      { key: [47.5, -122.0], latitude: 47.5, longitude: -122.0, minutes: 95.0, rides: 2, train: true },
+      { key: [47.4, -122.1], latitude: 47.4, longitude: -122.1, minutes: 40, rides: 1, train: true }
     ], stops
     [{}, { "all" => nil }, []].each do |invalid|
       assert_raises(SearchErrors::UpstreamError) { TransitousService.reachable(stub_connection(:get, invalid), {}) }
+    end
+  end
+
+  test "trips more than half a day ahead are shared for hours, and the day's for minutes" do
+    travel_to Time.utc(2026, 9, 22, 12) do
+      assert_equal 6.hours, TransitousService.trip_cache_ttl(Time.utc(2026, 9, 23, 0, 1))
+      assert_equal 15.minutes, TransitousService.trip_cache_ttl(Time.utc(2026, 9, 22, 23, 59))
     end
   end
 

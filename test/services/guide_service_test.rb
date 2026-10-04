@@ -10,21 +10,27 @@ class GuideServiceTest < ActiveSupport::TestCase
   class FakeSearch
     attr_reader :origins
 
-    def initialize(trails)
-      @trails, @origins = trails, []
+    def initialize(trails, stations: nil)
+      @trails, @stations, @origins = trails, stations, []
     end
 
     def search(origin:, day:)
       @origins << [origin, day]
       departure = ActiveSupport::TimeZone["America/New_York"].parse("2026-10-10 08:00")
-      TrailsService::Result.new(place: origin, departure_time: departure, return_by: departure.change(hour: 23),
+      TrailsService::Result.new(place: origin, stations: @stations, departure_time: departure, return_by: departure.change(hour: 23),
         trails: @trails, returns_checked: true, complete: true)
     end
   end
 
-  # Trips there by train, and trips back after the hike, for TripPlans.
+  # Trips there by train, and trips back after the hike, for TripPlans, which
+  # remembers where trips there leave from.
   class FakeTransit
+    def origins
+      @origins ||= []
+    end
+
     def journey(origin:, destination:, time:)
+      origins << [origin.name, origin.latitude, origin.longitude]
       { departure: (time + 10.minutes).utc.iso8601, arrival: (time + 90.minutes).utc.iso8601,
         legs: [{ mode: "SUBURBAN", name: "Hudson Line", to_name: "Cold Spring" }, { mode: "BUS", name: "5", to_name: "Main St" }] }
     end
@@ -146,6 +152,28 @@ class GuideServiceTest < ActiveSupport::TestCase
     assert_equal ["2026-10-10T08:00:00-04:00", "2026-10-10T23:00:00-04:00"], data.values_at(:departure_time, :return_by)
     assert_equal({ climb: 400, relief: 400 }, hike.dig(:trail, :terrain))
     assert_equal "2026-10-10T13:30:00Z", hike.dig(:trail, :arrival)
+  end
+
+  test "each hike's trips leave from the station it was found from, which the guide keeps" do
+    grand_central = Station.new(name: "Grand Central", latitude: 40.7527, longitude: -73.9772, id: "us-ny-MetroNorth_1")
+    hoboken = Station.new(name: "Hoboken", latitude: 40.7347, longitude: -74.0275, id: "hoboken")
+    search = FakeSearch.new([trail("Ridge Loop", 1, station: grand_central, scenic: 2), trail("Lake Loop", 2, station: hoboken)],
+      stations: [grand_central, hoboken])
+    transit = FakeTransit.new
+    data = GuideService.build(guide, search: search, transit: transit, photos: FakePhotos.new, places: FakePlaces.new)
+
+    assert_equal [grand_central.to_h, hoboken.to_h], data[:stations]
+    assert_equal [grand_central.to_h, hoboken.to_h], data[:hikes].map { |hike| hike.dig(:trail, :station) }
+    assert_equal [["Grand Central", 40.7527, -73.9772], ["Hoboken", 40.7347, -74.0275]], transit.origins.uniq
+
+    write_guide(JSON.parse(JSON.generate(data), symbolize_names: true))
+    page = GuideService.page("new-york-city")
+    assert_equal [grand_central, hoboken], page.stations
+    hike = page.hike("ridge-loop")
+    assert_equal [grand_central, "Grand Central"], [hike.trail.station, hike.trail.origin]
+    # Guides built before trips left from stations have none.
+    write_guide
+    assert_equal [[], nil], GuideService.page("new-york-city").then { |old| [old.stations, old.hikes.first.trail.station] }
   end
 
   test "slugs are lowercase letters and digits joined by hyphens, as the guides' addresses accept" do

@@ -41,6 +41,26 @@ class SearchHttpTest < ActiveSupport::TestCase
     Rails.logger = logger if logger
   end
 
+  test "requests to a provider that answers only a few at once wait for a slot, and fail when none comes free" do
+    stubs = Faraday::Adapter::Test::Stubs.new { |stub| stub.get("/plan") { [200, {}, "{}"] } }
+    connection = SearchHttp.connection("https://api.transitous.org")
+    connection.builder.adapter :test, stubs
+    slots = Rails.configuration.x.provider_slots["api.transitous.org"]
+    assert_equal 3, slots.available_permits
+
+    assert_equal "{}", connection.get("/plan").body
+    assert_equal 3, slots.available_permits
+    slots.acquire(3)
+    begin
+      error = assert_raises(SearchErrors::ProviderBusy) do
+        stub_const(SearchHttp, :SLOT_WAIT_SECONDS, 0.05) { connection.get("/plan") }
+      end
+    ensure
+      slots.release(3)
+    end
+    assert_equal SearchHttp::BUSY_MESSAGE, error.message
+  end
+
   test "JSON bodies must have the expected shape size and encoding" do
     assert_equal [1], SearchHttp.json(Array) { stub_connection(:get, [1]).get }
     assert_equal({ "a" => 1 }, SearchHttp.json { stub_connection(:get, { "a" => 1 }).get })

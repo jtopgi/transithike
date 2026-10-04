@@ -7,6 +7,28 @@ module SearchHttp
   # Community-run providers require clients to identify themselves with a contact.
   USER_AGENT = "TransitHike/0.1 (+https://github.com/jtopgi/transithike)"
 
+  # Requests to a provider that limits how many it answers at once wait this
+  # long for one of the process's slots for it.
+  SLOT_WAIT_SECONDS = 30
+  BUSY_MESSAGE = "A search provider is busy. Please try again later."
+
+  # Holds one of the process's slots for a provider, by host, from
+  # config.x.provider_slots, while a request to it runs, so the process never
+  # sends a provider more requests at once than it answers.
+  class Slots < Faraday::Middleware
+    def call(env)
+      slots = Rails.configuration.x.provider_slots[env.url.host]
+      return @app.call(env) unless slots
+      raise SearchErrors::ProviderBusy, BUSY_MESSAGE unless slots.try_acquire(1, SLOT_WAIT_SECONDS)
+
+      begin
+        @app.call(env)
+      ensure
+        slots.release
+      end
+    end
+  end
+
   # Logs each failed request with its provider, which the errors people see leave out.
   class FailureLog < Faraday::Middleware
     def call(env)
@@ -22,6 +44,7 @@ module SearchHttp
   def self.connection(url, timeout: 5)
     Faraday.new(url: url, headers: { "User-Agent" => USER_AGENT }) do |http|
       http.use FailureLog
+      http.use Slots
       http.options.open_timeout = 3
       http.options.timeout = timeout
       http.options.on_data = lambda do |chunk, received_bytes, env|

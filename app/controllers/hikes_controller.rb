@@ -8,27 +8,37 @@ class HikesController < ApplicationController
   EXTRAS_WAIT_SECONDS = 10
 
   # route is the OpenStreetMap relation id; from, to, and finish are
-  # "latitude,longitude" for the starting point, where transit reaches the
-  # route, and where a hike to the far end finishes; plan is how it's hiked;
-  # leave and back_by are when trips there start and trips back must arrive; tz
-  # is the starting point's time zone, and origin its name.
+  # "latitude,longitude" for the search's starting point, where transit
+  # reaches the route, and where a hike to the far end finishes; station, if
+  # given, is "latitude,longitude" for the station trips leave from, and
+  # station_name its name, and otherwise they leave from the starting point;
+  # plan is how it's hiked; leave and back_by are when trips there start and
+  # trips back must arrive; tz is the starting point's time zone, and origin
+  # its name.
   def show
     origin, start = [params[:from], params[:to]].map { |value| point(value) }
     finish = point(params[:finish]) if params[:plan] == "through"
+    station = point(params[:station]) if params.key?(:station)
     leave, back_by = [params[:leave], params[:back_by]].map { |value| time(value) }
     @zone = ActiveSupport::TimeZone[params[:tz]] if params[:tz].is_a?(String) && params[:tz].length <= 64
     route = Integer(params[:route], 10, exception: false) if params[:route].is_a?(String)
-    @origin_name = params[:origin].strip.truncate(100) if params[:origin].is_a?(String) && params[:origin].strip.present?
+    @origin_name, @station_name = [params[:origin], params[:station_name]].map { |name| name_param(name) }
     unless origin && start && route&.positive? && PLANS.include?(params[:plan]) && (finish || params[:plan] != "through") &&
+        (station || !params.key?(:station)) &&
         leave && back_by && @zone && leave.between?(1.day.ago, 8.days.from_now) && back_by.between?(leave, leave + 1.day)
       return head(:bad_request)
     end
 
-    @trail = OverpassService.trails_for([route], lat: origin.latitude, lon: origin.longitude).first
+    # Trips leave from the station, and the page links back to the search from the starting point.
+    from = station || origin
+    @trail = OverpassService.trails_for([route], lat: from.latitude, lon: from.longitude).first
     return head(:not_found) unless @trail
 
     @trail.latitude, @trail.longitude, @trail.plan, @trail.finish = start.latitude, start.longitude, params[:plan].to_sym, finish&.then { |place| [place.latitude, place.longitude] }
     @trail.origin = @origin_name
+    if station
+      @trail.station = Station.new(name: @station_name || "the station", latitude: station.latitude, longitude: station.longitude)
+    end
     # The route's highlights, terrain, and photos, and where it is, are looked up while transit is planned,
     # where it is on its own, so a slow lookup of it doesn't hold up the rest.
     trail = @trail
@@ -37,10 +47,11 @@ class HikesController < ApplicationController
         optional { WikipediaService.photos_near(trail.photo_points) }]
     end
     where = TrailsService.start { TrailsService.location(trail, origin) }
-    @origin, @leave, @back_by = origin, leave.in_time_zone(@zone), back_by.in_time_zone(@zone)
+    @from, @leave, @back_by = from, leave.in_time_zone(@zone), back_by.in_time_zone(@zone)
+    @from_name = station ? @station_name || "the station" : @origin_name
     @results_path = search_path({ origin: @origin_name || SearchOrigin::CURRENT_LOCATION, lat: origin.latitude,
       lon: origin.longitude, day: @leave.saturday? ? "saturday" : "sunday", tz: @zone.tzinfo.name })
-    trips = TripPlans.plan(@trail, origin: origin, leave: leave, back_by: back_by)
+    trips = TripPlans.plan(@trail, origin: from, leave: leave, back_by: back_by)
     @there, @ways, @departures = trips.values_at(:there, :ways, :departures)
     TrailsService.settle([extras, where], timeout: EXTRAS_WAIT_SECONDS)
     highlights, @trail.terrain, @photos = extras.value(0) || []
@@ -60,6 +71,10 @@ class HikesController < ApplicationController
     yield
   rescue SearchErrors::UpstreamError
     nil
+  end
+
+  def name_param(value)
+    value.strip.truncate(100) if value.is_a?(String) && value.strip.present?
   end
 
   def point(value)

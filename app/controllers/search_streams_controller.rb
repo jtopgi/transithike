@@ -36,12 +36,16 @@ class SearchStreamsController < ApplicationController
     when :place
       @result = payload
       send_event("place", heading: "Day hikes by train from #{helpers.place_label(payload)}", departure: helpers.trip_times(payload),
-        time_zone: payload.departure_time.time_zone.tzinfo.name)
-    when :checking then send_event("checking", count: payload)
+        time_zone: payload.departure_time.time_zone.tzinfo.name,
+        stations: (render_to_string(partial: "searches/stations", locals: { result: payload }) if payload.stations.any?))
+    when :checking
+      count, station = payload
+      send_event("checking", count: count, station: station.name)
     when :trails
       send_event("trails", html: render_to_string(partial: "searches/trail", collection: payload, locals: { result: @result }))
-    when :ranking then send_event("ranking", count: payload)
     when :update then send_event("update", trails: payload.map { |trail| trail_update(trail) })
+    # A comment keeps the connection open, and finds out sooner when the visitor has left.
+    when :waiting then response.stream.write(": waiting\n\n")
     end
   end
 
@@ -61,6 +65,9 @@ class SearchStreamsController < ApplicationController
 
   def notices(result)
     notices = []
+    if result.stations.empty?
+      notices << "We couldn't find a major train station within #{TransitousService::STATION_RADII.last / 1000} km of this place."
+    end
     notices << "We couldn't check the way back for some hikes. Check the last trip back before you go." unless result.returns_checked
     notices << "Some hikes couldn't be checked just now. Search again later for more." unless result.complete
     notices

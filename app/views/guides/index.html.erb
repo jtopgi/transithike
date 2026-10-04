@@ -18,7 +18,7 @@
         <article class="card h-100 border-0 shadow-sm">
           <div class="card-body p-4">
             <h2 class="h5"><%= link_to "Day hikes by train from #{page.guide.name}", guide_path(page.guide.slug) %></h2>
-            <p class="text-body-secondary mb-2"><%= pluralize(page.hikes.size, "hike") %> from <%= page.guide.origin %>, including:</p>
+            <p class="text-body-secondary mb-2"><%= pluralize(page.hikes.size, "hike") %>, including:</p>
             <ul class="mb-0">
               <% page.hikes.first(3).each do |hike| %>
                 <li><%= link_to hike.title, guide_hike_path(page.guide.slug, hike.slug) %></li>

@@ -26,7 +26,8 @@
   </div>
 </section>
 <%= render "hikes/details", trail: trail, zone: zone, there: @hike.there, ways: @hike.ways, departures: @hike.departures,
-      photos: @hike.photos, origin_name: guide.origin, place: guide.place, leave: @page.departure_time, return_by: @page.return_by %>
+      photos: @hike.photos, origin_name: trail.station&.name || guide.origin, place: trail.station&.place || guide.place,
+      leave: @page.departure_time, return_by: @page.return_by %>
 <% others = @page.hikes.reject { |hike| hike.equal?(@hike) }.first(6) %>
 <% if others.any? %>
   <section class="container pb-4" aria-labelledby="more-heading">

@@ -14,16 +14,19 @@ class TrailsServiceTest < ActiveSupport::TestCase
     end
   end
 
-  # Trips there, trips by city transit, and latest returns by route name; a
-  # name missing from returns has no way back.
+  # The major stations near the origin; the stations trains reach from each,
+  # by its name when they differ; and trips there, trips by city transit, and
+  # latest returns by route name, with trips from some stations by their names
+  # in from. A name missing from returns has no way back.
   class FakeTransit
-    attr_reader :departures, :planned, :station_requests, :return_requests, :city_requests
+    attr_reader :departures, :planned, :station_requests, :return_requests, :city_requests, :major_requests
 
-    # By default, one station 55 km north of the origin, and no trips by city transit.
+    # By default, King Street station at the origin, one station 55 km north of
+    # it, and no trips by city transit.
     def initialize(trips: {}, city: {}, returns: nil, area: { time_zone: "America/Los_Angeles", area: "Seattle, Washington" },
-      stations: [[47.5, -122.0, 60]])
-      @trips, @city, @returns, @area, @stations = trips, city, returns, area, stations
-      @departures, @planned, @station_requests, @return_requests, @city_requests = [], [], [], [], []
+      stations: [[47.5, -122.0, 60]], major: [STATION], from: {})
+      @trips, @city, @returns, @area, @stations, @major, @from = trips, city, returns, area, stations, major, from
+      @departures, @planned, @station_requests, @return_requests, @city_requests, @major_requests = [], [], [], [], [], []
     end
 
     def area(latitude, longitude)
@@ -32,11 +35,19 @@ class TrailsServiceTest < ActiveSupport::TestCase
       @area
     end
 
+    def major_stations(origin:, departure_time:)
+      @major_requests << origin
+      raise @major if @major.is_a?(Exception)
+
+      @major
+    end
+
     def rail_stations(origin:, departure_time:)
       @station_requests << departure_time
-      raise @stations if @stations.is_a?(Exception)
+      stations = @stations.is_a?(Hash) ? @stations.fetch(origin.name) : @stations
+      raise stations if stations.is_a?(Exception)
 
-      @stations
+      stations
     end
 
     def trips(origin:, destinations:, departure_time:, modes: nil)
@@ -49,7 +60,8 @@ class TrailsServiceTest < ActiveSupport::TestCase
       @departures << departure_time
       raise @trips if @trips.is_a?(Exception)
 
-      destinations.map { |destination| @trips.fetch(destination.name) }
+      from = @from.fetch(origin.name, {})
+      destinations.map { |destination| from.fetch(destination.name) { @trips.fetch(destination.name) } }
     end
 
     def trip(origin:, destination:, departure_time:)
@@ -155,6 +167,9 @@ class TrailsServiceTest < ActiveSupport::TestCase
   teardown { travel_back }
 
   SATURDAY = Time.utc(2026, 9, 26, 15)
+  STATION = Station.new(name: "King Street", latitude: 47.0, longitude: -122.0, id: "king-street")
+  # 10 km east of King Street, so getting there across the city takes 40 minutes longer.
+  EASTSIDE = Station.new(name: "Eastside", latitude: 47.0, longitude: -121.869, id: "eastside")
 
   # A 3-mile loop, about 1.5 hours to hike, in an area of its own about 11 km
   # from each other trail's, unless placed at a latitude.
@@ -185,10 +200,12 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal [["A & B / 東京", [40.7, -74.0]]], places.queries
     assert_equal %w[fast slow], result.trails.map(&:name)
     fast = result.trails.first
-    assert_equal [1200, nil, "Seattle, Washington"], [fast.duration, fast.transfers, fast.origin]
+    assert_equal [1200, nil, "King Street", STATION], [fast.duration, fast.transfers, fast.origin, fast.station]
     assert_equal SATURDAY + 20.minutes, fast.arrival
     assert_equal Time.utc(2026, 9, 27, 4), fast.last_return
     assert_equal "Seattle, Washington", result.area
+    assert_equal [STATION], result.stations
+    assert_equal [result.place], transit.major_requests
     assert result.returns_checked
     assert result.complete
   end
@@ -239,11 +256,10 @@ class TrailsServiceTest < ActiveSupport::TestCase
       search(transit: transit, hiking: FakeHiking.new(trails)) { |event, payload| events << [event, payload] }
     end
 
-    assert_equal [:place, :checking, :trails, :checking, :trails, :checking, :trails, :ranking, :update], events.map(&:first)
-    assert_equal 5, events[-2].last
+    assert_equal [:place, :checking, :trails, :checking, :trails, :checking, :trails, :update], events.map(&:first)
     place = events.first.last
-    assert_equal [SATURDAY, Time.utc(2026, 9, 27, 6)], [place.departure_time, place.return_by]
-    assert_equal [2, 2, 1], events.select { |event, _| event == :checking }.map(&:last)
+    assert_equal [SATURDAY, Time.utc(2026, 9, 27, 6), [STATION]], [place.departure_time, place.return_by, place.stations]
+    assert_equal [[2, STATION], [2, STATION], [1, STATION]], events.select { |event, _| event == :checking }.map(&:last)
     assert_equal [["route 1", "route 2"], ["route 3", "route 4"], ["route 5"]],
       events.select { |event, _| event == :trails }.map { |_, found| found.map(&:name) }
     assert_equal result.trails, events.last.last
@@ -553,7 +569,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
     release.set
   end
 
-  test "hiking-route lookups alongside other work run on the Overpass pool, and each batch's on the search's thread" do
+  test "hiking-route lookups alongside other work run on the Overpass pool, and each batch's on the station search's thread" do
     pool = Class.new(Concurrent::CachedThreadPool) do
       attr_reader :posted
 
@@ -572,7 +588,8 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal %w[a b], result.trails.map(&:name).sort
     # The first tiles' routes, and each batch's highlights.
     assert_equal 3, pool.posted
-    assert_equal [Thread.current] * 2, hiking.threads
+    assert_equal 1, hiking.threads.uniq.size
+    refute_includes hiking.threads, Thread.current
   ensure
     Rails.configuration.x.overpass_pool = original
     pool&.shutdown
@@ -607,6 +624,128 @@ class TrailsServiceTest < ActiveSupport::TestCase
   ensure
     release&.set
     slow&.set
+  end
+
+  test "hikes are found from each station and shown from the one that gets there soonest, counting the trip to it" do
+    trails = [trail("both near"), trail("east"), trail("king street")]
+    # Eastside gets to the first sooner by train, but not once the 40 minutes across the city to it count.
+    transit = FakeTransit.new(major: [STATION, EASTSIDE], trips: { "both near" => minutes(60), "east" => minutes(100), "king street" => minutes(50) },
+      from: { "Eastside" => { "both near" => minutes(45), "east" => minutes(30), "king street" => nil } })
+    events = []
+    result = search(transit: transit, hiking: FakeHiking.new(trails)) { |event, payload| events << [event, payload] }
+
+    found = result.trails.to_h { |trail| [trail.name, [trail.station.name, trail.duration / 60]] }
+    assert_equal({ "both near" => ["King Street", 60], "east" => ["Eastside", 30], "king street" => ["King Street", 50] }, found)
+    assert_equal [STATION, EASTSIDE], result.stations
+    # A route is shown again only from a station that gets there sooner, and is last shown or updated as found.
+    changes = events.filter_map do |event, payload|
+      payload.map { |trail| [event, trail.name, trail.station.name] } if %i[trails update].include?(event)
+    end.flatten(1)
+    shown = changes.select { |event, _, _| event == :trails }
+    assert_equal shown.uniq, shown
+    assert_equal found.transform_values(&:first), changes.to_h { |_, name, station| [name, station] }
+  end
+
+  test "when a station's search fails, the others' hikes are still shown, and with none at all, the search fails" do
+    transit = FakeTransit.new(major: [STATION, EASTSIDE], trips: { "a" => minutes(30) },
+      stations: { "King Street" => [[47.5, -122.0, 60]], "Eastside" => SearchErrors::UpstreamError.new("down") })
+    result = search(transit: transit, hiking: FakeHiking.new([trail("a")]))
+    assert_equal [["a", "King Street"]], result.trails.map { |trail| [trail.name, trail.station.name] }
+    refute result.complete
+
+    transit = FakeTransit.new(major: [STATION, EASTSIDE], stations: { "King Street" => SearchErrors::ProviderBusy.new("busy"),
+      "Eastside" => SearchErrors::UpstreamError.new("down") })
+    assert_raises(SearchErrors::UpstreamError) { search(transit: transit, hiking: FakeHiking.new([trail("a")])) }
+  end
+
+  test "without major stations near, there are no hikes to look for" do
+    transit = FakeTransit.new(major: [])
+    hiking = FakeHiking.new([trail("a")])
+    events = []
+    result = search(transit: transit, hiking: hiking) { |event, _| events << event }
+    assert_empty result.trails
+    assert_equal [:place], events
+    assert_empty transit.station_requests
+    assert_empty hiking.tile_requests
+
+    assert_raises(SearchErrors::UpstreamError) { search(transit: FakeTransit.new(major: SearchErrors::UpstreamError.new("down"))) }
+  end
+
+  test "a batch whose routes can't be looked up at once is checked again in halves" do
+    good = (1..3).map { |index| trail("good #{index}") }
+    bad = trail("bad")
+    transit = FakeTransit.new(trips: (good + [bad]).to_h { |trail| [trail.name, minutes(30)] })
+    hiking = FakeHiking.new(good + [bad], failing: [bad.osm_id])
+    result = stub_const(TrailsService, :BATCH_SIZE, 4) { search(transit: transit, hiking: hiking) }
+
+    ids = (good + [bad]).map(&:osm_id)
+    assert_equal [ids, ids.first(2), ids.last(2)], hiking.batches
+    assert_equal ["good 1", "good 2"], result.trails.map(&:name).sort
+    refute result.complete
+  end
+
+  test "a station's search is shared by searches that start there at once, and kept for a while once done" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    release = Concurrent::Event.new
+    hiking = FakeHiking.new([trail("a")], release: release, stuck: [:trails_for])
+    transit = FakeTransit.new(trips: { "a" => minutes(30) })
+    elevation = FakeElevation.new
+    departure = SATURDAY.in_time_zone("America/Los_Angeles")
+    start = -> { StationSearch.start(STATION, departure, transit: transit, hiking: hiking, elevation: elevation, cache: cache) }
+
+    first = start.call
+    assert_same first, start.call
+    release.set
+    Timeout.timeout(5) { sleep 0.01 until first.events_since(0).last }
+    events, done = first.events_since(0)
+    assert done
+    assert_equal [:checking, :trails, :update, :done], events.map(&:first)
+
+    kept = start.call
+    refute_same first, kept
+    assert_equal [[:trails, ["a"]], [:done, ["a"]]], kept.events_since(0).first.map { |event, payload|
+      [event, (payload.respond_to?(:trails) ? payload.trails : payload).map(&:name)]
+    }
+    assert_equal 1, hiking.batches.size
+    travel StationSearch::KEEP + 1.minute
+    Timeout.timeout(5) { sleep 0.01 until start.call.events_since(0).last }
+    assert_equal 2, hiking.batches.size
+  ensure
+    release&.set
+  end
+
+  test "a search goes on in the background when the visitor leaves, and is kept for the next" do
+    original = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    transit = FakeTransit.new(trips: { "a" => minutes(30), "b" => minutes(30) })
+    hiking = FakeHiking.new([trail("a"), trail("b")])
+    assert_raises(IOError) do
+      stub_const(TrailsService, :BATCH_SIZE, 1) do
+        search(transit: transit, hiking: hiking) { |event, _| raise IOError, "gone" if event == :trails }
+      end
+    end
+    Timeout.timeout(5) { sleep 0.01 while StationSearch::RUNNING.keys.any? { |key| key.include?(hiking) } }
+
+    events = []
+    result = search(transit: transit, hiking: hiking) { |event, _| events << event }
+    assert_equal %w[a b], result.trails.map(&:name).sort
+    assert_equal [:place, :trails], events
+    assert_equal 2, hiking.batches.size
+  ensure
+    Rails.cache = original
+  end
+
+  test "a search says it's still going while nothing changes for a while" do
+    release = Concurrent::Event.new
+    events = []
+    Thread.new { sleep 0.8; release.set }
+    stub_const(TrailsService, :KEEP_ALIVE_SECONDS, 0.1) do
+      search(transit: FakeTransit.new(trips: { "a" => minutes(30) }), hiking: FakeHiking.new([trail("a")], release: release, stuck: [:trails_for])) { |event, _| events << event }
+    end
+    assert_includes events, :waiting
+    assert_equal :update, events.last
+  ensure
+    release&.set
   end
 
   test "routes are shown without highlights when they cannot be looked up" do

@@ -10,7 +10,7 @@ Transit times come from Transitous, so check them before you go.
 
 ## Guides
 <% @pages.each do |page| %>
-- [Day hikes by train from <%= page.guide.name %>](<%= guide_url(page.guide.slug) %>): <%= page.hikes.size %> hikes from <%= page.guide.origin %>, including <%= page.hikes.first(3).map(&:title).to_sentence %>. Updated <%= page.built_at.utc.to_date.iso8601 %>.
+- [Day hikes by train from <%= page.guide.name %>](<%= guide_url(page.guide.slug) %>): <%= page.hikes.size %> hikes from <%= guide_origin(page) %>, including <%= page.hikes.first(3).map(&:title).to_sentence %>. Updated <%= page.built_at.utc.to_date.iso8601 %>.
 <% end %>
 
 ## Search from anywhere

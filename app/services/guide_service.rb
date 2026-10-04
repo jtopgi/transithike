@@ -32,8 +32,9 @@ module GuideService
     end
   end
   # A city's guide as published: when it was built, the day it plans trips
-  # for, and its hikes, most scenic first.
-  Page = Struct.new(:guide, :built_at, :departure_time, :return_by, :hikes, keyword_init: true) do
+  # for, the stations they leave from (none in guides built before trips left
+  # from stations), and its hikes, most scenic first.
+  Page = Struct.new(:guide, :built_at, :departure_time, :return_by, :stations, :hikes, keyword_init: true) do
     def hike(slug)
       hikes.find { |hike| hike.slug == slug }
     end
@@ -44,7 +45,7 @@ module GuideService
   Hike = Struct.new(:slug, :title, :trail, :area, :there, :ways, :departures, :photos, keyword_init: true)
 
   TRAIL_FIELDS = %i[name summary latitude longitude length osm_id path highlights notable paved loop duration transfers
-    arrival last_return terrain score plan finish location].freeze
+    arrival last_return terrain score plan finish location station].freeze
 
   class << self
     attr_writer :directory
@@ -77,9 +78,10 @@ module GuideService
       loaded
     end
 
-    # Searches from the city for next Saturday, then plans each hike's trips and
-    # finds its photos, as JSON-ready data. Hikes keep the slugs they had in the
-    # last guide. Raises when the search fails.
+    # Searches from the city's major stations for next Saturday, then plans
+    # each hike's trips from its station and finds its photos, as JSON-ready
+    # data. Hikes keep the slugs they had in the last guide. Raises when the
+    # search fails.
     def build(guide, previous: nil, search: TrailsService, transit: TransitousService, photos: WikipediaService, places: PhotonService)
       place = guide.place
       result = search.search(origin: place, day: "saturday")
@@ -88,7 +90,7 @@ module GuideService
       titled(hikes, previous)
       { slug: guide.slug, name: guide.name, origin: guide.origin, built_at: Time.current.utc.iso8601,
         departure_time: result.departure_time.iso8601, return_by: result.return_by.iso8601, complete: result.complete,
-        hikes: hikes }
+        stations: Array(result.stations).map(&:to_h), hikes: hikes }
     end
 
     # Builds a city's guide, trying once more after pause seconds when a
@@ -137,9 +139,11 @@ module GuideService
 
     def hike_data(trail, place, result, transit, photos, places)
       trail.location ||= optional { TrailsService.location(trail, place, places: places) }
-      trips = optional { TripPlans.plan(trail, origin: place, leave: result.departure_time, back_by: result.return_by, transit: transit) }
+      origin = trail.station&.place || place
+      trips = optional { TripPlans.plan(trail, origin: origin, leave: result.departure_time, back_by: result.return_by, transit: transit) }
       gallery = gallery(trail, photos)
       fields = trail.to_h.slice(*TRAIL_FIELDS)
+      fields[:station] = trail.station&.to_h
       fields[:arrival] = trail.arrival&.utc&.iso8601
       fields[:last_return] = trail.last_return&.utc&.iso8601
       { trail: fields, area: gallery&.dig(:title)&.sub(/\s*\([^)]*\)\z/, ""), there: trips&.dig(:there),
@@ -191,12 +195,14 @@ module GuideService
         fields[:arrival] = Time.iso8601(fields[:arrival]) if fields[:arrival]
         fields[:last_return] = Time.iso8601(fields[:last_return]) if fields[:last_return]
         fields[:plan] = fields[:plan]&.to_sym
-        trail = OverpassService::Trail.new(**fields, origin: guide.origin)
+        fields[:station] = Station.new(**fields[:station].slice(*Station.members)) if fields[:station]
+        trail = OverpassService::Trail.new(**fields, origin: fields[:station]&.name || guide.origin)
         Hike.new(slug: hike[:slug], title: hike[:title], trail: trail, area: hike[:area], there: hike[:there],
           ways: hike[:ways] || {}, departures: Array(hike[:departures]), photos: Array(hike[:photos]))
       end
+      stations = Array(data[:stations]).map { |station| Station.new(**station.slice(*Station.members)) }
       Page.new(guide: guide, built_at: Time.iso8601(data[:built_at]), departure_time: Time.iso8601(data[:departure_time]).in_time_zone(zone),
-        return_by: Time.iso8601(data[:return_by]).in_time_zone(zone), hikes: hikes)
+        return_by: Time.iso8601(data[:return_by]).in_time_zone(zone), stations: stations, hikes: hikes)
     end
 
     def optional

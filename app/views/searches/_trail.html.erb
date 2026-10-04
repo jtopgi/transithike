@@ -18,9 +18,12 @@
     <div class="card-body d-flex flex-column p-4">
       <h2 class="card-title h5 mb-1"><%= trail.name %></h2>
       <%# Where the route is shows once its trips are looked up, in space kept for it. %>
-      <p class="trail-location small text-body-secondary mb-3<%= " invisible" unless trail.location %>" data-location>
+      <p class="trail-location small text-body-secondary mb-<%= trail.station ? 1 : 3 %><%= " invisible" unless trail.location %>" data-location>
         <span aria-hidden="true">📍</span> <span data-location-text><%= trail.location %></span>
       </p>
+      <% if trail.station %>
+        <p class="trail-station small mb-3"><span aria-hidden="true">🚉</span> Trains from <strong><%= trail.station.name %></strong></p>
+      <% end %>
       <div data-chips><%= render "searches/chips", trail: trail %></div>
       <dl class="trail-stats">
         <div>

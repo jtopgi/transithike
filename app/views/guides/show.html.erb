@@ -2,7 +2,7 @@
    title = "Day hikes by train from #{guide.name}"
    day = @page.departure_time.strftime("%A, %B %-d") %>
 <% content_for :title, title %>
-<% content_for :description, "#{@page.hikes.size} day hikes you can reach by train from #{guide.origin}, #{guide.name}, " \
+<% content_for :description, "#{@page.hikes.size} day hikes you can reach by train from #{guide_origin(@page)}, #{guide.name}, " \
   "with a train back the same evening: the train line, travel time, last trip back, climb, and photos of each. Updated weekly." %>
 <% content_for :canonical, guide_url(guide.slug) %>
 <% content_for :og_image, @page.hikes.filter_map { |hike| hike.photos.first&.dig(:image_url) }.first %>
@@ -20,7 +20,7 @@
     </nav>
     <h1 class="h2 fw-bold mb-2"><%= title %></h1>
     <p class="mb-0 results-subtitle">
-      <%= pluralize(@page.hikes.size, "hike") %> you can reach by train from <%= guide.origin %> on a Saturday, with a train
+      <%= pluralize(@page.hikes.size, "hike") %> you can reach by train from <%= guide_origin(@page) %> on a Saturday, with a train
       back the same evening and time to hike all of each, most scenic first. Train times are for <%= day %>, and the
       guide is updated every week.
     </p>

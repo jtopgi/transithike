@@ -79,12 +79,12 @@ module SearchesHelper
     trail.last_return ? [(trail.last_return - trail.arrival).floor, 0].max : 0
   end
 
-  # Where the page looks up the trains there and back, and when they leave:
-  # the way back is the first after hiking for the time the search requires,
-  # from the route's far end when it's hiked there.
+  # Where the page looks up the trains there from the hike's station and back,
+  # and when they leave: the way back is the first after hiking for the time
+  # the search requires, from the route's far end when it's hiked there.
   def trip_lookup_path(trail, result)
-    place = result.place
-    trip_path(from: "#{place.latitude.to_f},#{place.longitude.to_f}", to: "#{trail.latitude.to_f},#{trail.longitude.to_f}",
+    from = trail.station || result.place
+    trip_path(from: "#{from.latitude.to_f},#{from.longitude.to_f}", to: "#{trail.latitude.to_f},#{trail.longitude.to_f}",
       finish: trail.finish&.join(","), leave: result.departure_time.utc.iso8601, back_by: result.return_by.utc.iso8601,
       hike: (TrailsService.required_hours(trail) * 60).round)
   end
@@ -135,15 +135,38 @@ module SearchesHelper
     end
   end
 
+  # Transit directions from the hike's station to where the hike starts.
   def directions_url(trail)
     # Without an origin, Google Maps starts from the device's own location.
-    params = { api: 1, origin: trail.origin, destination: "#{trail.latitude},#{trail.longitude}", travelmode: "transit" }
+    origin = trail.station ? "#{trail.station.latitude},#{trail.station.longitude}" : trail.origin
+    params = { api: 1, origin: origin, destination: "#{trail.latitude},#{trail.longitude}", travelmode: "transit" }
     "https://www.google.com/maps/dir/?#{URI.encode_www_form(params.compact)}"
   end
 
-  # Transit directions from where a hike finishes back to the search's starting point.
+  # Transit directions from where a hike finishes back to its station, or else to the search's starting point.
   def directions_back_url(trail, place)
-    params = { api: 1, origin: trail.finish.join(","), destination: "#{place.latitude},#{place.longitude}", travelmode: "transit" }
+    back = trail.station || place
+    params = { api: 1, origin: trail.finish.join(","), destination: "#{back.latitude},#{back.longitude}", travelmode: "transit" }
     "https://www.google.com/maps/dir/?#{URI.encode_www_form(params)}"
+  end
+
+  # Links to transit directions to each of the search's stations, as a
+  # sentence such as "Grand Central, Penn Station, and Hoboken".
+  def station_links(result)
+    links = result.stations.map do |station|
+      link_to station.name, station_directions_url(station, result.place), target: "_blank", rel: "noopener",
+        class: "results-station", aria: { label: "Directions to #{station.name}" }
+    end
+    return safe_join(links) if links.size < 2
+
+    safe_join([safe_join(links[0...-1], ", "), links.last], links.size > 2 ? ", and " : " and ")
+  end
+
+  # Transit directions to a station from the search's starting point, or,
+  # when it started from the device's location, from wherever the device is.
+  def station_directions_url(station, place)
+    origin = "#{place.latitude.to_f},#{place.longitude.to_f}" if place.name
+    params = { api: 1, origin: origin, destination: "#{station.latitude.to_f},#{station.longitude.to_f}", travelmode: "transit" }
+    "https://www.google.com/maps/dir/?#{URI.encode_www_form(params.compact)}"
   end
 end
