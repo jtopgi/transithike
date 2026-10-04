@@ -88,6 +88,9 @@ production:
   # and then left alone for a while (see config/initializers/solid_cache.rb).
   connect_timeout: 5
   connection_retries: 0
+  # A new database is made by running the migrations, not by loading
+  # db/schema.rb, whose enable_extension "plpgsql" Azure turns away.
+  schema_dump: false
   database: transithike_production
   username: transithike
   password: <%= ENV['TRANSITHIKE_DATABASE_PASSWORD'] %>

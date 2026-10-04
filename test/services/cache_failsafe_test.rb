@@ -31,6 +31,14 @@ class CacheFailsafeTest < ActiveSupport::TestCase
     assert_equal 3, store.read("hikes")
   end
 
+  test "a database without the cache's table misses too, though writing raises Active Record's ArgumentError" do
+    store = SolidCache::Store.new(namespace: "no-table")
+    failing(ArgumentError.new("No unique index found for key_hash")) do
+      assert_not store.write("hikes", 1)
+      assert_equal 2, store.fetch("hikes") { 2 }
+    end
+  end
+
   test "a database that can't be reached is left alone for a while, so lookups don't each wait for it" do
     store = SolidCache::Store.new(namespace: "unreachable")
     calls = []
