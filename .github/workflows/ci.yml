@@ -132,14 +132,14 @@ jobs:
           docker exec transithike bin/rails runner 'exit ActiveSupport::TimeZone["America/Los_Angeles"].now.zone.start_with?("P")'
           docker exec transithike bin/rails runner 'Rails.cache.write("ci", 1); exit Rails.cache.read("ci") == 1'
           docker stop transithike
-      - name: Smoke test the production image when the database turns it away
+      - name: Smoke test the production image when the database has no cache
         run: |
           set -euo pipefail
-          # A database that doesn't exist, started without preparing it, turns every query away, as a
-          # firewall or a missing cache table does.
+          # An empty database, started without preparing it, has no cache table, as when preparing it failed.
+          psql --host localhost --username postgres --command "CREATE DATABASE transithike_empty"
           docker run --detach --name transithike-without-database --network host \
             --env SECRET_KEY_BASE="$(openssl rand -hex 64)" \
-            --env DATABASE_URL=postgres://postgres@localhost:5432/transithike_missing \
+            --env DATABASE_URL=postgres://postgres@localhost:5432/transithike_empty \
             transithike:ci bundle exec puma --config config/puma.rb
           curl --fail --silent --show-error --retry 30 --retry-delay 1 --retry-all-errors http://localhost:3000/up
           https=(--silent --show-error --header "X-Forwarded-Proto: https")

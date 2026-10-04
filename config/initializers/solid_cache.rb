@@ -1,9 +1,10 @@
 # Solid Cache only treats a few database errors as misses, such as a lost
 # connection, and raises the rest: a database that turns the app away, as a
-# firewall does, or that hasn't got the cache's table yet. Searches work without
-# the cache, only without keeping what they find, so any database error is a
-# miss. A database that can't be reached is left alone for PAUSE_SECONDS, so
-# that each lookup doesn't wait out the connection's timeout meanwhile.
+# firewall does, or that hasn't got the cache's table yet, where writing raises
+# Active Record's ArgumentError for want of the table's unique index. Searches
+# work without the cache, only without keeping what they find, so any of these
+# is a miss. A database that can't be reached is left alone for PAUSE_SECONDS,
+# so that each lookup doesn't wait out the connection's timeout meanwhile.
 module FailOpenCache
   PAUSE_SECONDS = 30
   UNREACHABLE = [ActiveRecord::ConnectionNotEstablished, ActiveRecord::AdapterTimeout].freeze
@@ -19,7 +20,7 @@ module FailOpenCache
       @unreachable_until = Process.clock_gettime(Process::CLOCK_MONOTONIC) + PAUSE_SECONDS
       raise
     end
-  rescue ActiveRecord::ActiveRecordError => error
+  rescue ActiveRecord::ActiveRecordError, ArgumentError => error
     ActiveSupport.error_reporter&.report(error, handled: true, severity: :warning)
     error_handler&.call(method: method, exception: error, returning: returning)
     returning
