@@ -495,8 +495,9 @@ from GitHub Actions:
   searches it keeps outlive deploys; it holds up to 8 GB, each entry for at most
   120 days. The image's entrypoint creates the database and runs migrations
   before the server starts, trying three times, and starts the server even when
-  the database can't be reached: any database error is then a cache miss, and
-  rate limits are counted in the process, not the database. Only the web app's outbound addresses
+  the database can't be reached: any database error is then a cache miss, a
+  database that doesn't answer within 5 seconds is left alone for 30, and rate
+  limits are counted in the process, not the database. Only the web app's outbound addresses
   can reach the database, and `DATABASE_URL`, with its password, is only in the
   web app's settings.
 
