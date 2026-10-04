@@ -29,7 +29,7 @@ module GuideFixtures
             highlights: [{ kind: "viewpoint", name: "Breakneck Ridge" }, { kind: "peak", name: "Sugarloaf Mountain" }],
             notable: true, paved: 0.0, loop: false, duration: 5_880, transfers: 0, arrival: "2026-10-10T13:40:00Z",
             last_return: "2026-10-11T00:50:00Z", terrain: { climb: 380, relief: 360 }, score: 3.4, plan: "out_and_back",
-            finish: nil },
+            finish: nil, location: "Cold Spring, New York" },
           there: there, ways: { back: back, last: last, same_way: true, trips: [back, last] }, departures: [there],
           photos: [{ image_url: "https://upload.wikimedia.org/thumb/Breakneck.jpg/500px-Breakneck.jpg",
             file_url: "https://commons.wikimedia.org/wiki/File:Breakneck.jpg", credit: "Ann · CC BY 4.0",

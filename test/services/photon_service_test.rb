@@ -71,4 +71,32 @@ class PhotonServiceTest < ActiveSupport::TestCase
     assert_in_delta(-118.24, longitude, 0.1)
     [nil, 5, "", "Not/AZone", "../../etc/passwd"].each { |zone| assert_nil PhotonService.zone_center(zone) }
   end
+
+  test "where a point is: its town or city, state or region, and country, from the nearest mapped feature" do
+    requests = []
+    reverse = lambda do |properties|
+      stub_connection(:get, { "features" => [{ "properties" => properties }] }) { |request| requests << request.params }
+    end
+    cache = ActiveSupport::Cache::MemoryStore.new
+    found = PhotonService.locality(41.17003, -74.16001, cache: cache,
+      connection: reverse.({ "name" => "Pine Meadow Trail", "city" => "Sloatsburg", "county" => "Rockland", "state" => "New York",
+        "country" => "United States" }))
+    assert_equal({ locality: "Sloatsburg", region: "New York", country: "United States" }, found)
+    assert_equal [{ "lat" => "41.17003", "lon" => "-74.16001", "lang" => "en" }], requests
+    # Points about a kilometer apart share the lookup.
+    assert_equal found, PhotonService.locality(41.171, -74.161, cache: cache, connection: reverse.({}))
+    assert_equal 1, requests.size
+
+    # England is too big to say where a place is, so its county does; towns and villages count when there's no city.
+    assert_equal({ locality: "Westhumble", region: "Surrey", country: "United Kingdom" },
+      PhotonService.locality(51.25, -0.33, cache: cache, connection: reverse.({ "village" => "Westhumble", "county" => "Surrey",
+        "state" => "England", "country" => "United Kingdom" })))
+    # Nothing nearby is remembered as nothing.
+    nothing = stub_connection(:get, { "features" => [] }) { |request| requests << request.params }
+    2.times { assert_nil PhotonService.locality(10.0, 10.0, cache: cache, connection: nothing) }
+    assert_equal 3, requests.size
+    assert_raises(SearchErrors::UpstreamError) do
+      PhotonService.locality(11.0, 11.0, cache: cache, connection: stub_connection(:get, {}, status: 503))
+    end
+  end
 end

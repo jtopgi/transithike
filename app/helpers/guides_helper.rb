@@ -41,7 +41,7 @@ module GuidesHelper
     train = main_train(hike)
     last = last_trip_time(hike)
     [
-      "#{hike.title} is a #{miles}-mile hike (#{hike_plan_label(trail)})#{climb}.",
+      "#{hike.title} is a #{miles}-mile hike#{" near #{trail.location}" if trail.location} (#{hike_plan_label(trail)})#{climb}.",
       "From #{page.guide.origin}, it's about #{each_way_label(hike)} each way#{", taking the #{train}" if train}.",
       ("On #{page.departure_time.strftime('%A')}s, the last trip back leaves at #{last.in_time_zone(page.departure_time.time_zone).strftime('%-I:%M %p')}." if last)
     ].compact.join(" ")

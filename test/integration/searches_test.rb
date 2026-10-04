@@ -33,6 +33,15 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     end
   end
 
+  # Photon names where points are: Mount Vernon north of 48°, Seattle north of 47.5°, and Auburn south of it.
+  def localities
+    stub_get(PhotonService::REVERSE_URL) do |env|
+      latitude = Float(env.params["lat"])
+      city = latitude >= 48 ? "Mount Vernon" : latitude >= 47.5 ? "Seattle" : "Auburn"
+      [200, {}, JSON.generate(features: [{ properties: { city: city, state: "Washington", country: "United States" } }])]
+    end
+  end
+
   def geocode(features = [{ geometry: { coordinates: [-122, 47] },
     properties: { name: "Seattle", state: "Washington", country: "United States" } }])
     stub_get(PhotonService::URL, { features: features })
@@ -429,10 +438,13 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
       end
       [200, {}, JSON.generate(body)]
     end
+    localities
     # Hiking for three hours after arriving at 5:31 PM UTC.
     get trip_path(from: "47.6,-122.3", to: "48.4,-122.3", leave: "2026-09-23T15:00:00Z", back_by: "2026-09-24T06:00:00Z", hike: "180")
 
     assert_response :success
+    # Where the route is, without the country it shares with the starting point.
+    assert_equal "Mount Vernon, Washington", response.parsed_body["location"]
     there, back, last, same_way = response.parsed_body.values_at("there", "back", "last", "same_way")
     assert_equal ["2026-09-23T15:19:00Z", "2026-09-23T17:31:00Z"], there.values_at("departure", "arrival")
     assert_equal({ "mode" => "REGIONAL_RAIL", "name" => "Cascades", "agency" => "Metro", "headsign" => "Downtown" }, there["legs"].last)
@@ -504,9 +516,11 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     back = [train_back("20:00", "21:30"), train_back("21:00", "22:35"), train_back("03:30", "05:15")]
     back.each { |trip| trip[:legs].first[:from][:name] = "Mount Vernon" }
     planner(window: [train_there("15:19", "17:31"), train_there("16:19", "18:31"), train_there("23:19", "01:31")], back: back)
+    localities
     get hike_path(hike_params)
 
     assert_response :success
+    assert_select ".trail-location", "📍 Auburn, Washington"
     assert_select "meta[name=robots][content=noindex]"
     assert_select "h1", text: "Ridge Trail"
     assert_select "a[href='#{search_path(origin: 'Pike Place Market', lat: 47.6, lon: -122.3, day: 'sunday', tz: 'America/Los_Angeles')}']",

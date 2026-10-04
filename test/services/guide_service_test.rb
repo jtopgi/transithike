@@ -40,6 +40,13 @@ class GuideServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # Every route is in Cold Spring, and Midtown Manhattan in New York.
+  class FakePlaces
+    def locality(latitude, longitude)
+      { locality: latitude > 41 ? "Cold Spring" : "New York", region: "New York", country: "United States" }
+    end
+  end
+
   class FakePhotos
     def photos_near(points)
       { title: "Hudson Highlands State Park (New York)", article_url: nil,
@@ -63,7 +70,7 @@ class GuideServiceTest < ActiveSupport::TestCase
     trails = [trail("White Trail", 1, scenic: 1), trail("Breakneck Ridge Trail", 2, scenic: 4), trail("White Trail", 3),
       trail("Ridge Loop", 4, scenic: 2, plan: :through, loop: false, finish: [41.42, -73.9])]
     search = FakeSearch.new(trails)
-    data = GuideService.build(guide, search: search, transit: FakeTransit.new, photos: FakePhotos.new)
+    data = GuideService.build(guide, search: search, transit: FakeTransit.new, photos: FakePhotos.new, places: FakePlaces.new)
 
     assert_equal [["Midtown Manhattan", 40.7536, -73.9832, "America/New_York"], "saturday"],
       search.origins.sole.then { |place, day| [place.to_a, day] }
@@ -72,6 +79,8 @@ class GuideServiceTest < ActiveSupport::TestCase
     assert_equal ["breakneck-ridge-trail", "ridge-loop", "white-trail-hudson-highlands-state-park",
       "white-trail-hudson-highlands-state-park-2"], data[:hikes].pluck(:slug)
     hike = data[:hikes].first
+    # Each hike says where it is, without the country it shares with the city.
+    assert_equal ["Cold Spring, New York"], data[:hikes].map { |each| each.dig(:trail, :location) }.uniq
     assert_equal ["Hudson Highlands State Park", "Hudson Line", true, 2, 1, 1],
       [hike[:area], hike.dig(:there, :legs, 0, :name), hike.dig(:ways, :same_way), hike.dig(:ways, :trips).size,
         hike[:departures].size, hike[:photos].size]
@@ -85,7 +94,7 @@ class GuideServiceTest < ActiveSupport::TestCase
   test "slugs are lowercase letters and digits joined by hyphens, as the guides' addresses accept" do
     previous = { hikes: [{ slug: "old_slug__2", trail: { osm_id: 2 } }] }
     data = GuideService.build(guide, previous: previous, search: FakeSearch.new([trail("koasa_trail-etappe_3", 1),
-      trail("Somewhere else", 2), trail("Pilgrims' Way & Co.", 3)]), transit: FakeTransit.new, photos: FakePhotos.new)
+      trail("Somewhere else", 2), trail("Pilgrims' Way & Co.", 3)]), transit: FakeTransit.new, photos: FakePhotos.new, places: FakePlaces.new)
     assert_equal ["koasa-trail-etappe-3", "old-slug-2", "pilgrims-way-co"], data[:hikes].pluck(:slug)
     assert data[:hikes].all? { |hike| hike[:slug].match?(/\A[a-z0-9]+(?:-[a-z0-9]+)*\z/) }
   end
@@ -94,7 +103,7 @@ class GuideServiceTest < ActiveSupport::TestCase
     previous = { hikes: [{ slug: "old-white-trail", trail: { osm_id: 1 } }] }
     photos = Class.new { def photos_near(_) = nil }.new
     data = GuideService.build(guide, previous: previous, search: FakeSearch.new([trail("White Trail", 1), trail("Loop 2", 2)]),
-      transit: FakeTransit.new, photos: photos)
+      transit: FakeTransit.new, photos: photos, places: FakePlaces.new)
     # Without a park nearby, the station the train goes to tells them apart.
     assert_equal [["old-white-trail", "White Trail (Cold Spring)"], ["loop-2-cold-spring", "Loop 2 (Cold Spring)"]],
       data[:hikes].map { |hike| hike.values_at(:slug, :title) }

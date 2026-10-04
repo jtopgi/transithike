@@ -40,7 +40,7 @@ module GuideService
   Hike = Struct.new(:slug, :title, :trail, :area, :there, :ways, :departures, :photos, keyword_init: true)
 
   TRAIL_FIELDS = %i[name summary latitude longitude length osm_id path highlights notable paved loop duration transfers
-    arrival last_return terrain score plan finish].freeze
+    arrival last_return terrain score plan finish location].freeze
 
   class << self
     attr_writer :directory
@@ -76,11 +76,11 @@ module GuideService
     # Searches from the city for next Saturday, then plans each hike's trips and
     # finds its photos, as JSON-ready data. Hikes keep the slugs they had in the
     # last guide. Raises when the search fails.
-    def build(guide, previous: nil, search: TrailsService, transit: TransitousService, photos: WikipediaService)
+    def build(guide, previous: nil, search: TrailsService, transit: TransitousService, photos: WikipediaService, places: PhotonService)
       place = guide.place
       result = search.search(origin: place, day: "saturday")
       trails = result.trails.sort_by { |trail| [-TrailsService.scenic(trail), -trail.score.to_f, trail.duration.to_i] }
-      hikes = trails.map { |trail| hike_data(trail, place, result, transit, photos) }
+      hikes = trails.map { |trail| hike_data(trail, place, result, transit, photos, places) }
       titled(hikes, previous)
       { slug: guide.slug, name: guide.name, origin: guide.origin, built_at: Time.current.utc.iso8601,
         departure_time: result.departure_time.iso8601, return_by: result.return_by.iso8601, complete: result.complete,
@@ -106,7 +106,8 @@ module GuideService
 
     private
 
-    def hike_data(trail, place, result, transit, photos)
+    def hike_data(trail, place, result, transit, photos, places)
+      trail.location ||= optional { TrailsService.location(trail, place, places: places) }
       trips = optional { TripPlans.plan(trail, origin: place, leave: result.departure_time, back_by: result.return_by, transit: transit) }
       gallery = optional { photos.photos_near(trail.photo_points) }
       fields = trail.to_h.slice(*TRAIL_FIELDS)

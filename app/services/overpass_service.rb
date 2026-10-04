@@ -74,7 +74,7 @@ module OverpassService
   # [latitude, longitude] of its far end, where the trip back leaves.
   Trail = Struct.new(:name, :summary, :latitude, :longitude, :length, :osm_id, :path, :highlights, :notable,
     :paved, :loop, :distance, :duration, :transfers, :arrival, :last_return, :origin, :terrain, :score, :plan, :finish,
-    keyword_init: true) do
+    :location, keyword_init: true) do
     # A point halfway along the route, in its area even where transit reaches it from town.
     def midpoint
       points = Array(path).flatten(1)

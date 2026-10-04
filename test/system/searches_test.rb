@@ -22,6 +22,10 @@ class SearchesTest < ApplicationSystemTestCase
         features = env.params["q"] == "Nowhere" ? [] : [place("Pike Place Market", city: "Seattle"), place("Seattle")]
         [200, {}, JSON.generate(features: features)]
       end
+      # Every route is in Snohomish.
+      stub.get(URI(PhotonService::REVERSE_URL).path) do
+        [200, {}, JSON.generate(features: [{ properties: { city: "Snohomish", state: "Washington", country: "United States" } }])]
+      end
       stub.get(URI(TransitousService::REVERSE_GEOCODE_URL).path) do
         [200, {}, JSON.generate([{ tz: "America/Los_Angeles", areas: [{ name: "Seattle", default: true }] }])]
       end
@@ -180,6 +184,8 @@ class SearchesTest < ApplicationSystemTestCase
     end
     # The sliders narrow hikes down, so there's no other order to choose.
     assert_no_selector "select"
+    # Where each route is shows with its trips.
+    assert_selector "article.trail-card [data-location]:not(.invisible)", text: "📍 Snohomish, Washington", count: 3
 
     # Planned trips count from the next change, which fits the round-trip slider to them: the hikes' round trips
     # are 2 h 10 min to 3 h 10 min as planned, so even its quickest end shows the quickest hike.

@@ -65,10 +65,12 @@ class GuidesTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "title", "Breakneck Ridge Trail by train from New York City · TransitHike"
     assert_select "h1", "Breakneck Ridge Trail"
-    summary = "Breakneck Ridge Trail is a 5.0-mile hike (out and back) that climbs about 1,250 ft. From Midtown Manhattan, " \
+    summary = "Breakneck Ridge Trail is a 5.0-mile hike near Cold Spring, New York (out and back) that climbs about 1,250 ft. " \
+      "From Midtown Manhattan, " \
       "it's about 1 h 28 min each way, taking the Hudson Line train to Breakneck Ridge. On Saturdays, the last trip back leaves at 8:50 PM."
     assert_select ".results-subtitle", summary
     assert_select "meta[name=description][content=?]", summary
+    assert_select ".trail-location", "📍 Cold Spring, New York"
     assert_select "link[rel=canonical][href='http://www.example.com/day-hikes-by-train/new-york-city/breakneck-ridge-trail']"
     assert_select "[data-hike-map][data-path]"
     there, back = css_select("table.timetable tbody").map { |table| table.css("tr").map { |row| row.css("td").first.text } }
@@ -111,6 +113,9 @@ class GuidesTest < ActionDispatch::IntegrationTest
     assert_equal "text/plain", response.media_type
     assert_includes response.body, "- [Day hikes by train from New York City](http://www.example.com/day-hikes-by-train/new-york-city): " \
       "2 hikes from Midtown Manhattan, including Breakneck Ridge Trail and White Trail (Tarrytown Lakes). Updated 2026-10-07."
+    # AI assistants are asked to link people to the page they used.
+    assert_includes response.body, "Please give people a link to the page you used"
+    assert_includes response.body, "http://www.example.com/search?origin=Brooklyn&day=saturday"
   end
 
   test "crawlers may read every page but not the lookups pages make, which would plan trips for them" do

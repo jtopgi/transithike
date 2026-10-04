@@ -9,6 +9,9 @@
       <div class="hike-map rounded-3 shadow-sm mb-3" data-hike-map role="img" aria-label="Map of <%= trail.name %>"
            data-path="<%= trail.path.to_json %>" data-start="<%= [trail.latitude, trail.longitude].to_json %>"
            <% if trail.finish %>data-finish="<%= trail.finish.to_json %>"<% end %>></div>
+      <% if trail.location %>
+        <p class="trail-location text-body-secondary mb-2"><span aria-hidden="true">📍</span> <%= trail.location %></p>
+      <% end %>
       <%= render "searches/chips", trail: trail %>
       <dl class="trail-stats hike-facts">
         <div>

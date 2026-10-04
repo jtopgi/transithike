@@ -2,7 +2,12 @@
 # built for search-as-you-type. Its public API asks clients to use it fairly.
 module PhotonService
   URL = "https://photon.komoot.io/api/"
+  REVERSE_URL = "https://photon.komoot.io/reverse"
   CACHE_TTL = 1.day
+  # Where a point is doesn't change, so it's kept for a month, shared by points about a kilometer apart.
+  LOCALITY_CACHE_TTL = 30.days
+  # Great Britain's nations are too big to say where a place is, so their counties do.
+  NATIONS = ["England", "Scotland", "Wales", "Northern Ireland"].freeze
   MAX_SUGGESTIONS = 6
   # Transit stops and open water crowd out the places people actually start from.
   EXCLUDED_TAGS = %w[
@@ -36,6 +41,30 @@ module PhotonService
 
   def self.geocode(query, **options)
     suggest(query, **options).first
+  end
+
+  # The town or city a point is in or nearest, its state or region, and its
+  # country, as { locality:, region:, country: } in English, or nil when
+  # nothing is mapped nearby. Raises when the lookup fails.
+  def self.locality(latitude, longitude, connection: nil, cache: Rails.cache)
+    found = cache.fetch("photon:locality:v1:#{latitude.round(2)}:#{longitude.round(2)}", expires_in: LOCALITY_CACHE_TTL) do
+      connection ||= SearchHttp.connection(REVERSE_URL)
+      data = SearchHttp.json do
+        connection.get { |request| request.params = { lat: latitude.round(5), lon: longitude.round(5), lang: "en" } }
+      end
+      properties = Array(data["features"]).find { |feature| feature.is_a?(Hash) }&.dig("properties")
+      # Nothing nearby is remembered too, as false.
+      (properties.is_a?(Hash) && locality_of(properties)) || false
+    end
+    found || nil
+  end
+
+  def self.locality_of(properties)
+    name = ->(key) { properties[key].squish.truncate(60) if properties[key].is_a?(String) && properties[key].strip.present? }
+    state = name.("state")
+    found = { locality: %w[city town village district county].filter_map(&name).first,
+      region: NATIONS.include?(state) ? name.("county") : state, country: name.("country") }.compact
+    found if found[:locality] || found[:region]
   end
 
   # The reference coordinates of an IANA time zone, e.g. Los Angeles for
