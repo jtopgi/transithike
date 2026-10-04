@@ -48,6 +48,25 @@ class GuidesTest < ActionDispatch::IntegrationTest
     assert_equal ["TransitHike", "Day hikes by train", "New York City"], structured_data.fetch("BreadcrumbList")["itemListElement"].pluck("name")
   end
 
+  test "a guide built from stations says where trips leave from" do
+    data = guide_data
+    grand_central = { name: "Grand Central", latitude: 40.7527, longitude: -73.9772, id: "us-ny-MetroNorth_1" }
+    data[:stations] = [grand_central, { name: "Hoboken", latitude: 40.7347, longitude: -74.0275, id: "hoboken" }]
+    data[:hikes].first[:trail][:station] = grand_central
+    write_guide(data)
+
+    get guide_path("new-york-city")
+    assert_select "meta[name=description][content^='2 day hikes you can reach by train from Grand Central and Hoboken, New York City']"
+    assert_select ".results-subtitle", text: /you can reach by train from Grand Central and Hoboken on a Saturday/
+    get guide_hike_path("new-york-city", "breakneck-ridge-trail")
+    assert_select ".results-subtitle", text: /From Grand Central, it's about 1 h 28 min each way/
+    assert_select "caption", text: "Trips there from Grand Central"
+    query = URI.decode_www_form(URI(css_select("a[href^='https://www.google.com/maps/dir/']").first["href"]).query).to_h
+    assert_equal ["40.7527,-73.9772", "41.443,-73.978"], query.values_at("origin", "destination")
+    get llms_path
+    assert_includes response.body, "2 hikes from Grand Central and Hoboken, including"
+  end
+
   test "titles show names as they are, with apostrophes and ampersands" do
     data = guide_data
     data[:hikes].first.merge!(title: "Pilgrims' Way & Downs")

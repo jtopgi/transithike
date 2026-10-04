@@ -131,7 +131,115 @@ class OverpassServiceTest < ActiveSupport::TestCase
     # Tiles whose query worked are cached; the others are asked again.
     routes_in(connection, tiles: tiles, cache: cache)
     assert_equal 5, queries.size
+    # Tiles another search finds while this one queries others aren't queried again.
+    later = [[49.0, -122.0], [49.5, -122.0], [50.0, -122.0], [50.5, -122.0], [51.0, -122.0]]
+    racing = stub_connection(:post, lambda { |request|
+      query = URI.decode_www_form(request.body).to_h.fetch("data")
+      queries << query
+      cache.write("overpass:tile:v1:51.0:-122.0", [{ id: 7 }]) if query.include?("relation.region(49.0,")
+      { "elements" => [] }
+    })
+    assert_equal [7], routes_in(racing, tiles: later, cache: cache).pluck(:id)
+    assert_equal 6, queries.size
     assert_raises(SearchErrors::UpstreamError) { routes_in(connection, tiles: [[48.0, -122.0]], cache: cache) }
+  end
+
+  # Answers tiles queries with one route in every tile, holding each query
+  # whose region starts at a latitude in holds until its event is set, and
+  # telling when it starts.
+  def held_connection(queries, holds: {}, started: Hash.new { |events, key| events[key] = Concurrent::Event.new })
+    stub_connection(:post, lambda { |request|
+      query = URI.decode_www_form(request.body).to_h.fetch("data")
+      queries << query
+      south = query[/\(([-\d.]+),[-\d.]+,[-\d.]+,[-\d.]+\)->\.region;/, 1].to_f
+      started[south].set
+      holds[south]&.wait(5)
+      tiles = query.scan(/relation\.region\(([-\d.]+),([-\d.]+),/).map { |row, column| [row.to_f, column.to_f] }
+      { "elements" => tiles.map { |row, column| candidate_of(route_element(id: (row * 10).to_i, latitude: row + 0.2)) } }
+    })
+  end
+
+  test "searches that need the same tiles at once query them once, and wait only for the query that has theirs" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    queries = Concurrent::Array.new
+    first, second = Concurrent::Event.new, Concurrent::Event.new
+    started = Hash.new { |events, key| events[key] = Concurrent::Event.new }
+    connection = held_connection(queries, holds: { 46.0 => first, 48.0 => second }, started: started)
+    tiles = (0...8).map { |index| [46.0 + index * 0.5, -122.0] }
+    one = Thread.new { routes_in(connection, tiles: tiles, cache: cache) }
+    assert started[46.0].wait(5)
+
+    # Another search needs a tile in the first query, which it waits for, and one of its own, which it queries.
+    other = Thread.new { routes_in(connection, tiles: [[47.0, -122.0], [52.0, -122.0]], cache: cache) }
+    assert started[52.0].wait(5)
+    first.set
+    assert started[48.0].wait(5)
+    # Its tiles are found while the first search's second query is still going.
+    assert_equal [470, 520], other.join(5).value.pluck(:id).sort
+    assert one.alive?
+    second.set
+    assert_equal (0...8).map { |index| 460 + index * 5 }, one.join(5).value.pluck(:id).sort
+    assert_equal 1, queries.count { |query| query.include?("relation.region(47.0,-122.0,") }
+    assert_empty OverpassService::LOOKING_UP.keys
+  ensure
+    [first, second].each { |event| event&.set }
+    [one, other].each { |thread| thread&.join(5) }
+  end
+
+  test "a search that waits too long for another's tiles reads what it stored, and otherwise says the provider is busy" do
+    reads = Concurrent::Event.new
+    cache = ActiveSupport::Cache::MemoryStore.new
+    cache.define_singleton_method(:read_multi) { |*names, **options| super(*names, **options).tap { reads.set } }
+    queries = Concurrent::Array.new
+    hold = Concurrent::Event.new
+    started = Hash.new { |events, key| events[key] = Concurrent::Event.new }
+    connection = held_connection(queries, holds: { 47.0 => hold }, started: started)
+    one = Thread.new { routes_in(connection, tiles: [[47.0, -122.0]], cache: cache) }
+    assert started[47.0].wait(5)
+
+    stub_const(OverpassService, :SHARED_WAIT_SECONDS, 0.2) do
+      failures = []
+      error = assert_raises(SearchErrors::ProviderBusy) do
+        routes_in(connection, tiles: [[47.0, -122.0]], cache: cache, failures: failures)
+      end
+      assert_equal [OverpassService::BUSY, [SearchErrors::ProviderBusy]], [error.message, failures.map(&:class)]
+
+      # The other search stores the tile's routes while this one waits, before it says so.
+      reads.reset
+      waiting = Thread.new { routes_in(connection, tiles: [[47.0, -122.0]], cache: cache) }
+      assert reads.wait(5)
+      cache.write("overpass:tile:v1:47.0:-122.0", [{ id: 9 }])
+      assert_equal [9], waiting.join(5).value.pluck(:id)
+    end
+    # Only the first search asked Overpass.
+    assert_equal 1, queries.size
+  ensure
+    hold&.set
+    one&.join(5)
+  end
+
+  test "searches that need the same routes' details at once ask for them once" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    queries = Concurrent::Array.new
+    hold, started = Concurrent::Event.new, Concurrent::Event.new
+    connection = stub_connection(:post, lambda { |request|
+      query = URI.decode_www_form(request.body).to_h.fetch("data")
+      queries << query
+      started.set
+      hold.wait(5)
+      { "elements" => query.include?("out geom") ? [route_element(id: 1), route_element(id: 2)] : [] }
+    })
+    one = Thread.new { trails_for([1], connection, cache: cache) }
+    assert started.wait(5)
+    other = Thread.new { trails_for([1, 2], connection, cache: cache) }
+    sleep 0.05 until queries.size == 2 || !other.alive?
+    hold.set
+    assert_equal [1], one.join(5).value.map(&:osm_id)
+    assert_equal [1, 2], other.join(5).value.map(&:osm_id)
+    assert_equal ["relation(id:1)", "relation(id:2)"], queries.map { |query| query[/relation\(id:[\d,]+\)/] }
+  ensure
+    hold&.set
+    [one, other].each { |thread| thread&.join(5) }
   end
 
   test "failed tile queries are asked once more when they fail quickly, and are never cached" do

@@ -39,12 +39,14 @@ module HikesHelper
     Array(trip&.dig(:legs)).first&.dig(:from_name)
   end
 
-  # Like the trip lookups, the details page for a search's hike.
+  # Like the trip lookups, the details page for a search's hike, with trips
+  # from its station and a link back to the search.
   def hike_details_path(trail, result)
-    place = result.place
+    place, station = result.place, trail.station
     hike_path(route: trail.osm_id, plan: trail.plan || (trail.loop ? :loop : :out_and_back),
       from: "#{place.latitude.to_f},#{place.longitude.to_f}", to: "#{trail.latitude.to_f},#{trail.longitude.to_f}",
       finish: trail.finish&.join(","), leave: result.departure_time.utc.iso8601, back_by: result.return_by.utc.iso8601,
-      tz: result.departure_time.time_zone.tzinfo.name, origin: place.name)
+      tz: result.departure_time.time_zone.tzinfo.name, origin: place.name,
+      station: station && "#{station.latitude.to_f},#{station.longitude.to_f}", station_name: station&.name)
   end
 end

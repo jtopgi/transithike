@@ -35,13 +35,18 @@ class SearchesTest < ApplicationSystemTestCase
         highlights = HIGHLIGHTS.map { |kind, latitude, name| highlight_node(kind, latitude, -122.0, name: name) }
         [200, {}, JSON.generate(elements: overpass_elements(query, routes: routes, highlights: highlights))]
       end
-      # A station downtown, and trains from there to a station at each route's start, sooner for nearer routes.
-      stub.get(URI(TransitousService::ONE_TO_ALL_URL).path) do |env|
-        stops = if env.params["transitModes"]
-          ROUTES.each_with_index.map { |(_, latitude), index| reached_stop(latitude, -122.0, 10 + index * 5) }
-        else
-          [reached_stop(47.605, -122.0, 5, id: "downtown")]
-        end
+      # A station downtown, with trains far out, and trains from there to a station at each route's start, sooner for
+      # nearer routes.
+      stub.get(URI(TransitousService::STOPS_URL).path) do
+        [200, {}, JSON.generate([{ name: "Downtown", stopId: "downtown", lat: 47.605, lon: -122.0, importance: 0.5,
+          modes: ["SUBURBAN"] }])]
+      end
+      stub.get(URI(TransitousService::STOP_TIMES_URL).path) do
+        [200, {}, JSON.generate(stopTimes: [{ place: { departure: "2026-01-01T08:00:00Z" }, routeId: "north",
+          tripTo: { lat: 48.5, lon: -122.0 } }])]
+      end
+      stub.get(URI(TransitousService::ONE_TO_ALL_URL).path) do
+        stops = ROUTES.each_with_index.map { |(_, latitude), index| reached_stop(latitude, -122.0, 15 + index * 5) }
         [200, {}, JSON.generate(all: stops)]
       end
       # Trips there; with arriveBy, the last trips back from each route and its far end, two hours before the 11 PM

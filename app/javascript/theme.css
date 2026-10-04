@@ -81,6 +81,20 @@ body {
   color: rgba(255, 255, 255, 0.86);
 }
 
+.results-stations {
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.results-stations .results-station {
+  color: #fff;
+  font-weight: 600;
+  text-underline-offset: 0.2em;
+}
+
+.trail-station {
+  color: var(--th-forest);
+}
+
 .place-search-field {
   position: relative;
 }

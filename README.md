@@ -8,7 +8,9 @@ town: hikes near commuter-rail, Amtrak, and other train stations, not the parks
 the subway already reaches. The application is Rails-rendered with Bootstrap: a
 starting-point box that suggests places as you type (or uses the device's
 location) with a Saturday/Sunday choice, and a results page that shows at once
-and streams in hikes as they are found, most scenic first. Only hikes you can
+and streams in hikes as they are found, most scenic first. Trips leave from the
+major train stations near the starting point, which the page names with
+directions to each: getting to the station is up to you. Only hikes you can
 finish before the last trip back are shown. Each card has a map preview, where
 the hike is (its town or city and state or region, with the country when it
 isn't the starting point's), photos taken nearby, highlights, how far the hike goes (a loop, out and back, or one way
@@ -68,18 +70,27 @@ Current Hiking Project availability could not be confirmed. Live probes of both
 trail providers were blocked by DNS restrictions in the modernization environment;
 test Overpass connectivity from your deployment before launching.
 
-- **Stations.** Transitous lists the stops any transit reaches from the origin
-  within an hour (40 or 25 minutes where that list is over 8 MB, remembered for a
-  day per area). Trains are boarded at up to **three** of the busiest train
-  stations among them, at least 1 km apart, skipping any that an earlier one's
-  trains reach within 10 minutes of getting there directly; so the trip may start
-  on the subway, a bus, or on foot. From each, Transitous lists the stations
-  reached by commuter, regional, intercity, and suburban trains
-  (`TransitousService::TRAIN_MODES`, which leave out Transitous's `RAIL`, since it
-  includes the subway) within **3½ hours** of setting out, or within 120 or 80
-  minutes of boarding where that list is over 8 MB, as across Switzerland
-  (remembered for a day per area). Stations closer than **20 km** to the origin
-  are in or next to the city and don't count.
+- **Major stations.** Searches start from the major train stations near the
+  starting point, rather than the starting point itself: people know how to get
+  to their city's stations, and every search near them shares the stations'
+  results. Transitous's map lists the stations of commuter, regional, intercity,
+  and suburban trains (`TransitousService::TRAIN_MODES`, which leave out
+  Transitous's `RAIL`, since it includes the subway) within **10 km** (or 25 or
+  50 km where there are none), stops within 400 m counting as one station. The
+  major ones are at least a fifth as busy as the busiest, by Transitous's
+  importance, taken busiest and nearest first (busyness counts half as much 5 km
+  away). Up to **six** are chosen, each adding lines the others don't: a station
+  whose trains in the two hours after setting out only go across the city is
+  left out, and so is one that a chosen station's trains reach within 15 minutes,
+  unless at least a quarter of its trains are on other lines. From New York's
+  Queens, that is Grand Central, Penn Station, and Hoboken, Harlem–125th Street
+  repeating Grand Central's lines; from central Paris, its six main stations.
+  A place's stations are remembered for a week for places within about 1 km.
+- **Stations trains reach.** From each major station, Transitous lists the
+  stations its trains reach within **3½ hours**, or within 120 or 80 minutes
+  where that list is over 8 MB, as across Switzerland (remembered for a day per
+  area). Stations closer than **20 km** to the major station are in or next to
+  the city and don't count.
 - **Routes.** Hiking-route relations are found in 0.5° tiles holding routes
   within a 30-minute walk of a station, up to 20 tiles: the 8 with the quickest
   stations within 2 hours, 7 within 3 hours, and 5 farther, so the scenery
@@ -104,16 +115,26 @@ test Overpass connectivity from your deployment before launching.
   near stations, there are few results.
 - Routes are checked in batches of 40, starting with the first tiles' while the
   others are found, and each batch's hikes show as soon as their trips there and
-  back are known. A batch that fails is skipped; a search fails only when nothing
-  is found.
+  back are known. A batch whose routes can't be looked up at once, as when
+  Overpass is busy, is tried again in halves after a pause, and a half that still
+  can't be is skipped; a search fails only when nothing is found.
+- **Shared searches.** Each major station's search runs in the background, at
+  most three at once per server process, and is shared by every search that
+  starts there at the same time, so everyone near Grand Central waits on the same
+  one. It finishes, and is kept for 12 hours (a minute when some routes couldn't
+  be checked), even when the visitor who started it leaves. A hike that several
+  stations reach shows from the one that gets there soonest, counting the trip
+  across the city to each station at about 15 km/h, and a card is replaced when a
+  station that gets there sooner finds it. While nothing new is found, the
+  stream sends a comment every 15 seconds to keep the connection open.
 - **Weekend trips.** Searches are for Saturday or Sunday: the one chosen, or
   whichever comes first. Trips leave at **8 AM** that day in the time zone
   Transitous reports for the origin (UTC when unknown), or now (rounded to the
   next quarter hour) once that morning has begun; from 10 AM it's too late to set
   out, so the trip is for the same day a week later. The search page offers the
   next weekend day by the device's clock. Only routes reachable within **4
-  hours** of setting out, waiting included, are shown, and only with a way back
-  that arrives by **11 PM** the same day and leaves time to hike **all** of the
+  hours** of leaving the station, waiting included, are shown, and only with a way
+  back to it that arrives by **11 PM** the same day and leaves time to hike **all** of the
   route at 2 mph with breaks (at least 1½ hours, to enjoy short ones) and still
   leave the last trip back half an hour to spare. Routes too long for that, such
   as 20-mile long-distance trails, are left out. Journeys may include up to 30
@@ -155,14 +176,16 @@ test Overpass connectivity from your deployment before launching.
   quickest other way is shown, and the card says so.
 - **Details and timetables.** Each card links to a page for its hike (left out
   of search engines, since every starting point has its own) with a map to
-  explore, the hike's facts, its photos, and two timetables: every trip there
+  explore, the hike's facts, its photos, and two timetables from its station, and
+  back to it: every trip there
   from 8 AM on that arrives in time to hike all of it before the last trip back,
   leaving out any that ride much longer than the quickest, and every trip back
   from the first after the hike, if you take the first trip there, to the last.
   Each row has when it leaves and arrives, how long it rides, and its transit with
   the stops it rides between. The route's highlights, terrain, and photos are
   looked up while transit is planned, and the page shows without them after 10
-  seconds. Its trips are looked up the way cards' are, sharing their cache.
+  seconds. Its trips are looked up the way cards' are, sharing their cache, and
+  it links back to the search from the starting point.
 - **Not the city's parks.** Hikes the subway, metro, or light rail
   (`TransitousService::CITY_MODES`: Transitous's `SUBWAY` and `TRAM`; its `METRO`
   means suburban trains) reach within those 4 hours are left out, since
@@ -256,7 +279,9 @@ seconds, as they do when briefly overloaded, the preferred one is asked once mor
 after a 3-second pause (highlights excepted). Provider calls have bounded timeouts and
 result limits. Each tile's routes are cached for **three days** and shared by every
 search, and each route's details and highlights for **a week**; production uses a
-bounded, process-local memory store. Failures are never cached.
+bounded, process-local memory store. Searches that need the same tiles or routes
+at once share one query, waiting up to 90 seconds for another search's. Failures
+are never cached.
 
 Transit travel times come from [Transitous](https://transitous.org), a free,
 community-run [MOTIS](https://github.com/motis-project/motis) service built on
@@ -266,18 +291,22 @@ source (this repository is MIT-licensed), use must be non-commercial, pages link
 to its [data sources](https://transitous.org/sources/), and requests identify the
 app with `SearchHttp::USER_AGENT` (change it if you fork). Contact the maintainers
 in their [Matrix room](https://matrix.to/#/%23transitous:matrix.spline.de) before
-sending substantial routing traffic. Each search asks for the stops reachable from
-the origin with the one-to-all API (up to three times where transit is dense), and
-for the stations trains reach from up to three of them, which are cached for six
-hours for origins within about 100 m. Then for each batch, it asks for every
-route's trip there, the trip there by city transit, and the latest trip back in
-three requests to the experimental one-to-many API, all cached for 15 minutes. If
-that API fails, it plans up to 15 of the nearest routes one at a time. Once a search is
+sending substantial routing traffic. Each search asks for the train stations near
+the starting point with the map stops API, and for the trains leaving each
+candidate station with the stop times API, both cached for a week. Then for each
+major station it asks for the stations its trains reach with the one-to-all API
+(up to three times where trains are dense), cached for six hours, and for each
+batch, for every route's trip there, the trip there by city transit, and the
+latest trip back in three requests to the experimental one-to-many API. Trips
+follow timetables that hardly change until the day, so trips more than 12 hours
+ahead are cached for six hours, and the day's for 15 minutes. If that API fails,
+it plans up to 15 of the nearest routes one at a time. Once a search is
 done, each card the visitor scrolls to plans its trip there, then its trips back
 the same way from the end of the hike until the last one in one timetable
 request (and any way back in another, when the same way has none), cached the
-same way. Transitous serializes concurrent requests from one
-client, so a search's requests are never sent in parallel. It also supplies each
+same way. Transitous answers at most three requests at once from one client
+and turns away more, so each server process sends it at most three at once, and
+others wait up to 30 seconds for a turn. It also supplies each
 origin's time zone and area name, cached for 30 days. Transit coverage depends on
 the feeds Transitous has for a region.
 
@@ -294,8 +323,9 @@ load [OpenStreetMap tiles](https://operations.osmfoundation.org/policies/tiles/)
 only as cards scroll into view, and photos come from the
 [Wikipedia and Wikimedia Commons APIs](https://www.mediawiki.org/wiki/API:Etiquette)
 with each author and license credited, cached for a week and shared by routes within about 1 km. Suggestions, photos, trips,
-and searches are rate limited per visitor. The Directions link opens Google Maps'
-public directions page, which needs no API key. Provider outages cannot be
+and searches are rate limited per visitor. The Directions links open Google Maps'
+public directions page, which needs no API key: to each station from the starting
+point, and to each hike from its station. Provider outages cannot be
 validated by offline tests; perform a real search before launching.
 
 ## Guides, search engines, and AI assistants

@@ -40,6 +40,11 @@ module OverpassService
   FAILOVER_TTL = 5.minutes
   # Queries wait this long for one of the process's Overpass slots.
   SLOT_WAIT_SECONDS = 30
+  # Tiles and routes being looked up in this process, by cache key, so
+  # searches that need the same ones at once ask Overpass once, and wait at
+  # most SHARED_WAIT_SECONDS for another search's lookup.
+  LOOKING_UP = Concurrent::Map.new
+  SHARED_WAIT_SECONDS = 90
   # When both instances turn a query away quickly, as they do when briefly
   # overloaded, the preferred one is asked once more after a pause
   # (config.x.overpass_retry_pause_seconds).
@@ -71,10 +76,11 @@ module OverpassService
   # times transit gets there and last leaves for the origin. terrain is the
   # route's { climb:, relief: } in meters, from ElevationService. plan is how
   # it's hiked, :loop, :out_and_back, or :through to finish, the
-  # [latitude, longitude] of its far end, where the trip back leaves.
+  # [latitude, longitude] of its far end, where the trip back leaves. station
+  # is the Station the trips there leave from and the trips back return to.
   Trail = Struct.new(:name, :summary, :latitude, :longitude, :length, :osm_id, :path, :highlights, :notable,
     :paved, :loop, :distance, :duration, :transfers, :arrival, :last_return, :origin, :terrain, :score, :plan, :finish,
-    :location, keyword_init: true) do
+    :location, :station, keyword_init: true) do
     # A point halfway along the route, in its area even where transit reaches it from town.
     def midpoint
       points = Array(path).flatten(1)
@@ -132,29 +138,77 @@ module OverpassService
   # its center, and its diagonal in meters. Each tile's routes are cached, and
   # uncached tiles are queried TILES_PER_QUERY neighbors at a time, each query
   # finding the routes of the region around its tiles once, then keeping those
-  # in the tiles. The routes of tiles whose query fails are left out, unless
-  # every tile's do, and each such failure is added to failures when given.
+  # in the tiles, while tiles another search is querying are waited for. The
+  # routes of tiles whose query fails are left out, unless every tile's do, and
+  # each such failure is added to failures when given.
   def self.routes_in(tiles, connections: nil, cache: Rails.cache, failures: nil)
     keys = tiles.to_h { |tile| [tile, "overpass:tile:v1:#{tile.join(':')}"] }
     found = keys.empty? ? {} : cache.read_multi(*keys.values)
+    missing = tiles.reject { |tile| found.key?(keys[tile]) }
+    tile_of = keys.invert
     error = nil
-    tiles.reject { |tile| found.key?(keys[tile]) }.sort.each_slice(TILES_PER_QUERY) do |group|
-      routes = elements(tiles_query(group), connections, cache, timeout: LONG_QUERY_SECONDS)
-        .filter_map { |element| candidate(element) }
-      group.each do |south, west|
-        found[keys[[south, west]]] = routes.select do |route|
-          route[:bounds][0] < south + TILE_DEGREES && route[:bounds][2] >= south &&
-            route[:bounds][1] < west + TILE_DEGREES && route[:bounds][3] >= west
+    missing.sort.each_slice(TILES_PER_QUERY).with_index do |group, index|
+      group_keys = group.map { |tile| keys[tile] }
+      # Another search may have found some of them since this one began.
+      found.merge!(cache.read_multi(*group_keys)) if index.positive?
+      group_keys.reject! { |key| found.key?(key) }
+      next if group_keys.empty?
+
+      found.merge!(shared(group_keys, cache) do |own|
+        own_tiles = own.map { |key| tile_of[key] }
+        routes = elements(tiles_query(own_tiles), connections, cache, timeout: LONG_QUERY_SECONDS)
+          .filter_map { |element| candidate(element) }
+        own_tiles.to_h do |south, west|
+          in_tile = routes.select do |route|
+            route[:bounds][0] < south + TILE_DEGREES && route[:bounds][2] >= south &&
+              route[:bounds][1] < west + TILE_DEGREES && route[:bounds][3] >= west
+          end
+          cache.write(keys[[south, west]], in_tile, expires_in: TILE_CACHE_TTL)
+          [keys[[south, west]], in_tile]
         end
-        cache.write(keys[[south, west]], found[keys[[south, west]]], expires_in: TILE_CACHE_TTL)
-      end
-    rescue SearchErrors::UpstreamError => failure
-      error ||= failure
-      failures&.push(failure)
+      rescue SearchErrors::UpstreamError => failure
+        error ||= failure
+        failures&.push(failure)
+        {}
+      end)
+    end
+    # Tiles another search was looking up, but couldn't in time, are left out too.
+    if error.nil? && missing.any? { |tile| !found.key?(keys[tile]) }
+      error = SearchErrors::ProviderBusy.new(BUSY)
+      failures&.push(error)
     end
     raise error if error && keys.values.none? { |key| found.key?(key) }
 
     keys.values.filter_map { |key| found[key] }.flatten(1).uniq { |route| route[:id] }
+  end
+
+  # The values the block finds for keys, as { key => value }, shared with
+  # other searches in this process: the block is given the keys no other
+  # search is looking up, and returns what it found for them, and then those
+  # another search is looking up are waited for, at most SHARED_WAIT_SECONDS,
+  # and read from the cache when that search stored them without saying so in
+  # time. Keys whose lookup fails or takes longer are left out.
+  def self.shared(keys, cache)
+    keys = keys.uniq
+    mine = Concurrent::Promises.resolvable_future
+    others = keys.filter_map { |key| (other = LOOKING_UP.put_if_absent(key, mine)) && [key, other] }.to_h
+    own = keys - others.keys
+    found = {}
+    begin
+      found = yield(own).to_h if own.any?
+    ensure
+      own.each { |key| LOOKING_UP.delete_pair(key, mine) }
+      mine.fulfill(found)
+    end
+    return found if others.empty?
+
+    TrailsService.settle(others.values.uniq, timeout: SHARED_WAIT_SECONDS)
+    others.each do |key, other|
+      value = other.value(0) if other.fulfilled?
+      found[key] = value[key] if value&.key?(key)
+    end
+    late = others.keys.reject { |key| found.key?(key) }
+    late.any? ? found.merge(cache.read_multi(*late)) : found
   end
 
   def self.tiles_query(tiles)
@@ -232,7 +286,8 @@ module OverpassService
   end
 
   # Trails for the route ids, in order. Each route's details are cached, and
-  # only uncached routes are queried.
+  # only uncached routes are queried, once for searches that need them at
+  # once. Raises when some can't be looked up.
   def self.routes(ids, connections, cache)
     return [] if ids.empty?
 
@@ -240,12 +295,18 @@ module OverpassService
     found = cache.read_multi(*keys.values)
     missing = ids.reject { |id| found.key?(keys[id]) }
     if missing.any?
-      fetched = fetch_routes(missing, connections, cache)
-      missing.each do |id|
-        # Routes that cannot be measured are remembered too, so they are not queried again.
-        found[keys[id]] = fetched.fetch(id, false)
-        cache.write(keys[id], found[keys[id]], expires_in: ROUTE_CACHE_TTL)
-      end
+      id_of = keys.invert
+      found.merge!(shared(missing.map { |id| keys[id] }, cache) do |own|
+        own_ids = own.map { |key| id_of[key] }
+        fetched = fetch_routes(own_ids, connections, cache)
+        own_ids.to_h do |id|
+          # Routes that cannot be measured are remembered too, so they are not queried again.
+          cache.write(keys[id], fetched.fetch(id, false), expires_in: ROUTE_CACHE_TTL)
+          [keys[id], fetched.fetch(id, false)]
+        end
+      end)
+      # Routes another search was looking up, but couldn't in time.
+      raise SearchErrors::ProviderBusy, BUSY unless missing.all? { |id| found.key?(keys[id]) }
     end
     ids.filter_map { |id| Trail.new(**found[keys[id]]) if found[keys[id]] }
   end

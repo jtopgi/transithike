@@ -1,9 +1,9 @@
-# Weekend day hikes by train from the city, with a train back the same evening.
+# Weekend day hikes by train from the city's major stations, with a train back the same evening.
 module TrailsService
-  # return_by is when everyone should be back at the origin, returns_checked is
-  # false when the way back could not be looked up, and complete is false when
-  # some routes could not be checked.
-  Result = Struct.new(:place, :area, :departure_time, :return_by, :trails, :returns_checked, :complete,
+  # stations are the stations trips leave from, return_by is when everyone
+  # should be back there, returns_checked is false when the way back could
+  # not be looked up, and complete is false when some routes could not be checked.
+  Result = Struct.new(:place, :area, :stations, :departure_time, :return_by, :trails, :returns_checked, :complete,
     keyword_init: true)
   # Day trips are on Saturday or Sunday, whichever comes first unless one is
   # chosen, and set out at 8 AM, or now once the day has begun. From 10 AM on,
@@ -56,15 +56,27 @@ module TrailsService
   # cells this many degrees across at once, waiting at most this long.
   RELIEF_CELL_DEGREES = 1.0
   RELIEF_WAIT_SECONDS = 8
+  # Hikes reached from more than one station are shown from the one that gets
+  # there soonest, counting the trip across the city to the station at about
+  # this speed.
+  CITY_METERS_PER_MINUTE = 250.0
+  # Searches check on their stations' searches this often, and say they're
+  # still going when nothing has changed for KEEP_ALIVE_SECONDS.
+  FOLLOW_SECONDS = 0.25
+  KEEP_ALIVE_SECONDS = 15
 
   # origin is text to look up, near a rough [latitude, longitude] if given, or
   # a Place chosen from suggestions or the device's location; day is a
-  # WEEKEND_DAYS key. The block, if any, is called as the search goes: with
-  # :place and the result once the departure time is known, with :checking and
-  # how many routes a batch checks, with :trails and each batch's routes that
-  # have a trip there and back, with :ranking and how many routes were found
-  # once every batch is checked, and with :update and every route once
-  # highlights and popularity rank them. Returns the result.
+  # WEEKEND_DAYS key. Trips leave from the major stations near it, and
+  # getting to them is up to the visitor. The block, if any, is called as the
+  # search goes: with :place and the result once its stations and departure
+  # time are known, with :checking, how many routes a batch checks, and the
+  # station it checks from, with :trails and the routes found to have a trip
+  # there and back, or to have a quicker one than those already found, with
+  # :update and the routes found once highlights and terrain rank them, and
+  # with :waiting while nothing changes for a while. Each route is found from
+  # the station that gets there soonest. Returns the result, with every route
+  # found, best first.
   def self.search(origin:, day: nil, near: nil, places: PhotonService, transit: TransitousService,
     hiking: OverpassService, elevation: ElevationService, &on_found)
     place = origin.is_a?(String) ? places.geocode(origin, near: near) : origin
@@ -72,27 +84,130 @@ module TrailsService
       raise SearchErrors::InvalidInput, "We could not find that starting point. Try a city, neighborhood, or address."
     end
 
-    lat, lon = place.latitude, place.longitude
     # The area only refines the search, which goes ahead without it.
-    area = optional { transit.area(lat, lon) } || {}
+    area = optional { transit.area(place.latitude, place.longitude) } || {}
     departure_time = departure_time(place.time_zone || area[:time_zone], day: day)
-    result = Result.new(place: place, area: area[:area], departure_time: departure_time,
+    stations = transit.major_stations(origin: place, departure_time: departure_time)
+    result = Result.new(place: place, area: area[:area], stations: stations, departure_time: departure_time,
       return_by: departure_time.change(hour: RETURN_BY_HOUR), trails: [], returns_checked: true, complete: true)
     on_found&.call(:place, result)
+    return result if stations.empty?
 
-    stations = transit.rail_stations(origin: place, departure_time: departure_time).select do |station|
-      OverpassService.distance(lat, lon, station[0], station[1]) >= MIN_DISTANCE_METERS
+    searches = stations.map do |station|
+      StationSearch.start(station, departure_time, transit: transit, hiking: hiking, elevation: elevation)
+    end
+    follow(searches, result, &on_found)
+  end
+
+  # Follows the stations' searches as they go, passing on what changes, and
+  # returns the result once they're all done.
+  def self.follow(searches, result, &on_found)
+    merged = Merged.new(result, on_found)
+    seen = Array.new(searches.size, 0)
+    quiet_since = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    loop do
+      done, progressed = true, false
+      searches.each_with_index do |search, index|
+        events, finished = search.events_since(seen[index])
+        seen[index] += events.size
+        done &&= finished
+        progressed ||= events.any?
+        events.each { |event, payload| merged.take(event, payload) }
+      end
+      break if done
+
+      now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      quiet_since = now if progressed
+      next if progressed
+
+      if now - quiet_since >= KEEP_ALIVE_SECONDS
+        on_found&.call(:waiting, nil)
+        quiet_since = now
+      end
+      # The stations' searches may need to load code while this one waits.
+      ActiveSupport::Dependencies.interlock.permit_concurrent_loads { sleep FOLLOW_SECONDS }
+    end
+    merged.result
+  end
+
+  # A search's routes as its stations' searches find them, each from the
+  # station that gets there soonest.
+  class Merged
+    def initialize(result, on_found)
+      @result, @on_found, @shown, @errors = result, on_found, {}, []
+    end
+
+    # Takes in a station search's event, passing on what changes what's shown.
+    def take(event, payload)
+      case event
+      when :checking then @on_found&.call(:checking, payload)
+      when :trails
+        show(:trails, payload.select { |trail| @shown[trail.osm_id].nil? || TrailsService.sooner?(trail, @shown[trail.osm_id], @result.place) })
+      when :update then show(:update, payload.select { |trail| @shown[trail.osm_id]&.station == trail.station })
+      when :done
+        @result.returns_checked &&= payload.returns_checked
+        @result.complete &&= payload.complete
+      when :failed
+        @errors << payload
+        @result.complete = false
+      end
+    end
+
+    # The result with every route shown, best first. Raises when none were
+    # found and some station's search failed.
+    def result
+      raise @errors.first if @shown.empty? && @errors.any?
+
+      @result.trails = @shown.values.sort_by { |trail| [-trail.score.to_f, trail.duration] }
+      @result
+    end
+
+    private
+
+    def show(event, trails)
+      return if trails.empty?
+
+      trails.each { |trail| @shown[trail.osm_id] = trail }
+      @on_found&.call(event, trails)
+    end
+  end
+
+  # Whether a route found from one station is reached sooner than from
+  # another, counting the trip across the city from the place to each station.
+  def self.sooner?(trail, other, place)
+    reach_seconds(trail, place) < reach_seconds(other, place)
+  end
+
+  def self.reach_seconds(trail, place)
+    station = trail.station
+    meters = station ? OverpassService.distance(place.latitude, place.longitude, station.latitude, station.longitude) : 0
+    trail.duration + meters / CITY_METERS_PER_MINUTE * 60
+  end
+
+  # Hikes by train from a station that leave at departure_time, with a train
+  # back to it by RETURN_BY_HOUR. The block, if any, is called as the search
+  # goes: with :checking, how many routes a batch checks, and the station,
+  # with :trails and each batch's routes that have a trip there and back, and
+  # with :update and every route once highlights and terrain rank them, each
+  # time with copies, so the search can go on. Returns the station's result.
+  def self.from_station(station, departure_time, transit: TransitousService, hiking: OverpassService,
+    elevation: ElevationService, &on_found)
+    place = station.place(departure_time.time_zone.tzinfo.name)
+    result = Result.new(place: place, stations: [station], departure_time: departure_time,
+      return_by: departure_time.change(hour: RETURN_BY_HOUR), trails: [], returns_checked: true, complete: true)
+    stations = transit.rail_stations(origin: station, departure_time: departure_time).select do |stop|
+      OverpassService.distance(station.latitude, station.longitude, stop[0], stop[1]) >= MIN_DISTANCE_METERS
     end
     return result if stations.empty?
 
-    access = TransitAccess.new(lat, lon, stations)
+    access = TransitAccess.new(station.latitude, station.longitude, stations)
     tiles = hiking.tiles(stations)
     # Tiles whose routes don't load leave their scenery unchecked, and the search incomplete.
     failures = Concurrent::Array.new
     nearby = start(overpass_pool) { hiking.routes_in(tiles.first(FIRST_TILES), failures: failures) }
     # Routes in the other tiles only add to the search, so it goes ahead without them.
     farther = start(overpass_pool) { hiking.routes_in(tiles.drop(FIRST_TILES), failures: failures) } if tiles.size > FIRST_TILES
-    search = Search.new(place, access, result, transit, hiking, on_found)
+    search = Search.new(station, place, access, result, transit, hiking, on_found)
     routes = finished(nearby).value!
     relief = reliefs(routes, elevation)
     search.check(hiking.pick(routes, access: access, relief: relief).first(BATCH_SIZE))
@@ -108,9 +223,8 @@ module TrailsService
     raise search.error if result.trails.empty? && search.error
     return result if result.trails.empty?
 
-    on_found&.call(:ranking, result.trails.size)
     enrich(result, search.lookups, elevation)
-    on_found&.call(:update, result.trails)
+    on_found&.call(:update, result.trails.map(&:dup))
     result
   end
 
@@ -118,8 +232,8 @@ module TrailsService
   class Search
     attr_reader :lookups, :error
 
-    def initialize(place, access, result, transit, hiking, on_found)
-      @place, @access, @result, @transit, @hiking, @on_found = place, access, result, transit, hiking, on_found
+    def initialize(station, place, access, result, transit, hiking, on_found)
+      @station, @place, @access, @result, @transit, @hiking, @on_found = station, place, access, result, transit, hiking, on_found
       @checked, @lookups, @budget = Set.new, [], { planned: MAX_PLANNED_ROUTES }
     end
 
@@ -130,19 +244,43 @@ module TrailsService
 
     private
 
-    # A failed batch is skipped, so the routes already found are still shown.
+    # A batch whose routes can't be looked up is skipped, so the routes already found are still shown.
     def check_batch(ids)
       @checked.merge(ids)
-      @on_found&.call(:checking, ids.size)
-      trails = @hiking.trails_for(ids, lat: @place.latitude, lon: @place.longitude, access: @access)
+      @on_found&.call(:checking, [ids.size, @station])
+      trails = routes(ids)
       found = TrailsService.round_trips(@place, trails, @result, @transit, @budget)
       return if found.empty?
 
-      found.each { |trail| trail.score = TrailsService.score(trail).round(2) }
+      found.each do |trail|
+        trail.station = @station
+        trail.score = TrailsService.score(trail).round(2)
+      end
       @lookups << [found, TrailsService.start(TrailsService.overpass_pool) { @hiking.highlights(found) }]
       @result.trails.concat(found)
-      @on_found&.call(:trails, found)
+      @on_found&.call(:trails, found.map(&:dup))
     rescue SearchErrors::UpstreamError => error
+      fail_with(error)
+    end
+
+    # The routes with the ids, or, when they can't be looked up at once, as
+    # when Overpass is busy, each half of them after a pause, leaving out a
+    # half that still can't be.
+    def routes(ids)
+      @hiking.trails_for(ids, lat: @place.latitude, lon: @place.longitude, access: @access)
+    rescue SearchErrors::UpstreamError => error
+      raise error if ids.size < 2
+
+      sleep Rails.configuration.x.overpass_retry_pause_seconds
+      ids.each_slice((ids.size / 2.0).ceil).flat_map do |half|
+        @hiking.trails_for(half, lat: @place.latitude, lon: @place.longitude, access: @access)
+      rescue SearchErrors::UpstreamError => failure
+        fail_with(failure)
+        []
+      end
+    end
+
+    def fail_with(error)
       @error ||= error
       @result.complete = false
     end

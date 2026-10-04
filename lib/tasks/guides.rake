@@ -25,7 +25,7 @@ namespace :guides do
     end
     puts "#{written} of #{guides.size} guides written to #{GuideService.directory}"
     # Lookups left running finish, and their pools stop, before Ruby exits, which can otherwise hang killing their threads.
-    pools = Rails.configuration.x.then { |config| [config.provider_pool, config.overpass_pool] }
+    pools = Rails.configuration.x.then { |config| [config.station_pool, config.provider_pool, config.overpass_pool] }
     pools.each(&:shutdown)
     pools.each { |pool| pool.wait_for_termination(60) }
     abort "No guide could be built" if written.zero?

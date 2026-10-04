@@ -30,8 +30,9 @@ class Results {
     this.progress = page.querySelector("[data-progress]")
     this.found = 0
     this.done = false
-    // Trips are looked up one card at a time: the transit planner answers each visitor's requests in turn.
-    this.tripQueue = Promise.resolve()
+    // Trips are looked up two cards at a time, which the transit planner shares between visitors.
+    this.tripQueues = [Promise.resolve(), Promise.resolve()]
+    this.tripTurn = 0
     // Photos two at a time, so a page never keeps more of the server busy looking for them.
     this.photoQueues = [Promise.resolve(), Promise.resolve()]
     this.photoTurn = 0
@@ -55,11 +56,10 @@ class Results {
     const events = new EventSource(this.page.dataset.streamUrl)
     const on = (name, handler) => events.addEventListener(name, (event) => handler(JSON.parse(event.data)))
     on("place", (place) => this.place(place))
-    on("checking", ({ count }) => this.status(this.found
-      ? `Found ${this.found} so far. Checking ${count} more hikes…`
-      : `Checking trains to ${count} hikes and back…`))
+    on("checking", ({ count, station }) => this.status(this.found
+      ? `Found ${this.found} so far. Checking trains from ${station} to ${count} more hikes…`
+      : `Checking trains from ${station} to ${count} hikes and back…`))
     on("trails", ({ html }) => this.add(html))
-    on("ranking", () => this.status("Adding highlights and popularity…"))
     on("update", ({ trails }) => this.refresh(trails))
     on("done", (summary) => { events.close(); this.finish(summary) })
     on("failure", ({ message }) => { events.close(); this.fail(message) })
@@ -70,9 +70,14 @@ class Results {
     })
   }
 
-  place({ heading, departure, time_zone: timeZone }) {
-    this.page.ownerDocument.querySelector("[data-heading]").textContent = heading
-    this.page.ownerDocument.querySelector("[data-departure]").textContent = departure
+  place({ heading, departure, time_zone: timeZone, stations }) {
+    const page = this.page.ownerDocument
+    page.querySelector("[data-heading]").textContent = heading
+    page.querySelector("[data-departure]").textContent = departure
+    // The stations trips leave from, rendered by the server, which escapes them.
+    const line = page.querySelector("[data-stations]")
+    line.innerHTML = stations || ""
+    line.hidden = !stations
     document.title = `${heading} · TransitHike`
     this.timeZone = timeZone
   }
@@ -87,10 +92,19 @@ class Results {
     this.list.querySelectorAll("[data-skeleton]").forEach((skeleton) => skeleton.remove())
     const cards = [...template.content.querySelectorAll("[data-trail]")]
     cards.forEach((card) => {
-      this.list.append(card)
+      // A hike already shown is replaced when another station gets there sooner.
+      const shown = this.list.querySelector(`[data-osm-id="${Number(card.dataset.osmId)}"]`)
+      if (shown) {
+        this.previews.unobserve(shown)
+        this.trips.unobserve(shown)
+        shown.replaceWith(card)
+        if (this.done) this.trips.observe(card)
+      } else {
+        this.list.append(card)
+        this.found += 1
+      }
       this.previews.observe(card)
     })
-    this.found += cards.length
     this.toolbar.hidden = false
     this.update()
   }
@@ -196,7 +210,8 @@ class Results {
 
   queueTrip(card) {
     this.trips.unobserve(card)
-    this.tripQueue = this.tripQueue.then(() => this.showTrip(card)).catch(() => {})
+    const lane = this.tripTurn++ % this.tripQueues.length
+    this.tripQueues[lane] = this.tripQueues[lane].then(() => this.showTrip(card)).catch(() => {})
   }
 
   async showTrip(card) {
