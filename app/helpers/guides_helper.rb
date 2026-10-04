@@ -17,6 +17,16 @@ module GuidesHelper
     departure ? Time.iso8601(departure) : hike.trail.last_return
   end
 
+  # Whether sunset is the hike's deadline rather than the last trip back.
+  def sunset_first?(hike)
+    TripPlans.sunset_first?(hike.trail.sunset, last_trip_time(hike))
+  end
+
+  # The first trip back after sunset, for hiking until then, where sunset is the hike's deadline, or nil.
+  def after_sunset_trip(hike)
+    TripPlans.until_sunset(hike.ways || {}, hike.trail.sunset)[:after_sunset]
+  end
+
   # The train that rides longest on the way there, such as "Hudson train to Cold Spring", or nil.
   # Lines are named "Hudson" or "Port Jefferson Branch", so they're called trains.
   def main_train(hike)
@@ -39,11 +49,20 @@ module GuidesHelper
     miles = number_with_precision(TrailsService.hike_miles(trail), precision: 1)
     climb = " that climbs about #{feet(trail.terrain[:climb])}" if trail.terrain && trail.terrain[:climb].to_i >= 15
     train = main_train(hike)
+    clock = ->(time) { time.in_time_zone(page.departure_time.time_zone).strftime("%-I:%M %p") }
     last = last_trip_time(hike)
+    # Trips back after sunset are only for staying after dark, so the first of them is the one told.
+    departure = after_sunset_trip(hike)&.dig(:departure) if sunset_first?(hike)
+    dusk = Time.iso8601(departure) if departure
+    back = if dusk && dusk != last
+      "the first trip back after sunset leaves at #{clock.(dusk)}"
+    elsif last && (dusk || !sunset_first?(hike))
+      "the last trip back leaves at #{clock.(last)}"
+    end
     [
       "#{hike.title} is a #{miles}-mile hike#{" near #{trail.location}" if trail.location} (#{hike_plan_label(trail)})#{climb}.",
       "From #{trail.station&.name || page.guide.origin}, it's about #{each_way_label(hike)} each way#{", taking the #{train}" if train}.",
-      ("On #{page.departure_time.strftime('%A')}s, the last trip back leaves at #{last.in_time_zone(page.departure_time.time_zone).strftime('%-I:%M %p')}." if last)
+      ("On #{page.departure_time.strftime('%A')}s, #{back}." if back)
     ].compact.join(" ")
   end
 
@@ -65,9 +84,10 @@ module GuidesHelper
     facts << ["Biggest climb", "#{views.title}, about #{feet(views.trail.terrain[:climb])}"] if views && views.trail.terrain[:climb].to_i >= 100
     falls = hikes.select { |hike| Array(hike.trail.highlights).any? { |highlight| highlight[:kind] == "waterfall" } }
     facts << ["Waterfalls", falls.first(3).map(&:title).to_sentence] if falls.any?
-    latest = hikes.select { |hike| last_trip_time(hike) }.max_by { |hike| last_trip_time(hike) }
-    if latest
-      facts << ["Latest trip home", "from #{latest.title}, at #{last_trip_time(latest).in_time_zone(zone).strftime('%-I:%M %p')}"]
+    # Every hike is done by sunset, which is much the same across the city.
+    sunset = Daylight.sunset(page.departure_time, page.guide.latitude, page.guide.longitude)
+    if sunset && sunset > page.departure_time
+      facts << ["Sunset", "#{sunset.in_time_zone(zone).strftime('%-I:%M %p')}, and every hike is timed to be done by then"]
     end
     facts
   end

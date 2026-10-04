@@ -234,4 +234,16 @@ class GuideServiceTest < ActiveSupport::TestCase
     assert_nil GuideService.page("atlantis")
     assert_nil GuideService.page("london")
   end
+
+  test "guides built before sunsets were kept work them out, and leave out hikes there isn't the daylight for" do
+    data = guide_data
+    # Arriving at 5:30 PM, 5 miles out and back take until 8 PM, well after the sunset at 6:23 PM.
+    data[:hikes].last[:trail][:arrival] = "2026-10-10T21:30:00Z"
+    write_guide(data)
+    assert_equal ["breakneck-ridge-trail"], GuideService.page("new-york-city").hikes.map(&:slug)
+
+    write_guide
+    white = GuideService.page("new-york-city").hike("white-trail-tarrytown-lakes")
+    assert_equal Time.utc(2026, 10, 10, 22, 23), white.trail.sunset
+  end
 end

@@ -239,9 +239,11 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     card = cards.at_css("[data-trail][data-osm-id='123'][data-travel='10800'][data-length='2.76'][data-scenic='0.0']" \
       "[data-hike='5400'][data-required='7200'][data-plan='out_and_back']")
     assert card
-    # Arriving at 9:30 AM, sunset at 6:58 PM comes before the last trip back at 9 PM, and leaves 9 hours 28 minutes.
-    assert_equal "↩️ Last trip back 9:00 PM · 🌇 Sunset 6:58 PM · up to 9 h of daylight there", card.at_css(".trail-return").text.squish
-    assert card.at_css("[data-sunset='2026-09-27T01:58:00Z']")
+    # Arriving at 9:30 AM, sunset at 6:58 PM is the deadline rather than the last trip back at 9 PM, which isn't
+    # shown, and leaves 9 hours 28 minutes.
+    assert_equal "Last trip back 9:00 PM", card.at_css("[data-return][hidden] [data-last-return]").parent.text.squish.delete_prefix("↩️ ")
+    assert_equal "🌇 Sunset 6:58 PM", card.at_css("[data-sunset='2026-09-27T01:58:00Z']:not([hidden])").text.squish
+    assert_equal "· up to 9 h of daylight there", card.at_css("[data-stay-label]").text.squish
     assert card.at_css(".trail-map[data-path='[[[47.3,-122.0],[47.32,-122.0]]]'][data-start='[47.3,-122.0]']")
     # Photos are looked for at the route's middle and a sixth of the way from each end.
     assert card.at_css("a[data-photos-url='#{photos_path(points: '47.32,-122.0|47.3,-122.0')}'][hidden]")
@@ -492,7 +494,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     stub_get(TransitousService::PLAN_URL) do |env|
       body = if env.params["arriveBy"] == "true"
         { itineraries: [train_back("20:00", "21:30"), train_back("21:00", "22:35"), train_back("23:00", "00:20"),
-          train_back("03:30", "05:15")], direct: [] }
+          train_back("02:30", "04:00"), train_back("03:30", "05:15")], direct: [] }
       else
         { itineraries: [journey("2026-09-23T15:19:00Z", "2026-09-23T17:31:00Z", [
           leg("BUS", "7", "2026-09-23T15:19:00Z", "2026-09-23T15:30:00Z", from: "home-stop", to: "king-street"),
@@ -513,6 +515,8 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_equal({ "mode" => "REGIONAL_RAIL", "name" => "Cascades", "agency" => "Metro", "headsign" => "Downtown" }, there["legs"].last)
     assert_equal ["2026-09-23T21:00:00Z", "2026-09-23T22:35:00Z"], back.values_at("departure", "arrival")
     assert_equal ["2026-09-24T03:30:00Z", "Cascades"], [last["departure"], last["legs"].sole["name"]]
+    # The sun sets at 7:03 PM PDT, so someone hiking until then takes the 7:30 PM.
+    assert_equal ["2026-09-24T02:30:00Z", "Cascades"], response.parsed_body["after_sunset"].then { |trip| [trip["departure"], trip["legs"].sole["name"]] }
     assert same_way
     there_request, back_request = @requests[URI(TransitousService::PLAN_URL).path].map(&:params)
     assert_equal ["47.6000000,-122.3000000", "48.4000000,-122.3000000", "false"], there_request.values_at("fromPlace", "toPlace", "arriveBy")
@@ -556,7 +560,6 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
       .merge(from: { stopId: "seattle", name: "King Street" }, to: { stopId: "mount-vernon", name: "Mount Vernon" })])
   end
 
-  # The planner answers a journey there, the trips there in a window, and the trips back.
   # The trips there over a window, for the first trip there and the timetable, and the trips back.
   def planner(window: [], back: [])
     stub_get(TransitousService::PLAN_URL) do |env|
@@ -589,7 +592,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     hiking([route_element(latitude: 47.3, name: "Ridge Trail")], highlights: [highlight_node("waterfall", 47.31, -122.0, name: "Twin Falls")])
     elevation
     stub_get(WikipediaService::API_URL, {})
-    back = [train_back("20:00", "21:30"), train_back("21:00", "22:35"), train_back("03:30", "05:15")]
+    back = [train_back("20:00", "21:30"), train_back("21:00", "22:35"), train_back("02:30", "04:05"), train_back("03:30", "05:15")]
     back.each { |trip| trip[:legs].first[:from][:name] = "Mount Vernon" }
     planner(window: [train_there("15:19", "17:31"), train_there("16:19", "18:31"), train_there("23:19", "01:31")], back: back)
     localities
@@ -608,15 +611,17 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_select ".trail-chip", text: /Twin Falls/
     facts = css_select(".hike-facts").sole.text.squish
     assert_match(/Hike ≈ 2.8 mi out and back, about 1 h 30 min/, facts)
-    assert_match(/Last trip back 8:30 PM from Mount Vernon/, facts)
-    assert_match(/Sunset 7:04 PM hike done by then/, facts)
-    assert_equal "Taking the first trip there, you arrive at 10:31 AM and have up to 8 h 33 min until sunset, with the last " \
-      "trip back at 8:30 PM, for a hike of about 1 h 30 min.", css_select(".hike-intro").sole.text.squish
+    # The hike is done by sunset, so the trip back to know is the first after it, rather than the last at 8:30 PM.
+    assert_match(/Sunset 7:04 PM hike done by then ↩️ After sunset 7:30 PM from Mount Vernon\z/, facts)
+    assert_equal "Taking the first trip there, you arrive at 10:31 AM and have up to 8 h 33 min until sunset, for a hike of " \
+      "about 1 h 30 min.", css_select(".hike-intro").sole.text.squish
     there, back = css_select("table.timetable tbody").map { |table| table.css("tr").map { |row| row.css("td").first(2).map(&:text) } }
     # Arriving at 6:31 PM leaves no time to hike before the last trip back.
     assert_equal [["8:19 AM", "10:31 AM"], ["9:19 AM", "11:31 AM"]], there
-    assert_equal [["1:00 PM", "2:30 PM"], ["2:00 PM", "3:35 PM"], ["8:30 PM", "10:15 PM"]], back
-    assert_select "tr.timetable-last", text: /8:30 PM.*Last/m
+    # Trips back only until the first after sunset, as later ones are for staying after dark.
+    assert_equal [["1:00 PM", "2:30 PM"], ["2:00 PM", "3:35 PM"], ["7:30 PM", "9:05 PM"]], back
+    assert_select "tr.timetable-last", text: /7:30 PM.*After sunset/m
+    assert_match(/until the first after sunset, for hiking until then\./, css_select("#back-heading + p").sole.text.squish)
     assert_select "td", text: /Cascades from King Street to Mount Vernon/
     assert_equal ["🧭 Directions"], css_select("a[href^='https://www.google.com/maps/dir/']").map(&:text)
     query = URI.decode_www_form(URI(css_select("a[href^='https://www.google.com/maps/dir/']").sole["href"]).query).to_h

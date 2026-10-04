@@ -49,19 +49,21 @@
           <dd data-climb><%= climb_label(trail) %></dd>
         </div>
       </dl>
-      <%# The hike has to be done by sunset; the walk to the station and the trains back can be after. %>
+      <%# The hike's deadline: sunset, with the walk to the station and the trains back after, or the last trip back
+          when it leaves before sunset or soon after. %>
+      <% dark = TripPlans.sunset_first?(trail.sunset, trail.last_return) %>
       <p class="trail-return">
-        <span data-return>
+        <span data-return <%= "hidden" if dark && trail.last_return %>>
           <% if trail.last_return %>
-            <span aria-hidden="true" data-return-icon>↩️</span> Last trip back<%= " from the far end" if trail.finish %>
+            <span aria-hidden="true">↩️</span> Last trip back<%= " from the far end" if trail.finish %>
             <strong data-last-return><%= clock(trail.last_return, result) %></strong>
           <% else %>
             <span aria-hidden="true">⚠️</span> We couldn't check the way back. Check it before you go.
           <% end %>
         </span>
         <% if trail.sunset %>
-          <span class="text-nowrap" data-sunset="<%= trail.sunset.utc.iso8601 %>">·
-            <span aria-hidden="true" data-sunset-icon>🌇</span> Sunset <strong><%= clock(trail.sunset, result) %></strong></span>
+          <span class="text-nowrap" data-sunset="<%= trail.sunset.utc.iso8601 %>" <%= "hidden" unless dark %>>
+            <span aria-hidden="true">🌇</span> Sunset <strong><%= clock(trail.sunset, result) %></strong></span>
         <% end %>
         <span class="text-body-secondary" data-stay-label><%= "· #{stay_label(trail)}" if stay_label(trail) %></span>
       </p>

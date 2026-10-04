@@ -11,7 +11,9 @@ class TripsController < ApplicationController
   # before heading back. finish, if given, is where a hike that doesn't come
   # back ends, and the trips back leave from. back is the first trip home after
   # the hike and last is the last one, both the same way as the trip there
-  # where it runs in time; location is TrailsService.location's.
+  # where it runs in time, and after_sunset is the first that leaves at sunset
+  # or later, for hiking until sunset, where that's the hike's deadline;
+  # location is TrailsService.location's.
   def show
     origin, route = [params[:from], params[:to]].map { |value| point(value) }
     finish = point(params[:finish]) if params.key?(:finish)
@@ -29,9 +31,10 @@ class TripsController < ApplicationController
     ways = TransitousService.ways_back(origin: finish || route, destination: origin, like: there,
       earliest: arrival + hike.minutes, deadline: back_by, follow: finish.nil?)
     location = TrailsService.settle([where], timeout: LOCATION_WAIT_SECONDS).first.value(0)
+    dusk = TripPlans.until_sunset(ways, Daylight.sunset(leave, route.latitude, route.longitude))[:after_sunset]
     expires_in TransitousService::TRIP_CACHE_TTL
-    render json: { there: shown(there), back: shown(ways[:back]), last: shown(ways[:last]), same_way: ways[:same_way],
-      location: location }
+    render json: { there: shown(there), back: shown(ways[:back]), last: shown(ways[:last]), after_sunset: shown(dusk),
+      same_way: ways[:same_way], location: location }
   rescue SearchErrors::UpstreamError
     # The lookup started alongside finishes rather than outlive the request.
     TrailsService.settle([where], timeout: LOCATION_WAIT_SECONDS) if where

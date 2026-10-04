@@ -151,7 +151,8 @@ module GuideService
       fields[:last_return] = trail.last_return&.utc&.iso8601
       fields[:sunset] = trail.sunset&.utc&.iso8601
       { trail: fields, area: gallery&.dig(:title)&.sub(/\s*\([^)]*\)\z/, ""), there: trips&.dig(:there),
-        ways: (trips&.dig(:ways) || {}).slice(:back, :last, :same_way, :trips), departures: Array(trips&.dig(:departures)),
+        ways: (trips&.dig(:ways) || {}).slice(:back, :last, :same_way, :trips, :after_sunset),
+        departures: Array(trips&.dig(:departures)),
         photos: Array(gallery&.dig(:photos)) }
     end
 
@@ -192,8 +193,11 @@ module GuideService
       (2..).lazy.map { |number| "#{slug}-#{number}" }.find { |candidate| !taken.include?(candidate) }
     end
 
+    # The guide's page, without hikes there isn't the daylight for. Guides
+    # built before sunsets were kept have theirs worked out.
     def load(guide, data)
       zone = ActiveSupport::TimeZone[guide.time_zone] || Time.zone
+      departure_time = Time.iso8601(data[:departure_time]).in_time_zone(zone)
       hikes = data[:hikes].map do |hike|
         fields = hike[:trail].slice(*TRAIL_FIELDS)
         fields[:arrival] = Time.iso8601(fields[:arrival]) if fields[:arrival]
@@ -202,11 +206,12 @@ module GuideService
         fields[:plan] = fields[:plan]&.to_sym
         fields[:station] = Station.new(**fields[:station].slice(*Station.members)) if fields[:station]
         trail = OverpassService::Trail.new(**fields, origin: fields[:station]&.name || guide.origin)
+        trail.sunset ||= Daylight.sunset(departure_time, trail.latitude, trail.longitude)
         Hike.new(slug: hike[:slug], title: hike[:title], trail: trail, area: hike[:area], there: hike[:there],
           ways: hike[:ways] || {}, departures: Array(hike[:departures]), photos: Array(hike[:photos]))
-      end
+      end.select { |hike| hike.trail.arrival.nil? || TrailsService.daylight?(hike.trail) }
       stations = Array(data[:stations]).map { |station| Station.new(**station.slice(*Station.members)) }
-      Page.new(guide: guide, built_at: Time.iso8601(data[:built_at]), departure_time: Time.iso8601(data[:departure_time]).in_time_zone(zone),
+      Page.new(guide: guide, built_at: Time.iso8601(data[:built_at]), departure_time: departure_time,
         return_by: Time.iso8601(data[:return_by]).in_time_zone(zone), stations: stations, hikes: hikes)
     end
 
