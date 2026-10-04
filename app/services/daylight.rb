@@ -1,17 +1,32 @@
-# When the sun sets, from where and when, by the sunrise equation
-# (https://en.wikipedia.org/wiki/Sunrise_equation), to within a minute or two
-# away from the poles. Hikes are planned to end by then.
+# When the sun sets and when it gets dark, from where and when, by the sunrise
+# equation (https://en.wikipedia.org/wiki/Sunrise_equation), to within a minute
+# or two away from the poles. Hikes are planned to end by sunset, with the last
+# trip back leaving before dark.
 module Daylight
   J2000 = 2_451_545.0
   UNIX_EPOCH_JULIAN = 2_440_587.5
   # The sun's top edge touches the horizon 0.833° below the center, for refraction.
   SET_ALTITUDE = -0.833
+  # Civil twilight ends, and it's dark, with the sun 6° below the horizon.
+  DARK_ALTITUDE = -6.0
   EARTH_TILT = 23.4397
 
   # The sunset, as a UTC Time to the minute before, on the local day of time at
   # [latitude, longitude]: nil where the sun doesn't set that day, and where it
   # doesn't rise, the start of the day, as there's no daylight.
   def self.sunset(time, latitude, longitude)
+    sinking(time, latitude, longitude, SET_ALTITUDE)
+  end
+
+  # When it's dark, at the end of civil twilight, like #sunset: nil where it
+  # doesn't get dark that day, as in white nights, and the start of the day
+  # where it's dark all day.
+  def self.dusk(time, latitude, longitude)
+    sinking(time, latitude, longitude, DARK_ALTITUDE)
+  end
+
+  # When the sun sinks below altitude, in degrees, in the evening.
+  def self.sinking(time, latitude, longitude, altitude)
     # The local day, by the sun's time there, which a minute or two either way doesn't change.
     day = (time.utc + longitude / 15.0 * 3600).to_date
     mean_day = day.jd - J2000 - longitude / 360.0
@@ -20,7 +35,7 @@ module Daylight
     ecliptic = (anomaly + center + 180 + 102.9372) % 360
     transit = J2000 + mean_day + 0.0053 * sine(anomaly) - 0.0069 * sine(2 * ecliptic)
     declination = Math.asin(sine(ecliptic) * sine(EARTH_TILT))
-    hour_angle = (sine(SET_ALTITUDE) - sine(latitude) * Math.sin(declination)) /
+    hour_angle = (sine(altitude) - sine(latitude) * Math.sin(declination)) /
       (Math.cos(radians(latitude)) * Math.cos(declination))
     return if hour_angle < -1
     return Time.utc(day.year, day.month, day.day) - (longitude / 15.0 * 3600).round if hour_angle > 1

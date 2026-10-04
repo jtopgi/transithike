@@ -1,10 +1,7 @@
 <%# A hike in a city's guide, linking to its page. %>
 <% trail = hike.trail
    photo = hike.photos.first
-   last = last_trip_time(hike)
-   # The hike's deadline: sunset, or the last trip back when it leaves before sunset or soon after.
-   dark = sunset_first?(hike)
-   zone = page.departure_time.time_zone %>
+   last = last_trip_time(hike) %>
 <div class="col">
   <article class="card trail-card h-100 border-0 shadow-sm">
     <%= link_to guide_hike_path(page.guide.slug, hike.slug), class: "guide-card-media", tabindex: -1, aria: { hidden: true } do %>
@@ -43,14 +40,10 @@
           </div>
         <% end %>
       </dl>
-      <% if dark %>
-        <p class="trail-return mb-0">
-          <span aria-hidden="true">🌇</span> Sunset <strong><%= trail.sunset.in_time_zone(zone).strftime("%-I:%M %p") %></strong>
-        </p>
-      <% elsif last %>
+      <% if last %>
         <p class="trail-return mb-0">
           <span aria-hidden="true">↩️</span> Last trip back<%= " from the far end" if trail.finish %>
-          <strong><%= last.in_time_zone(zone).strftime("%-I:%M %p") %></strong>
+          <strong><%= last.in_time_zone(page.departure_time.time_zone).strftime("%-I:%M %p") %></strong>
         </p>
       <% end %>
     </div>

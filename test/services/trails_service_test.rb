@@ -19,15 +19,20 @@ class TrailsServiceTest < ActiveSupport::TestCase
   # latest returns by route name, with trips from some stations by their names
   # in from. A name missing from returns has no way back.
   class FakeTransit
-    attr_reader :departures, :planned, :station_requests, :return_requests, :city_requests, :major_requests, :returned_for
+    attr_reader :departure_times, :planned, :station_requests, :return_requests, :city_requests, :major_requests, :returned_for,
+      :timetables
 
     # By default, King Street station at the origin, one station 55 km north of
-    # it, and no trips by city transit.
+    # it, and no trips by city transit. Each hike has three trips there, half
+    # an hour apart, and three back, an hour apart until the last, which leaves
+    # before dark; there and back give some fewer, by name, and plans, an
+    # exception or exceptions by name, fails planning them.
     def initialize(trips: {}, city: {}, returns: nil, area: { time_zone: "America/Los_Angeles", area: "Seattle, Washington" },
-      stations: [[47.5, -122.0, 60]], major: [STATION], from: {})
+      stations: [[47.5, -122.0, 60]], major: [STATION], from: {}, there: {}, back: {}, plans: nil)
       @trips, @city, @returns, @area, @stations, @major, @from = trips, city, returns, area, stations, major, from
-      @departures, @planned, @station_requests, @return_requests, @city_requests, @major_requests = [], [], [], [], [], []
-      @returned_for = []
+      @there, @back, @plans = there, back, plans
+      @departure_times, @planned, @station_requests, @return_requests, @city_requests, @major_requests = [], [], [], [], [], []
+      @returned_for, @timetables, @names = [], [], {}
     end
 
     def area(latitude, longitude)
@@ -52,13 +57,14 @@ class TrailsServiceTest < ActiveSupport::TestCase
     end
 
     def trips(origin:, destinations:, departure_time:, modes: nil)
+      learn(destinations)
       if modes
         @city_requests << modes
         raise @city if @city.is_a?(Exception)
 
         return destinations.map { |destination| @city[destination.name] }
       end
-      @departures << departure_time
+      @departure_times << departure_time
       raise @trips if @trips.is_a?(Exception)
 
       from = @from.fetch(origin.name, {})
@@ -72,11 +78,52 @@ class TrailsServiceTest < ActiveSupport::TestCase
 
     # Without returns, every route has a way back at 9 PM.
     def latest_returns(origin:, destinations:, deadline:, earliest_return:)
+      learn(destinations)
       @return_requests << [deadline, earliest_return]
       @returned_for.concat(destinations.map(&:name))
       raise @returns if @returns.is_a?(Exception)
 
       destinations.map { |destination| @returns ? @returns[destination.name] : deadline - 2.hours }
+    end
+
+    # The trips there for a hike's timetable, each riding as long as trips says.
+    def departures(origin:, destination:, time:, latest:, arrive_by: nil, by_train: true)
+      name = named(destination)
+      failure = @plans.is_a?(Hash) ? @plans[name] : @plans
+      raise failure if failure
+
+      @timetables << name
+      # Where the one-request API fails, trips there ride 20 minutes, as #trip plans them.
+      ride = @from.fetch(origin.name, {}).fetch(name) { @trips.is_a?(Hash) ? @trips[name] : { duration: 1200 } }&.dig(:duration)
+      return [] unless ride
+
+      (0...@there.fetch(name, 3)).map { |index| time + (index * 30).minutes }.select { |leave| leave <= latest }
+        .map { |leave| { departure: leave.utc.iso8601, arrival: (leave + ride).utc.iso8601, legs: [] } }
+    end
+
+    def journey(origin:, destination:, time:) = nil
+
+    # The trips back an hour apart after earliest until the last trip back, as
+    # #latest_returns gives it, that leaves by leave_by.
+    def ways_back(origin:, destination:, like:, earliest:, deadline:, leave_by: nil, follow: true)
+      name = named(origin)
+      last = @returns.is_a?(Hash) ? @returns[name] : deadline - 2.hours
+      last = [last, leave_by].compact.min if last
+      count = @back.fetch(name.delete_suffix(" finish"), 3)
+      leaving = last ? (0...count).map { |index| last - index.hours }.select { |time| time >= earliest }.reverse : []
+      trips = leaving.map { |time| { departure: time.utc.iso8601, arrival: (time + 1.hour).utc.iso8601, legs: [] } }
+      { back: trips.first, last: trips.last, same_way: true, trips: trips }
+    end
+
+    private
+
+    # Trips are planned to places by where they are, so their names are learned from the routes and their far ends.
+    def learn(places)
+      places.each { |place| @names[[place.latitude, place.longitude]] = place.name }
+    end
+
+    def named(place)
+      @names.fetch([place.latitude, place.longitude], place.name)
     end
   end
 
@@ -204,7 +251,8 @@ class TrailsServiceTest < ActiveSupport::TestCase
     fast = result.trails.first
     assert_equal [1200, nil, "King Street", STATION], [fast.duration, fast.transfers, fast.origin, fast.station]
     assert_equal SATURDAY + 20.minutes, fast.arrival
-    assert_equal Time.utc(2026, 9, 27, 4), fast.last_return
+    # The last trip back leaves before dark, at 7:29 PM, though trips home run until 9 PM.
+    assert_equal Time.utc(2026, 9, 27, 2, 29), fast.last_return
     assert_equal "Seattle, Washington", result.area
     assert_equal [STATION], result.stations
     assert_equal [result.place], transit.major_requests
@@ -250,7 +298,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_nil TrailsService.location(at.(51), at.(47), places: places)
   end
 
-    test "results are reported as they are found: the place, each batch, and the final ranking" do
+    test "results are reported as they are found: the place, each batch checked, each hike once its trips are planned, and the ranking" do
     trails = (1..5).map { |index| trail("route #{index}") }
     transit = FakeTransit.new(trips: trails.to_h { |trail| [trail.name, minutes(30)] })
     events = []
@@ -258,11 +306,11 @@ class TrailsServiceTest < ActiveSupport::TestCase
       search(transit: transit, hiking: FakeHiking.new(trails)) { |event, payload| events << [event, payload] }
     end
 
-    assert_equal [:place, :checking, :trails, :checking, :trails, :checking, :trails, :update], events.map(&:first)
+    assert_equal [:place, :checking, :trails, :trails, :checking, :trails, :trails, :checking, :trails, :update], events.map(&:first)
     place = events.first.last
     assert_equal [SATURDAY, Time.utc(2026, 9, 27, 6), [STATION]], [place.departure_time, place.return_by, place.stations]
     assert_equal [[2, STATION], [2, STATION], [1, STATION]], events.select { |event, _| event == :checking }.map(&:last)
-    assert_equal [["route 1", "route 2"], ["route 3", "route 4"], ["route 5"]],
+    assert_equal [["route 1"], ["route 2"], ["route 3"], ["route 4"], ["route 5"]],
       events.select { |event, _| event == :trails }.map { |_, found| found.map(&:name) }
     assert_equal result.trails, events.last.last
     assert events.select { |event, _| event == :trails }.flat_map(&:last).all?(&:score)
@@ -322,13 +370,13 @@ class TrailsServiceTest < ActiveSupport::TestCase
       "rushed" => Time.utc(2026, 9, 26, 17, 59),
       # Ten miles out and back take 10 hours, more than the 4 left, and nothing leaves from the far end.
       "long" => Time.utc(2026, 9, 26, 20), "long finish" => nil,
-      # Six miles to the far end take 3 hours, and the last trip home from there leaves at 22:00 PDT.
+      # Six miles to the far end take 3 hours, and trips home from there run until 22:00 PDT, after dark.
       "through" => Time.utc(2026, 9, 26, 18), "through finish" => deadline - 1.hour,
       # Two miles out and back take 2 hours, comfortable enough to come back the same way.
-      "there and back" => Time.utc(2026, 9, 26, 18, 30), "there and back finish" => deadline - 3.hours,
-      # Twelve miles out and back don't fit, but 6 hours to the far end do, before its last bus at 3:30 PM PDT,
+      "there and back" => Time.utc(2026, 9, 26, 20, 30), "there and back finish" => deadline - 3.hours,
+      # Twelve miles out and back don't fit, but 6 hours to the far end do, before its last bus at 5:30 PM PDT,
       # though that leaves hours before 11 PM.
-      "late bus" => Time.utc(2026, 9, 26, 19), "late bus finish" => Time.utc(2026, 9, 26, 22, 30)
+      "late bus" => Time.utc(2026, 9, 26, 19), "late bus finish" => Time.utc(2026, 9, 27, 0, 30)
     })
     result = search(transit: transit, hiking: FakeHiking.new(trails))
 
@@ -336,10 +384,11 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal ["late bus", "roomy", "there and back", "through"], found.keys.sort
     assert_equal [:loop, nil, Time.utc(2026, 9, 27, 2)], found["roomy"].to_h.values_at(:plan, :finish, :last_return)
     through = trails.find { |trail| trail.name == "through" }
-    assert_equal [:through, through.path.first.last, deadline - 1.hour],
+    # The last trip back leaves before dark, at 7:29 PM.
+    assert_equal [:through, through.path.first.last, Time.utc(2026, 9, 27, 2, 29)],
       found["through"].to_h.values_at(:plan, :finish, :last_return)
     assert_equal [:out_and_back, nil], found["there and back"].to_h.values_at(:plan, :finish)
-    assert_equal [:through, Time.utc(2026, 9, 26, 22, 30)], found["late bus"].to_h.values_at(:plan, :last_return)
+    assert_equal [:through, Time.utc(2026, 9, 27, 0, 30)], found["late bus"].to_h.values_at(:plan, :last_return)
     # One request asks for the last trips back from every route and every linear route's far end.
     assert_equal [deadline, SATURDAY + 90.minutes], transit.return_requests.sole
   end
@@ -388,13 +437,37 @@ class TrailsServiceTest < ActiveSupport::TestCase
     refute TrailsService.loop?(linear)
   end
 
-  test "when the way back can't be looked up, routes transit reaches are shown and the result says so" do
+  test "when the quick check of the way back fails, each route's planned trips still check it, and the result says so" do
     # Twenty miles out and back take 20 hours, more than the day has.
     transit = FakeTransit.new(trips: { "a" => minutes(30), "epic" => minutes(30) }, returns: SearchErrors::UpstreamError.new("changed"))
     result = search(transit: transit, hiking: FakeHiking.new([trail("a"), trail("epic", length: 20, loop: false)]))
     assert_equal ["a"], result.trails.map(&:name)
-    assert_nil result.trails.first.last_return
+    assert_equal Time.utc(2026, 9, 27, 2, 29), result.trails.first.last_return
     refute result.returns_checked
+  end
+
+  test "hikes need at least three trips there that arrive in time and three back before dark, so missing one isn't a worry" do
+    trails = %w[frequent sparse-there sparse-back late-there].map { |name| trail(name) }
+    transit = FakeTransit.new(trips: trails.to_h { |trail| [trail.name, minutes(60)] }, there: { "sparse-there" => 2 },
+      back: { "sparse-back" => 2 },
+      # The last trip back, at 7 PM, leaves only an hour and a half after a trip there at 4:30 PM, too soon to hike after.
+      returns: trails.to_h { |trail| [trail.name, Time.utc(2026, 9, 27, 2)] }.merge("late-there" => Time.utc(2026, 9, 26, 18)))
+    result = search(transit: transit, hiking: FakeHiking.new(trails))
+    assert_equal ["frequent"], result.trails.map(&:name)
+    assert result.complete
+    # Without enough trips there, the trips back aren't planned.
+    assert_equal %w[frequent late-there sparse-back sparse-there], transit.timetables.sort
+  end
+
+  test "routes whose trips can't be planned are left out, and a search that can't plan any fails" do
+    busy = SearchErrors::UpstreamError.new("Transit is busy")
+    transit = FakeTransit.new(trips: { "a" => minutes(30), "b" => minutes(30) }, plans: { "b" => busy })
+    result = search(transit: transit, hiking: FakeHiking.new([trail("a"), trail("b")]))
+    assert_equal ["a"], result.trails.map(&:name)
+    refute result.complete
+
+    transit = FakeTransit.new(trips: { "a" => minutes(30) }, plans: busy)
+    assert_equal "Transit is busy", assert_raises(SearchErrors::UpstreamError) { search(transit: transit, hiking: FakeHiking.new([trail("a")])) }.message
   end
 
   test "a failed batch is skipped, but a search that finds nothing fails" do
@@ -432,7 +505,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
     result = search(transit: transit, hiking: FakeHiking.new([trail("loop")]))
     assert_equal SATURDAY, result.departure_time
     assert_equal "PDT", result.departure_time.zone
-    assert_equal [SATURDAY], transit.departures
+    assert_equal [SATURDAY], transit.departure_times
     assert_equal [SATURDAY], transit.station_requests
 
     sunday = search(day: "sunday", transit: FakeTransit.new(trips: { "loop" => minutes(10) }), hiking: FakeHiking.new([trail("loop")]))
@@ -828,15 +901,14 @@ class TrailsServiceTest < ActiveSupport::TestCase
 
   test "a station not yet searched for the day shows its search from a week before, moved to the day, while it's searched" do
     a, b = trail("a"), trail("b")
-    # From 8:30 AM, 20.8 miles take until 6:54 PM: before sunset at 6:58 PM, but not a week on, when it's at 6:44 PM.
-    c = trail("c", length: 20.8)
-    assert_equal [%w[a c], true], shown(station_search(FakeHiking.new([a, c])))
+    assert_equal [["a"], true], shown(station_search(FakeHiking.new([a])))
     travel 7.days
     later = FakeHiking.new([a, b])
     moved = station_search(later, departure: SATURDAY + 7.days)
     assert_equal [["a"], false], shown(moved)
     trail = moved.events_since(0).first.first.last.sole
-    assert_equal [SATURDAY + 7.days + 30.minutes, Time.utc(2026, 10, 4, 4), Time.utc(2026, 10, 4, 1, 44)],
+    # The last trip back left before dark that day, at 7:29 PM.
+    assert_equal [SATURDAY + 7.days + 30.minutes, Time.utc(2026, 10, 4, 2, 29), Time.utc(2026, 10, 4, 1, 44)],
       [trail.arrival, trail.last_return, trail.sunset]
     assert_equal SATURDAY + 7.days, moved.events_since(0).first.last.last.departure_time
     # The day itself was searched meanwhile, for the next visitor.
@@ -844,6 +916,17 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal [%w[a b], false], shown(station_search(later, departure: SATURDAY + 7.days))
     # With fresh, a week before doesn't count.
     assert_equal [%w[a b], true], shown(station_search(FakeHiking.new([a, b]), departure: SATURDAY + 14.days, fresh: true))
+  end
+
+  test "a search moved a week on leaves out the hikes the shorter days leave too little daylight for" do
+    zone = ActiveSupport::TimeZone["America/Los_Angeles"]
+    # From 8:30 AM, 20.8 miles take until 6:54 PM: before sunset at 6:58 PM, but not a week on, when it's at 6:44 PM.
+    long, short = trail("long", length: 20.8), trail("short")
+    [long, short].each { |route| route.arrival, route.sunset = SATURDAY + 30.minutes, Time.utc(2026, 9, 27, 1, 58) }
+    result = TrailsService::Result.new(departure_time: SATURDAY.in_time_zone(zone), trails: [long, short], complete: true,
+      returns_checked: true)
+    moved = StationSearch.moved(result, (SATURDAY + 7.days).in_time_zone(zone))
+    assert_equal [["short"], Time.utc(2026, 10, 4, 1, 44)], [moved.trails.map(&:name), moved.trails.sole.sunset]
   end
 
   test "searches in the background wait for a quiet pool, and a station isn't tried again soon after it fails" do

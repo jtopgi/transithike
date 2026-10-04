@@ -387,9 +387,10 @@ class TransitousServiceTest < ActiveSupport::TestCase
     ] }
   end
 
-  def ways_back(connection, like: journey_there, earliest: Time.utc(2026, 9, 23, 21), cache: ActiveSupport::Cache::MemoryStore.new)
+  def ways_back(connection, like: journey_there, earliest: Time.utc(2026, 9, 23, 21), leave_by: nil,
+    cache: ActiveSupport::Cache::MemoryStore.new)
     TransitousService.ways_back(origin: destination, destination: origin, like: like, earliest: earliest,
-      deadline: Time.iso8601("2026-09-23T23:00:00-07:00"), connection: connection, cache: cache)
+      deadline: Time.iso8601("2026-09-23T23:00:00-07:00"), leave_by: leave_by, connection: connection, cache: cache)
   end
 
   # A stop with a name and coordinates, as plans list them.
@@ -540,6 +541,31 @@ class TransitousServiceTest < ActiveSupport::TestCase
     assert_equal ["21300", "1800", "1800"], params.values_at("searchWindow", "maxPreTransitTime", "maxPostTransitTime")
     assert_equal "lakewood,king-street", params["via"]
     assert_equal "BUS,REGIONAL_RAIL,SUBURBAN,SUBWAY,TRAM", params["transitModes"]
+  end
+
+  test "with a time to leave by, as before dark, later trips back don't count, and another way that leaves in time does" do
+    body = { "itineraries" => [
+      trip_back("00:10", "02:00", name: "after the hike"),
+      trip_back("01:00", "02:50", name: "before dark"),
+      trip_back("02:00", "03:50", name: "after dark")
+    ], "direct" => [] }
+    requests = []
+    connection = stub_connection(:get, body) { |request| requests << request.params }
+    ways = ways_back(connection, earliest: Time.utc(2026, 9, 24, 0, 5), leave_by: Time.utc(2026, 9, 24, 1, 30))
+    assert_equal [["after the hike", "before dark"], "before dark", true],
+      [ways[:trips].map { |trip| trip[:legs].sole[:name] }, ways[:last][:legs].sole[:name], ways[:same_way]]
+    # Only trips that leave from the end of the hike until dark are asked for.
+    assert_equal ["2026-09-24T00:05:00Z", "false", "true", "5100"],
+      requests.sole.values_at("time", "arriveBy", "timetableView", "searchWindow")
+
+    # The same way only runs after dark, so another way home before dark is taken.
+    connection = stub_connection(:get, lambda { |request|
+      itineraries = request.params["via"] ? [trip_back("02:00", "03:50", name: "the same way, after dark")] :
+        [trip_back("00:30", "02:20", name: "another way, before dark")]
+      { "itineraries" => itineraries, "direct" => [] }
+    })
+    ways = ways_back(connection, earliest: Time.utc(2026, 9, 24, 0, 5), leave_by: Time.utc(2026, 9, 24, 1, 30))
+    assert_equal ["another way, before dark", false], [ways[:last][:legs].sole[:name], ways[:same_way]]
   end
 
   test "without a train there, only the kinds of transit keep the way back, and without a journey there, it's any way" do

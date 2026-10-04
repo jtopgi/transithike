@@ -51,8 +51,8 @@ class StationSearch
   # search for the same weekday and time.
   def self.keys(station, departure_time)
     zone = departure_time.time_zone.tzinfo.name
-    { day: "station-search:v2:#{SHAPE}:#{station.key}:#{departure_time.utc.iso8601}",
-      weekday: "station-search:weekday:v1:#{SHAPE}:#{station.key}:#{zone}:#{departure_time.strftime('%a %H:%M')}",
+    { day: "station-search:v3:#{SHAPE}:#{station.key}:#{departure_time.utc.iso8601}",
+      weekday: "station-search:weekday:v2:#{SHAPE}:#{station.key}:#{zone}:#{departure_time.strftime('%a %H:%M')}",
       tried: "station-search:tried:v1:#{station.key}:#{departure_time.utc.iso8601}" }
   end
 

@@ -151,7 +151,7 @@ module GuideService
       fields[:last_return] = trail.last_return&.utc&.iso8601
       fields[:sunset] = trail.sunset&.utc&.iso8601
       { trail: fields, area: gallery&.dig(:title)&.sub(/\s*\([^)]*\)\z/, ""), there: trips&.dig(:there),
-        ways: (trips&.dig(:ways) || {}).slice(:back, :last, :same_way, :trips, :after_sunset),
+        ways: (trips&.dig(:ways) || {}).slice(:back, :last, :same_way, :trips),
         departures: Array(trips&.dig(:departures)),
         photos: Array(gallery&.dig(:photos)) }
     end
@@ -193,8 +193,17 @@ module GuideService
       (2..).lazy.map { |number| "#{slug}-#{number}" }.find { |candidate| !taken.include?(candidate) }
     end
 
-    # The guide's page, without hikes there isn't the daylight for. Guides
-    # built before sunsets were kept have theirs worked out.
+    # Whether a guide's hike is done by sunset and, where its trips were
+    # planned, has enough of them there and back.
+    def kept?(hike)
+      (hike.trail.arrival.nil? || TrailsService.daylight?(hike.trail)) &&
+        (hike.there.nil? || TripPlans.frequent?(departures: hike.departures, ways: hike.ways))
+    end
+
+    # The guide's page, without hikes there isn't the daylight for, or without
+    # TripPlans::MIN_TRIPS trips there and as many back before dark. Guides
+    # built before sunsets were kept have theirs worked out, and their trips
+    # back after dark are left out.
     def load(guide, data)
       zone = ActiveSupport::TimeZone[guide.time_zone] || Time.zone
       departure_time = Time.iso8601(data[:departure_time]).in_time_zone(zone)
@@ -207,9 +216,14 @@ module GuideService
         fields[:station] = Station.new(**fields[:station].slice(*Station.members)) if fields[:station]
         trail = OverpassService::Trail.new(**fields, origin: fields[:station]&.name || guide.origin)
         trail.sunset ||= Daylight.sunset(departure_time, trail.latitude, trail.longitude)
+        ways = TripPlans.before_dark(hike[:ways] || {}, Daylight.dusk(departure_time, trail.latitude, trail.longitude))
+        last = Time.iso8601(ways[:last][:departure]) if ways[:last]
+        trail.last_return = last if last
+        required = (TrailsService.required_hours(trail) * 60).round.minutes
+        departures = Array(hike[:departures]).select { |trip| last.nil? || Time.iso8601(trip[:arrival]) + required <= last }
         Hike.new(slug: hike[:slug], title: hike[:title], trail: trail, area: hike[:area], there: hike[:there],
-          ways: hike[:ways] || {}, departures: Array(hike[:departures]), photos: Array(hike[:photos]))
-      end.select { |hike| hike.trail.arrival.nil? || TrailsService.daylight?(hike.trail) }
+          ways: ways, departures: departures, photos: Array(hike[:photos]))
+      end.select { |hike| kept?(hike) }
       stations = Array(data[:stations]).map { |station| Station.new(**station.slice(*Station.members)) }
       Page.new(guide: guide, built_at: Time.iso8601(data[:built_at]), departure_time: departure_time,
         return_by: Time.iso8601(data[:return_by]).in_time_zone(zone), stations: stations, hikes: hikes)

@@ -6,6 +6,9 @@ Rails.application.config.x.overpass_slots = Concurrent::Semaphore.new(2)
 # Hiking-route lookups that run alongside other work wait for those slots on
 # threads of their own, not the shared pool's.
 Rails.application.config.x.overpass_pool = Concurrent::CachedThreadPool.new
+# Searches plan each hike's trips there and back, at most three hikes at once,
+# so they don't hold up the other lookups waiting for Transitous.
+Rails.application.config.x.trip_pool = Concurrent::FixedThreadPool.new(3)
 # Searches from stations run in the background, at most three at once, so a
 # visitor's search shares them with others and they finish after visitors leave.
 Rails.application.config.x.station_pool = Concurrent::FixedThreadPool.new(3)

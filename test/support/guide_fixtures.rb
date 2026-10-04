@@ -11,12 +11,17 @@ module GuideFixtures
       departure: departure, arrival: arrival }
   end
 
-  # Breakneck Ridge out and back, by the Hudson Line, and a plain-named loop near a reservoir.
+  # Breakneck Ridge out and back, by the Hudson Line: three trips there from 8:12 AM, and trips back from 3:05 PM
+  # every hour until 6:05 PM, and at 8:50 PM, after dark. And a plain-named loop near a reservoir.
   def guide_data(built_at: "2026-10-07T09:00:00Z")
-    there = guide_trip("2026-10-10T12:12:00Z", "2026-10-10T13:40:00Z",
-      [guide_leg("SUBURBAN", "Hudson Line", "Grand Central", "Breakneck Ridge", "2026-10-10T12:12:00Z", "2026-10-10T13:28:00Z")])
-    back = guide_trip("2026-10-10T19:05:00Z", "2026-10-10T20:30:00Z",
-      [guide_leg("SUBURBAN", "Hudson Line", "Cold Spring", "Grand Central", "2026-10-10T19:12:00Z", "2026-10-10T20:25:00Z")])
+    there, *later = (12..14).map do |hour|
+      guide_trip("2026-10-10T#{hour}:12:00Z", "2026-10-10T#{hour + 1}:40:00Z",
+        [guide_leg("SUBURBAN", "Hudson Line", "Grand Central", "Breakneck Ridge", "2026-10-10T#{hour}:12:00Z", "2026-10-10T#{hour + 1}:28:00Z")])
+    end
+    back, *evening = (19..22).map do |hour|
+      guide_trip("2026-10-10T#{hour}:05:00Z", "2026-10-10T#{hour + 1}:30:00Z",
+        [guide_leg("SUBURBAN", "Hudson Line", "Cold Spring", "Grand Central", "2026-10-10T#{hour}:12:00Z", "2026-10-10T#{hour + 1}:25:00Z")])
+    end
     last = guide_trip("2026-10-11T00:50:00Z", "2026-10-11T02:15:00Z",
       [guide_leg("SUBURBAN", "Hudson Line", "Cold Spring", "Grand Central", "2026-10-11T00:57:00Z", "2026-10-11T02:10:00Z")])
     {
@@ -30,7 +35,7 @@ module GuideFixtures
             notable: true, paved: 0.0, loop: false, duration: 5_880, transfers: 0, arrival: "2026-10-10T13:40:00Z",
             last_return: "2026-10-11T00:50:00Z", terrain: { climb: 380, relief: 360 }, score: 3.4, plan: "out_and_back",
             finish: nil, location: "Cold Spring, New York", sunset: "2026-10-10T22:23:00Z" },
-          there: there, ways: { back: back, last: last, same_way: true, trips: [back, last] }, departures: [there],
+          there: there, ways: { back: back, last: last, same_way: true, trips: [back, *evening, last] }, departures: [there, *later],
           photos: [{ image_url: "https://upload.wikimedia.org/thumb/Breakneck.jpg/500px-Breakneck.jpg",
             file_url: "https://commons.wikimedia.org/wiki/File:Breakneck.jpg", credit: "Ann · CC BY 4.0",
             caption: "Breakneck Ridge view" }] },

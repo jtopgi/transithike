@@ -254,13 +254,14 @@ module TrailsService
       found = TrailsService.round_trips(@place, trails, @result, @transit, @budget)
       return if found.empty?
 
-      found.each do |trail|
+      # Each hike shows as soon as its trips are planned.
+      kept = TrailsService.frequent(found, @place, @result, @transit, failed: method(:fail_with)) do |trail|
         trail.station = @station
         trail.score = TrailsService.score(trail).round(2)
+        @result.trails << trail
+        @on_found&.call(:trails, [trail.dup])
       end
-      @lookups << [found, TrailsService.start(TrailsService.overpass_pool) { @hiking.highlights(found) }]
-      @result.trails.concat(found)
-      @on_found&.call(:trails, found.map(&:dup))
+      @lookups << [kept, TrailsService.start(TrailsService.overpass_pool) { @hiking.highlights(kept) }] if kept.any?
     rescue SearchErrors::UpstreamError => error
       fail_with(error)
     end
@@ -292,6 +293,40 @@ module TrailsService
     yield
   rescue StandardError
     nil
+  end
+
+  # The trails with at least TripPlans::MIN_TRIPS trips there that arrive in
+  # time to hike them and as many back before dark, most promising first, each
+  # yielded as soon as its trips are planned, with when the first trip there
+  # arrives and the last trip back leaves. Trails whose trips can't be planned
+  # are left out, the result says some hikes couldn't be checked, and failed is
+  # called with the error.
+  def self.frequent(trails, place, result, transit, failed: nil)
+    plans = trails.map do |trail|
+      start(trip_pool) do
+        TripPlans.frequent(trail, origin: place, leave: result.departure_time, back_by: result.return_by, transit: transit)
+      end
+    end
+    trails.zip(plans).filter_map do |trail, plan|
+      settle([plan])
+      unless plan.fulfilled?
+        raise plan.reason unless plan.reason.is_a?(SearchErrors::UpstreamError)
+
+        result.complete = false
+        failed&.call(plan.reason)
+        next
+      end
+      next unless (trips = plan.value)
+
+      trail.arrival = Time.iso8601(trips[:there][:arrival])
+      trail.last_return = Time.iso8601(trips[:ways][:last][:departure])
+      yield trail if block_given?
+      trail
+    end
+  end
+
+  def self.trip_pool
+    Rails.configuration.x.trip_pool
   end
 
   # The trails a train reaches, and the subway doesn't, with a way back to the
