@@ -494,8 +494,9 @@ from GitHub Actions:
   [Solid Cache](https://github.com/rails/solid_cache), so the hiking routes and
   searches it keeps outlive deploys; it holds up to 8 GB, each entry for at most
   120 days. The image's entrypoint creates the database and runs migrations
-  before the server starts, trying three times (it doesn't load `db/schema.rb`,
-  whose `enable_extension "plpgsql"` Azure turns away), and starts the server even when
+  before the server starts, trying three times (production never loads
+  `db/schema.rb`, whose `enable_extension "plpgsql"` Azure turns away, and CI's
+  database turns extensions away too), and starts the server even when
   the database can't be reached: any database error is then a cache miss, a
   database that doesn't answer within 5 seconds is left alone for 30, and rate
   limits are counted in the process, not the database. Only the web app's outbound addresses

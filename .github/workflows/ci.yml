@@ -101,7 +101,17 @@ jobs:
       - name: Smoke test the production image with a database
         run: |
           set -euo pipefail
-          # The image prepares the database as it starts, and keeps the cache there.
+          # The image prepares the database as it starts, and keeps the cache there. Like Azure's, this
+          # database exists, empty, and turns away extensions, so preparing it must only run migrations.
+          psql --host localhost --username postgres --command "CREATE DATABASE transithike_production"
+          psql --host localhost --username postgres --dbname transithike_production --set ON_ERROR_STOP=1 <<'SQL'
+          CREATE FUNCTION reject_extensions() RETURNS event_trigger LANGUAGE plpgsql AS $$
+          BEGIN
+            RAISE EXCEPTION 'extension is not allow-listed for users';
+          END $$;
+          CREATE EVENT TRIGGER reject_extensions ON ddl_command_start WHEN TAG IN ('CREATE EXTENSION')
+            EXECUTE FUNCTION reject_extensions();
+          SQL
           docker run --detach --name transithike --network host --env SECRET_KEY_BASE="$(openssl rand -hex 64)" \
             --env DATABASE_URL=postgres://postgres@localhost:5432/transithike_production transithike:ci
           # Health probes use plain HTTP; everything else must be redirected to HTTPS.
