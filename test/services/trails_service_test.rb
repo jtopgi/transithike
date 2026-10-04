@@ -26,7 +26,8 @@ class TrailsServiceTest < ActiveSupport::TestCase
     # it, and no trips by city transit. Each hike has three trips there, half
     # an hour apart, and three back, an hour apart until the last, which leaves
     # before dark; there and back give some fewer, by name, and plans, an
-    # exception or exceptions by name, fails planning them.
+    # exception or exceptions by name, fails planning them, or a block by name
+    # holds it up.
     def initialize(trips: {}, city: {}, returns: nil, area: { time_zone: "America/Los_Angeles", area: "Seattle, Washington" },
       stations: [[47.5, -122.0, 60]], major: [STATION], from: {}, there: {}, back: {}, plans: nil)
       @trips, @city, @returns, @area, @stations, @major, @from = trips, city, returns, area, stations, major, from
@@ -89,8 +90,10 @@ class TrailsServiceTest < ActiveSupport::TestCase
     # The trips there for a hike's timetable, each riding as long as trips says.
     def departures(origin:, destination:, time:, latest:, arrive_by: nil, by_train: true)
       name = named(destination)
-      failure = @plans.is_a?(Hash) ? @plans[name] : @plans
-      raise failure if failure
+      case (failure = @plans.is_a?(Hash) ? @plans[name] : @plans)
+      when Proc then failure.call
+      when Exception then raise failure
+      end
 
       @timetables << name
       # Where the one-request API fails, trips there ride 20 minutes, as #trip plans them.
@@ -457,6 +460,18 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert result.complete
     # Without enough trips there, the trips back aren't planned.
     assert_equal %w[frequent late-there sparse-back sparse-there], transit.timetables.sort
+  end
+
+  test "a search gives up on hikes whose trips aren't planned while no others are, as when the pool is stuck" do
+    stuck = Concurrent::Event.new
+    transit = FakeTransit.new(trips: { "a" => minutes(30), "b" => minutes(30) }, plans: { "b" => -> { stuck.wait(10) } })
+    result = stub_const(TrailsService, :TRIP_QUIET_SECONDS, 0.5) do
+      search(transit: transit, hiking: FakeHiking.new([trail("a"), trail("b")]))
+    end
+    assert_equal ["a"], result.trails.map(&:name)
+    refute result.complete
+  ensure
+    stuck&.set
   end
 
   test "routes whose trips can't be planned are left out, and a search that can't plan any fails" do

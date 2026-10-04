@@ -375,7 +375,7 @@ class TransitousServiceTest < ActiveSupport::TestCase
   def trip_back(leave, home, mode: "BUS", name: "206", from: nil, to: nil)
     leave, home = [leave, home].map { |time| "2026-09-#{time >= '12:00' ? 23 : 24}T#{time}:00Z" }
     itinerary(leave, home, [leg(mode, "routeShortName" => name, "from" => { "stopId" => from }.compact,
-      "to" => { "stopId" => to }.compact)])
+      "to" => { "stopId" => to }.compact, "startTime" => leave, "endTime" => home)])
   end
 
   # A journey there riding 2 h 20 min: the city bus to the station, then two trains.
@@ -544,9 +544,16 @@ class TransitousServiceTest < ActiveSupport::TestCase
   end
 
   test "with a time to leave by, as before dark, later trips back don't count, and another way that leaves in time does" do
+    # The walk to the station can be in the twilight, but not the wait for the train.
+    walk_in_dusk = itinerary("2026-09-24T01:20:00Z", "2026-09-24T02:50:00Z", [
+      leg("WALK", "startTime" => "2026-09-24T01:20:00Z", "endTime" => "2026-09-24T01:40:00Z"),
+      leg("REGIONAL_RAIL", "routeLongName" => "rides after dark", "startTime" => "2026-09-24T01:40:00Z",
+        "endTime" => "2026-09-24T02:50:00Z")
+    ])
     body = { "itineraries" => [
       trip_back("00:10", "02:00", name: "after the hike"),
       trip_back("01:00", "02:50", name: "before dark"),
+      walk_in_dusk,
       trip_back("02:00", "03:50", name: "after dark")
     ], "direct" => [] }
     requests = []

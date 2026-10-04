@@ -55,12 +55,12 @@ module TripPlans
     { there: there, ways: ways, departures: departures, sunset: sunset, dusk: dusk }
   end
 
-  # Ways back like TransitousService.ways_back's with only the trips that leave
-  # by dusk, as for guides planned before trips back had to.
+  # Ways back like TransitousService.ways_back's with only the trips whose first
+  # ride leaves by dusk, as for guides planned before trips back had to.
   def self.before_dark(ways, dusk)
     return ways unless dusk
 
-    in_time = ->(trip) { trip && trip[:departure] <= dusk.utc.iso8601 }
+    in_time = ->(trip) { trip && TransitousService.boarding(trip) <= dusk.utc.iso8601 }
     trips = Array(ways[:trips]).select(&in_time)
     ways.merge(back: (ways[:back] if in_time.(ways[:back])), last: (in_time.(ways[:last]) ? ways[:last] : trips.last), trips: trips)
   end

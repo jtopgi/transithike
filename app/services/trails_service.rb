@@ -65,6 +65,10 @@ module TrailsService
   # still going when nothing has changed for KEEP_ALIVE_SECONDS.
   FOLLOW_SECONDS = 0.25
   KEEP_ALIVE_SECONDS = 15
+  # A search gives up on the hikes whose trips aren't planned yet when no
+  # hike's trips anywhere have been planned for this long, as when the pool is
+  # stuck, which code reloading in development can do.
+  TRIP_QUIET_SECONDS = 60
 
   # origin is text to look up, near a rough [latitude, longitude] if given, or
   # a Place chosen from suggestions or the device's location; day is a
@@ -305,15 +309,17 @@ module TrailsService
     plans = trails.map do |trail|
       start(trip_pool) do
         TripPlans.frequent(trail, origin: place, leave: result.departure_time, back_by: result.return_by, transit: transit)
+      ensure
+        Rails.configuration.x.trips_planned.increment
       end
     end
     trails.zip(plans).filter_map do |trail, plan|
-      settle([plan])
-      unless plan.fulfilled?
-        raise plan.reason unless plan.reason.is_a?(SearchErrors::UpstreamError)
+      unless planned?(plan) && plan.fulfilled?
+        reason = plan.resolved? ? plan.reason : SearchErrors::ProviderBusy.new(SearchHttp::BUSY_MESSAGE)
+        raise reason unless reason.is_a?(SearchErrors::UpstreamError)
 
         result.complete = false
-        failed&.call(plan.reason)
+        failed&.call(reason)
         next
       end
       next unless (trips = plan.value)
@@ -323,6 +329,23 @@ module TrailsService
       yield trail if block_given?
       trail
     end
+  end
+
+  # Waits for a hike's trips to be planned, unless no hike's trips anywhere
+  # have been planned for TRIP_QUIET_SECONDS, and says whether they were.
+  def self.planned?(plan)
+    counter = Rails.configuration.x.trips_planned
+    count, quiet_since = counter.value, Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    until plan.resolved?
+      settle([plan], timeout: 1)
+      now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      if counter.value != count
+        count, quiet_since = counter.value, now
+      elsif now - quiet_since >= TRIP_QUIET_SECONDS
+        return false
+      end
+    end
+    true
   end
 
   def self.trip_pool

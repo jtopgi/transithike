@@ -90,5 +90,8 @@ class TripPlansTest < ActiveSupport::TestCase
     assert_equal({ back: trips.first, last: trips.second, same_way: true, trips: trips.first(2) }, TripPlans.before_dark(ways, DUSK))
     assert_equal ways, TripPlans.before_dark(ways, nil)
     assert_equal({ back: nil, last: nil, trips: [] }, TripPlans.before_dark({ back: trips.last, last: trips.last, trips: [trips.last] }, DUSK))
+    # A walk to the station that sets out before dark, for a train that leaves after it, doesn't count.
+    dusk_walk = trip("02:20", "03:40").merge(legs: [{ mode: "RAIL", departure: "2026-09-27T02:40:00Z" }])
+    assert_equal trips.first(2), TripPlans.before_dark(ways.merge(trips: trips.first(2) + [dusk_walk], last: dusk_walk), DUSK)[:trips]
   end
 end

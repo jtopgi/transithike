@@ -359,9 +359,10 @@ module TransitousService
   # after earliest, any way does, and same_way is false; it is nil when there is
   # no journey to follow, or follow is false, as for trips back from the far end
   # of a route. Only when nothing leaves after earliest is the way back the last
-  # trip before it. With leave_by, as when it gets dark, only trips that leave by
-  # then count, and only trips that leave from earliest until then are asked
-  # for, which the planner finds in about half the time.
+  # trip before it. With leave_by, as when it gets dark, only trips whose first
+  # ride leaves by then count, the walk to it in the twilight before, and only
+  # trips that set out from earliest until then are asked for, which the planner
+  # finds in about half the time.
   def self.ways_back(origin:, destination:, like:, earliest:, deadline:, leave_by: nil, follow: true, connection: nil,
     cache: Rails.cache)
     # Every trip that leaves from earliest until leave_by or the last one is listed.
@@ -386,7 +387,7 @@ module TransitousService
     end
     longest = ride_seconds(like) * BACK_RIDE_FACTOR + BACK_RIDE_SLACK if like
     swift = ->(trips) { longest ? trips.select { |trip| ride_seconds(trip) <= longest } : trips }
-    in_time = ->(trips) { leave_by ? trips.select { |trip| trip[:departure] <= leave_by.utc.iso8601 } : trips }
+    in_time = ->(trips) { leave_by ? trips.select { |trip| boarding(trip) <= leave_by.utc.iso8601 } : trips }
 
     constrained = follow ? params.merge(same_way(like)) : params
     same = []
@@ -453,6 +454,12 @@ module TransitousService
   def self.first_home(trips, earliest)
     trips.select { |trip| trip[:departure] >= earliest.utc.iso8601 }
       .min_by { |trip| [costed_arrival(trip), -Time.iso8601(trip[:departure]).to_i] }
+  end
+
+  # When a trip's first ride leaves, ISO 8601 in UTC, or for one that walks the
+  # whole way, when it sets out.
+  def self.boarding(trip)
+    Array(trip[:legs]).first&.dig(:departure) || trip[:departure]
   end
 
   # The trip that leaves latest, and of those, the one home soonest by costed_arrival.
