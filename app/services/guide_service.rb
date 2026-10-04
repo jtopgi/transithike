@@ -12,8 +12,10 @@ module GuideService
   # bad day doesn't empty a city's pages.
   MIN_HIKES = 12
   KEEP_SHARE = 0.6
-  # A photo lookup that fails is tried again after this long, since Commons is slow at times.
+  # A photo lookup that fails is tried again after this long, since Commons is
+  # slow at times, and builds give each lookup this long.
   PHOTO_RETRY_SECONDS = 10
+  PHOTO_LOOKUP_SECONDS = 60
   # Names made only of these words, such as "White Trail" or "Northern Section",
   # need a place to tell them apart.
   GENERIC_WORDS = %w[
@@ -208,7 +210,7 @@ module GuideService
       attempts = 0
       begin
         attempts += 1
-        photos.photos_near(trail.photo_points)
+        photos.photos_near(trail.photo_points, timeout: PHOTO_LOOKUP_SECONDS)
       rescue SearchErrors::UpstreamError
         return if attempts > 1
 

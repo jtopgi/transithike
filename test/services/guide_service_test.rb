@@ -48,7 +48,7 @@ class GuideServiceTest < ActiveSupport::TestCase
   end
 
   class FakePhotos
-    def photos_near(points)
+    def photos_near(points, **)
       { title: "Hudson Highlands State Park (New York)", article_url: nil,
         photos: [{ image_url: "https://upload.wikimedia.org/a.jpg", file_url: "https://commons.wikimedia.org/a", credit: "Ann",
           caption: "Ridge" }] }
@@ -109,7 +109,7 @@ class GuideServiceTest < ActiveSupport::TestCase
     flaky = Class.new(FakePhotos) do
       attr_reader :calls
 
-      def photos_near(points)
+      def photos_near(points, **)
         @calls = @calls.to_i + 1
         raise SearchErrors::UpstreamError, "slow" if @calls == 1
 
@@ -158,7 +158,7 @@ class GuideServiceTest < ActiveSupport::TestCase
 
   test "hikes keep the slugs they had, and without a place, plain names stay as they are" do
     previous = { hikes: [{ slug: "old-white-trail", trail: { osm_id: 1 } }] }
-    photos = Class.new { def photos_near(_) = nil }.new
+    photos = Class.new { def photos_near(_, **) = nil }.new
     data = GuideService.build(guide, previous: previous, search: FakeSearch.new([trail("White Trail", 1), trail("Loop 2", 2)]),
       transit: FakeTransit.new, photos: photos, places: FakePlaces.new)
     # Without a park nearby, the station the train goes to tells them apart.

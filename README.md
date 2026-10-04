@@ -214,9 +214,12 @@ test Overpass connectivity from your deployment before launching.
   Commons is asked for the type and size of 200 files near each point, then for
   the credits and categories of the nearest 50 that could be photos of the
   scenery, following its answers until every category is in, since near towns the
-  nearest files are mostly of streets and buildings. Commons gets 20 seconds to
-  answer and Wikipedia 10; a lookup that fails only leaves out its own photos, and
-  guide builds try a failed lookup once more after 10 seconds. Articles count as
+  nearest files are mostly of streets and buildings. Commons gets up to 20 seconds
+  to answer and Wikipedia 10, but a route's lookups stop after 15 seconds
+  altogether (60 in guide builds), keeping what's found by then, so a slow Commons
+  doesn't hold up the server, and cards load their photos two at a time. A lookup
+  that fails only leaves out its own photos, and guide builds try a failed lookup
+  once more after 10 seconds. Articles count as
   natural areas by the kind of thing their short description names first ("State
   park in New York" or "Range of hills in central England", but not "Fort on the
   Hudson River", "Garden House in Dormansland, Surrey", "Mountain village in

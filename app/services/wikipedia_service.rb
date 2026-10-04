@@ -11,6 +11,9 @@ module WikipediaService
   # Commons answers queries about many files slowly, and Wikipedia a little faster.
   COMMONS_TIMEOUT_SECONDS = 20
   API_TIMEOUT_SECONDS = 10
+  # A route's photos are looked for for at most this long altogether, so a slow
+  # Commons doesn't hold up the server; guide builds, which can wait, pass longer.
+  LOOKUP_SECONDS = 15
   # Answers continued for more categories are followed this many times at most.
   MAX_CONTINUES = 10
   CACHE_TTL = 7.days
@@ -67,12 +70,12 @@ module WikipediaService
 
   # { title:, article_url:, image:, image_url: }, or nil when no park or
   # natural area is nearby; image is nil when its article has no free one.
-  def self.nearby_area(latitude, longitude, connection: nil, cache: Rails.cache)
+  def self.nearby_area(latitude, longitude, connection: nil, cache: Rails.cache, deadline: nil)
     # Routes joined within about 1 km of each other share one lookup.
     latitude, longitude = latitude.round(2), longitude.round(2)
     cache.fetch("wikipedia:area:v4:#{latitude}:#{longitude}", expires_in: CACHE_TTL) do
       connection ||= SearchHttp.connection(API_URL, timeout: API_TIMEOUT_SECONDS)
-      page = nearest_natural_page(latitude, longitude, connection)
+      page = nearest_natural_page(latitude, longitude, connection, deadline)
       next unless page
 
       image = page["pageimage"].is_a?(String) && wikimedia_url?(value_at(page, "thumbnail", "source"))
@@ -88,13 +91,16 @@ module WikipediaService
   # of the points, [latitude, longitude] pairs along the route with its middle
   # first, views and waterfalls first and then the nearest. nil when there are
   # none. A lookup that fails only leaves out its photos, unless there are none
-  # at all, when it raises.
-  def self.photos_near(points, connection: nil, commons: nil, cache: Rails.cache)
+  # at all, when it raises. Lookups stop after timeout seconds altogether.
+  def self.photos_near(points, connection: nil, commons: nil, cache: Rails.cache, timeout: LOOKUP_SECONDS)
     connection ||= SearchHttp.connection(API_URL, timeout: API_TIMEOUT_SECONDS)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
     errors = []
-    area = surviving(errors) { nearby_area(*points.first, connection: connection, cache: cache) }
-    lead = surviving(errors) { lead_photo(area, connection, cache) }
-    taken = points.flat_map { |latitude, longitude| surviving(errors) { commons_photos(latitude, longitude, commons, cache) } || [] }
+    area = surviving(errors) { nearby_area(*points.first, connection: connection, cache: cache, deadline: deadline) }
+    lead = surviving(errors) { lead_photo(area, connection, cache, deadline) }
+    taken = points.flat_map do |latitude, longitude|
+      surviving(errors) { commons_photos(latitude, longitude, commons, cache, deadline) } || []
+    end
       .sort_by { |photo| [photo[:scenery] ? 0 : 1, photo[:meters]] }
     shown = Hash.new(0)
     photos = [lead, *taken].compact.uniq { |photo| photo[:file_url] }
@@ -114,10 +120,12 @@ module WikipediaService
   end
 
   # The lead image of the park or natural area's article, when it's a photo of nature.
-  def self.lead_photo(area, connection, cache)
+  def self.lead_photo(area, connection, cache, deadline = nil)
     return unless area&.dig(:image)
 
-    file = cache.fetch("wikipedia:lead:v1:#{area[:image]}", expires_in: CREDIT_CACHE_TTL) { lead_file(area[:image], connection) }
+    file = cache.fetch("wikipedia:lead:v1:#{area[:image]}", expires_in: CREDIT_CACHE_TTL) do
+      lead_file(area[:image], connection, deadline)
+    end
     return unless file && nature?(caption(area[:image]), file[:categories])
 
     { image_url: area[:image_url], caption: "Near #{area[:title]}", file_url: file[:file_url], credit: file[:credit] }
@@ -126,12 +134,12 @@ module WikipediaService
   # Credited photos of nature taken within RADIUS_METERS of a point, on
   # Wikimedia Commons, with how far away each was taken and whether it's of a
   # view or waterfall. Each point's photos are shared by routes within about 1 km.
-  def self.commons_photos(latitude, longitude, connection, cache)
+  def self.commons_photos(latitude, longitude, connection, cache, deadline = nil)
     latitude, longitude = latitude.round(2), longitude.round(2)
     cache.fetch("wikipedia:commons:v4:#{latitude}:#{longitude}", expires_in: CACHE_TTL) do
       connection ||= SearchHttp.connection(COMMONS_URL, timeout: COMMONS_TIMEOUT_SECONDS)
       # Which files nearby could be photos of the scenery, by their type and size...
-      sized = query(connection,
+      sized = query(connection, deadline: deadline,
         generator: "geosearch", ggscoord: "#{latitude}|#{longitude}", ggsradius: RADIUS_METERS, ggsnamespace: 6,
         ggslimit: FILES_PER_POINT, prop: "imageinfo|coordinates", iiprop: "mime|size", colimit: "max")
         .select { |file| file["pageid"].is_a?(Integer) && photo_sized?(file) }
@@ -139,7 +147,7 @@ module WikipediaService
       next [] if sized.empty?
 
       # ...then the nearest of those, with their credits and categories.
-      files = query(connection,
+      files = query(connection, deadline: deadline,
         pageids: sized.map { |file| file["pageid"] }.join("|"), prop: "imageinfo|coordinates|categories",
         iiprop: "url|extmetadata|mime|size", iiurlwidth: THUMBNAIL_WIDTH, iiextmetadatafilter: "Artist|LicenseShortName",
         colimit: "max", clshow: "!hidden", cllimit: "max")
@@ -228,8 +236,8 @@ module WikipediaService
     end
   end
 
-  def self.nearest_natural_page(latitude, longitude, connection)
-    pages = query(connection,
+  def self.nearest_natural_page(latitude, longitude, connection, deadline = nil)
+    pages = query(connection, deadline: deadline,
       generator: "geosearch", ggscoord: "#{latitude}|#{longitude}", ggsradius: AREA_RADIUS_METERS, ggslimit: 50,
       prop: "pageimages|coordinates|info|description", piprop: "thumbnail|name", pithumbsize: THUMBNAIL_WIDTH,
       pilicense: "free", inprop: "url", colimit: "max")
@@ -240,8 +248,8 @@ module WikipediaService
   end
 
   # { file_url:, credit:, categories: } for a lead image that's a photo with a license to credit, or nil.
-  def self.lead_file(image, connection)
-    file = query(connection,
+  def self.lead_file(image, connection, deadline = nil)
+    file = query(connection, deadline: deadline,
       titles: "File:#{image}", prop: "imageinfo|categories", iiprop: "extmetadata|url|mime",
       iiextmetadatafilter: "Artist|LicenseShortName", clshow: "!hidden", cllimit: "max").first
     info = value_at(file, "imageinfo", 0)
@@ -275,12 +283,22 @@ module WikipediaService
   end
 
   # The pages a query finds. Answers are continued when a page's categories don't
-  # all fit, and the rest are added to its page, so none goes unchecked.
-  def self.query(connection, **params)
+  # all fit, and the rest are added to its page, so none goes unchecked. With a
+  # deadline, requests only wait for the time left, and none is made after it.
+  def self.query(connection, deadline: nil, **params)
     pages, continued = {}, {}
     MAX_CONTINUES.times do
+      left = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC) if deadline
+      raise SearchErrors::UpstreamError, SearchHttp::UNAVAILABLE_MESSAGE if left && left <= 0
+
       data = SearchHttp.json do
-        connection.get { |request| request.params = { action: "query", format: "json", formatversion: 2, **params, **continued } }
+        connection.get do |request|
+          request.params = { action: "query", format: "json", formatversion: 2, **params, **continued }
+          if left
+            request.options.timeout = [request.options.timeout, left].compact.min
+            request.options.open_timeout = [request.options.open_timeout, left].compact.min
+          end
+        end
       end
       found = data["query"]["pages"] if data["query"].is_a?(Hash)
       Array(found).each do |page|

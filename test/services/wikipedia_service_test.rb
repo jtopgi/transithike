@@ -326,4 +326,27 @@ class WikipediaServiceTest < ActiveSupport::TestCase
     assert_nil area([page("Kew Palace", lat: 47.66, description: "Royal palace and gardens in Richmond")])
     assert_equal "Castle Rock State Park", area([page("Castle Rock State Park", lat: 47.66)])[:title]
   end
+
+  test "photos are looked for for at most so long altogether, keeping what's found by then" do
+    asked = []
+    files = { "47.66|-122.4" => [commons_file("Lake view.jpg")], "47.71|-122.4" => [commons_file("Ridge view.jpg", lat: 0.05)] }
+    slow = Faraday::Adapter::Test::Stubs.new do |stub|
+      stub.get("/") do |request|
+        asked << request.params["ggscoord"] if request.params["ggscoord"]
+        # The second point's files take longer than the time there is.
+        sleep 1 if request.params["ggscoord"] == "47.71|-122.4"
+        ids = request.params["pageids"].to_s.split("|").map(&:to_i)
+        pages = request.params["pageids"] ? files.values.flatten.select { |file| ids.include?(file["pageid"]) } : files.fetch(request.params["ggscoord"], [])
+        [200, { "Content-Type" => "application/json" }, JSON.generate("query" => { "pages" => pages })]
+      end
+    end
+    commons = Faraday.new { |builder| builder.adapter :test, slow }
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    result = WikipediaService.photos_near([[47.66, -122.4], [47.71, -122.4], [47.61, -122.4]], connection: connection([]),
+      commons: commons, cache: ActiveSupport::Cache::MemoryStore.new, timeout: 0.5)
+    # The first point's photos are kept, the second's lookup stops when time's up, and the third isn't asked about.
+    assert_equal ["Lake view"], result[:photos].pluck(:caption)
+    assert_equal ["47.66|-122.4", "47.71|-122.4"], asked
+    assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 0.9
+  end
 end

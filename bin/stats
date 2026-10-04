@@ -26,7 +26,8 @@ report() {
     printf '%s\n' "$columns"
     az monitor app-insights query --app "$app" --resource-group "$group" --offset "P${days}D" \
       --analytics-query "$query" --query "tables[0].rows" --output tsv
-  } | column -t -s $'\t'
+    # Empty cells, as for unknown cities, would let the next column's value slide into theirs.
+  } | awk -F '\t' -v OFS='\t' '{ for (i = 1; i <= NF; i++) if ($i == "") $i = "-"; print }' | column -t -s $'\t'
 }
 
 echo "TransitHike visits in the last $days days"

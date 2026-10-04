@@ -25,8 +25,9 @@ module VisitTracker
     ["Amazon", /Amazonbot/i],
     ["Common Crawl", /CCBot/i],
     ["ByteDance", /Bytespider/i],
-    ["Link previews", /Twitterbot|LinkedInBot|Slackbot|Discordbot|WhatsApp|TelegramBot|Pinterest|redditbot|Embedly|SkypeUriPreview|Iframely|Mastodon/i],
-    ["Other bot", /bot|crawl|spider|slurp|scrape|fetch|curl|wget|python|httpx|Go-http-client|okhttp|axios|undici|java\/|libwww|HeadlessChrome|Lighthouse|PageSpeed|uptime|monitor/i]
+    ["Link previews", /Twitterbot|LinkedInBot|Slackbot|Discordbot|WhatsApp|TelegramBot|Pinterestbot|redditbot|Embedly|SkypeUriPreview|Iframely|Mastodon/i],
+    # Crawlers name themselves as "SomeBot/1.0", "SomeBot;", or "SomeBot-Https", unlike phones such as the Cubot X50.
+    ["Other bot", %r{bot(?:[/;+\-]|\z)|crawl|spider|slurp|scrape|fetch|curl|wget|python|httpx|Go-http-client|okhttp|axios|undici|java/|libwww|HeadlessChrome|Lighthouse|PageSpeed|uptime|monitor}i]
   ].freeze
   # Azure's own checks that the site is up aren't visits.
   CHECKS = /AlwaysOn|HealthCheck|ReadyForRequest/i
