@@ -279,6 +279,13 @@ body {
   width: 13rem;
 }
 
+/* On phones, the results page's search box opens from "Change search". */
+@media (max-width: 991.98px) {
+  .results-search.is-collapsed {
+    display: none;
+  }
+}
+
 /* Two sliders share one track, which fills between their handles. */
 .range-dual {
   --low: 0%;
@@ -420,6 +427,39 @@ body {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   overflow: hidden;
+}
+
+/* On phones, the sliders share a line, and cards are more compact. It comes
+   after the rules it overrides, as a media query doesn't outrank them. */
+@media (max-width: 575.98px) {
+  .toolbar-range {
+    flex: 1 1 9rem;
+    width: auto;
+    min-width: 0;
+  }
+
+  .trail-media {
+    height: 160px;
+  }
+
+  .trail-gallery {
+    padding: 0.5rem 1rem 0;
+  }
+
+  .trail-stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.5rem 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .trail-stats dd {
+    font-size: 1.15rem;
+  }
+
+  .trail-summary {
+    -webkit-line-clamp: 2;
+  }
 }
 
 .site-footer {

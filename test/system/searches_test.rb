@@ -273,4 +273,37 @@ class SearchesTest < ApplicationSystemTestCase
     assert_no_selector "[data-skeleton]"
     assert_no_selector "[data-results-toolbar]", visible: true
   end
+
+  test "on a phone, hikes come first, with the search box behind a button, and cards fit the screen" do
+    page.driver.browser.execute_cdp("Emulation.setDeviceMetricsOverride", width: 390, height: 844, deviceScaleFactor: 1,
+      mobile: true)
+    visit search_url(origin: "Seattle")
+
+    assert_selector "article.trail-card", count: 3
+    assert_no_selector "[data-progress]", visible: true
+    assert_no_selector "#change-search", visible: true
+    # The first card starts on the first screen, and nothing is wider than it.
+    assert_operator page.evaluate_script("document.querySelector('article.trail-card').getBoundingClientRect().top"), :<, 600
+    assert_not page.evaluate_script("document.documentElement.scrollWidth > document.documentElement.clientWidth")
+    within(find("article.trail-card", text: "Short Loop")) do
+      assert_selector ".btn", text: /\ADetails\z/
+      assert_selector ".btn", text: /\AOpenStreetMap\z/
+    end
+    # Summaries are cut at two lines rather than three.
+    assert_equal "2", page.evaluate_script("getComputedStyle(document.querySelector('.trail-summary')).webkitLineClamp")
+
+    click_button "Change search"
+    assert_selector "#change-search", visible: true
+    assert_equal "Starting point", page.evaluate_script("document.activeElement.labels[0].textContent")
+    assert_selector "[data-search-toggle][aria-expanded='true']"
+    click_button "Change search"
+    assert_no_selector "#change-search", visible: true
+
+    # When a search fails, the search box opens to try another.
+    visit search_url(origin: "Nowhere")
+    assert_selector "[data-failure][role=alert]"
+    assert_selector "#change-search", visible: true
+  ensure
+    page.driver.browser.execute_cdp("Emulation.clearDeviceMetricsOverride")
+  end
 end

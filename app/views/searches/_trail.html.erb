@@ -15,7 +15,7 @@
       </a>
     </div>
     <div class="trail-gallery" role="group" aria-label="Photos near <%= trail.name %>" data-gallery hidden></div>
-    <div class="card-body d-flex flex-column p-4">
+    <div class="card-body d-flex flex-column p-3 p-sm-4">
       <h2 class="card-title h5 mb-1"><%= trail.name %></h2>
       <%# Where the route is shows once its trips are looked up, in space kept for it. %>
       <p class="trail-location small text-body-secondary mb-<%= trail.station ? 1 : 3 %><%= " invisible" unless trail.location %>" data-location>
@@ -77,11 +77,11 @@
           <%= link_to "🧭 Directions back", directions_back_url(trail, result.place), class: "btn btn-success btn-sm",
                 target: "_blank", rel: "noopener", aria: { label: "Transit directions back from the end of #{trail.name}" } %>
         <% end %>
-        <%= link_to "Details & timetables", hike_details_path(trail, result), class: "btn btn-outline-success btn-sm",
-              aria: { label: "Details and timetables for #{trail.name}" } %>
-        <%= link_to "View on OpenStreetMap", "https://www.openstreetmap.org/relation/#{trail.osm_id}",
-              class: "btn btn-outline-secondary btn-sm", target: "_blank", rel: "noopener",
-              aria: { label: "#{trail.name} on OpenStreetMap" } %>
+        <%# Shorter on phones, so the buttons fit on a line. %>
+        <%= link_to hike_details_path(trail, result), class: "btn btn-outline-success btn-sm",
+              aria: { label: "Details and timetables for #{trail.name}" } do %>Details<span class="d-none d-sm-inline"> &amp; timetables</span><% end %>
+        <%= link_to "https://www.openstreetmap.org/relation/#{trail.osm_id}", class: "btn btn-outline-secondary btn-sm",
+              target: "_blank", rel: "noopener", aria: { label: "#{trail.name} on OpenStreetMap" } do %><span class="d-none d-sm-inline">View on </span>OpenStreetMap<% end %>
       </div>
     </div>
   </article>

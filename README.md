@@ -22,7 +22,10 @@ the last trip back, when that's the deadline). Each hike
 has a details page with timetables of every trip there that leaves time to hike
 it by then and every trip back until the first after sunset. Hikes are listed most scenic first, and filtered with
 sliders for the longest round trip (spanning the hikes found, from the quickest
-to any) and a range of lengths.
+to any) and a range of lengths. On phones, the results page's search box opens
+from a "Change search" button (and on its own when a search finds nothing or
+fails), so the first hikes show on the first screen, the sliders share a line,
+and cards are more compact.
 Weekly guides list every hike from big cities, such as
 [New York City](https://transithike.azurewebsites.net/day-hikes-by-train/new-york-city),
 on pages that search engines and AI assistants can read.

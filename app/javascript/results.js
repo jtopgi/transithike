@@ -22,9 +22,31 @@ const duration = (minutes) => {
 }
 const stayLabel = (minutes) => minutes >= 240 ? `${Math.floor(minutes / 60)} h` : duration(minutes)
 
+// On phones, the results page's search box stays closed behind "Change search",
+// so the hikes come first. Without the page's script, it stays open.
+class SearchToggle {
+  constructor(button) {
+    this.button = button
+    this.panel = document.getElementById(button.getAttribute("aria-controls"))
+    button.hidden = false
+    this.set(false)
+    button.addEventListener("click", () => {
+      this.set(!this.open)
+      if (this.open) this.panel.querySelector('[role="combobox"]')?.focus()
+    })
+  }
+
+  set(open) {
+    this.open = open
+    this.button.setAttribute("aria-expanded", String(open))
+    this.panel.classList.toggle("is-collapsed", !open)
+  }
+}
+
 class Results {
-  constructor(page) {
+  constructor(page, search) {
     this.page = page
+    this.search = search
     this.list = page.querySelector("[data-trails]")
     this.toolbar = page.querySelector("[data-results-toolbar]")
     this.progress = page.querySelector("[data-progress]")
@@ -130,6 +152,8 @@ class Results {
     this.progress.hidden = true
     this.list.querySelectorAll("[data-skeleton]").forEach((skeleton) => skeleton.remove())
     this.page.querySelector("[data-empty]").hidden = count > 0
+    // Without hikes, the next step is another search.
+    if (count === 0) this.search?.set(true)
     this.notify(notices)
     // Trips are looked up once the search is done, so they don't hold it up.
     this.list.querySelectorAll("[data-trail]").forEach((card) => this.trips.observe(card))
@@ -145,6 +169,7 @@ class Results {
       const alert = this.page.querySelector("[data-failure]")
       alert.textContent = message
       alert.hidden = false
+      this.search?.set(true)
     }
   }
 
@@ -203,6 +228,7 @@ class Results {
     if (this.done && cards.length === 0) {
       this.toolbar.hidden = true
       this.page.querySelector("[data-empty]").hidden = false
+      this.search?.set(true)
     }
   }
 
@@ -404,6 +430,8 @@ async function showPhotos(card, preview) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  const toggle = document.querySelector("[data-search-toggle]")
+  const search = toggle && new SearchToggle(toggle)
   const page = document.querySelector("[data-stream-url]")
-  if (page) new Results(page).stream()
+  if (page) new Results(page, search).stream()
 })
