@@ -75,14 +75,15 @@ class SearchesTest < ApplicationSystemTestCase
       end
       # No park nearby on Wikipedia, and photos on Wikimedia Commons, which answers at the same path.
       stub.get(URI(WikipediaService::API_URL).path) do |env|
-        files = PHOTOS.map do |title|
+        files = PHOTOS.each_with_index.map do |title, index|
           name = title.tr(" ", "_")
-          { title: "File:#{title}", coordinates: [{ lat: Float(env.params["ggscoord"].split("|").first), lon: -122.0 }],
+          { pageid: index + 1, title: "File:#{title}", coordinates: [{ lat: Float((env.params["ggscoord"] || "47.83").split("|").first), lon: -122.0 }],
             imageinfo: [{ mime: "image/jpeg", width: 1600, height: 1200, thumburl: "https://upload.wikimedia.org/thumb/#{name}/500px-#{name}",
               descriptionurl: "https://commons.wikimedia.org/wiki/File:#{name}",
               extmetadata: { Artist: { value: "Ann" }, LicenseShortName: { value: "CC BY 4.0" } } }] }
         end
-        [200, {}, JSON.generate(env.params["ggsnamespace"] == "6" ? { query: { pages: files } } : {})]
+        # Files nearby, and then their details.
+        [200, {}, JSON.generate(env.params["ggsnamespace"] == "6" || env.params["pageids"] ? { query: { pages: files } } : {})]
       end
     end
     Faraday.default_adapter = Class.new(Faraday::Adapter::Test) do

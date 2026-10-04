@@ -12,6 +12,10 @@ module GuideService
   # bad day doesn't empty a city's pages.
   MIN_HIKES = 12
   KEEP_SHARE = 0.6
+  # A photo lookup that fails is tried again after this long, since Commons is
+  # slow at times, and builds give each lookup this long.
+  PHOTO_RETRY_SECONDS = 10
+  PHOTO_LOOKUP_SECONDS = 60
   # Names made only of these words, such as "White Trail" or "Northern Section",
   # need a place to tell them apart.
   GENERIC_WORDS = %w[
@@ -87,6 +91,31 @@ module GuideService
         hikes: hikes }
     end
 
+    # Builds a city's guide, trying once more after pause seconds when a
+    # provider fails or some hikes can't be checked, as when Overpass is busy,
+    # and saying how each try went with log. Returns the complete build, or else
+    # the one with more hikes, or nil when neither worked.
+    def rebuild(guide, pause:, log: ->(_line) {}, **providers)
+      best = nil
+      2.times do |attempt|
+        sleep pause if attempt.positive?
+        again = attempt.zero? ? ", trying again in #{pause}s" : ""
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        begin
+          data = build(guide, previous: previous(guide), **providers)
+        rescue SearchErrors::UpstreamError => error
+          log.("#{guide.name}: failed (#{error.message})#{again}")
+          next
+        end
+        seconds = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round
+        rank = ->(built) { [built[:complete] ? 1 : 0, built[:hikes].size] }
+        best = data if best.nil? || (rank.(data) <=> rank.(best)).positive?
+        log.("#{guide.name}: #{data[:hikes].size} hikes in #{seconds}s#{data[:complete] ? '' : ", but some couldn't be checked#{again}"}")
+        break if data[:complete]
+      end
+      best
+    end
+
     # Writes a city's new guide unless it has too few hikes, returning whether it did.
     def write(guide, data)
       file = directory.join("#{guide.slug}.json")
@@ -109,7 +138,7 @@ module GuideService
     def hike_data(trail, place, result, transit, photos, places)
       trail.location ||= optional { TrailsService.location(trail, place, places: places) }
       trips = optional { TripPlans.plan(trail, origin: place, leave: result.departure_time, back_by: result.return_by, transit: transit) }
-      gallery = optional { photos.photos_near(trail.photo_points) }
+      gallery = gallery(trail, photos)
       fields = trail.to_h.slice(*TRAIL_FIELDS)
       fields[:arrival] = trail.arrival&.utc&.iso8601
       fields[:last_return] = trail.last_return&.utc&.iso8601
@@ -174,6 +203,20 @@ module GuideService
       yield
     rescue SearchErrors::UpstreamError
       nil
+    end
+
+    # The route's photos, looking again once when the lookup fails.
+    def gallery(trail, photos)
+      attempts = 0
+      begin
+        attempts += 1
+        photos.photos_near(trail.photo_points, timeout: PHOTO_LOOKUP_SECONDS)
+      rescue SearchErrors::UpstreamError
+        return if attempts > 1
+
+        sleep PHOTO_RETRY_SECONDS
+        retry
+      end
     end
   end
 end

@@ -169,7 +169,28 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_select "input[name=day][value=saturday][checked]"
   end
 
-  test "a typed place streams the place, each batch of hikes by train with the way back, and the ranking" do
+  test "searches are counted with the area they start from, never the address" do
+    sent = []
+    VisitTracker.settings = { key: "key-1", url: "https://ingest.example/v2/track" }
+    VisitTracker.delivery = ->(envelope) { sent << envelope }
+    geocode
+    area
+    rail
+    hiking([route_element(latitude: 47.3)])
+    transit([[{ duration: 5400, transfers: 1 }]])
+    elevation
+    get search_stream_path(origin: "12 Main St", day: "saturday", tz: "America/Los_Angeles"),
+      headers: { "User-Agent" => "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0 Safari/537.36" }
+
+    search = sent.find { |envelope| envelope.dig(:data, :baseData, :name) == "Search" }
+    assert_equal ["Seattle", "saturday", "1", "Desktop"], search.dig(:data, :baseData, :properties).values_at(:area, :day, :hikes, :device)
+    refute_includes sent.to_json, "Main"
+  ensure
+    VisitTracker.settings = nil
+    VisitTracker.delivery = nil
+  end
+
+    test "a typed place streams the place, each batch of hikes by train with the way back, and the ranking" do
     geocode
     area
     rail

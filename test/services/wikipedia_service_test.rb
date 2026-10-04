@@ -1,4 +1,5 @@
 require "test_helper"
+require "zlib"
 
 class WikipediaServiceTest < ActiveSupport::TestCase
   THUMBNAIL = "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/Park.jpg/500px-Park.jpg"
@@ -26,20 +27,25 @@ class WikipediaServiceTest < ActiveSupport::TestCase
   # A photo on Wikimedia Commons in the categories, taken lat degrees north of 47.66, -122.4.
   def commons_file(title, lat: 0.001, mime: "image/jpeg", width: 1600, height: 1200, categories: [], **credit)
     name = title.tr(" ", "_")
-    { "title" => "File:#{title}", "coordinates" => [{ "lat" => 47.66 + lat, "lon" => -122.4 }], "categories" => category_list(categories),
+    { "pageid" => Zlib.crc32(title), "title" => "File:#{title}", "coordinates" => [{ "lat" => 47.66 + lat, "lon" => -122.4 }],
+      "categories" => category_list(categories),
       "imageinfo" => [{ "mime" => mime, "width" => width, "height" => height,
         "thumburl" => "https://upload.wikimedia.org/wikipedia/commons/thumb/1/12/#{name}/500px-#{name}",
         "descriptionurl" => "https://commons.wikimedia.org/wiki/File:#{name}", "extmetadata" => metadata(**credit) }] }
   end
 
   # Answers the nearby-article search and the image details request, or with
-  # commons, the search for files taken nearby: files, or those for the point asked about.
+  # commons, the search for files taken nearby: files, or those for the point
+  # asked about, and the details of the files asked for by page id.
   def connection(pages = [], info = image_info, files: nil, &assert_request)
     stubs = Faraday::Adapter::Test::Stubs.new do |stub|
       stub.get("/") do |request|
         assert_request&.call(request)
         body = if request.params["ggsnamespace"] == "6"
           { "query" => { "pages" => files.is_a?(Hash) ? files.fetch(request.params["ggscoord"], []) : files } }
+        elsif request.params["pageids"]
+          ids = request.params["pageids"].split("|").map(&:to_i)
+          { "query" => { "pages" => Array(files.is_a?(Hash) ? files.values.flatten : files).select { |file| ids.include?(file["pageid"]) } } }
         elsif request.params["generator"] == "geosearch"
           { "query" => { "pages" => pages } }
         else
@@ -67,7 +73,8 @@ class WikipediaServiceTest < ActiveSupport::TestCase
     end
     assert_equal({ title: "Discovery Park (Seattle)", article_url: "https://en.wikipedia.org/wiki/Discovery_Park_(Seattle)",
       image: "Park.jpg", image_url: THUMBNAIL }, result)
-    assert_equal ["47.66|-122.4", "2000", "max", "free"], requests.sole.values_at("ggscoord", "ggsradius", "colimit", "pilicense")
+    # Big parks' articles are at their middle, so they're looked for within 5 km.
+    assert_equal ["47.66|-122.4", "5000", "max", "free"], requests.sole.values_at("ggscoord", "ggsradius", "colimit", "pilicense")
     assert_includes requests.sole["prop"].split("|"), "description"
     refute_includes requests.sole["prop"].split("|"), "pageviews"
   end
@@ -106,9 +113,13 @@ class WikipediaServiceTest < ActiveSupport::TestCase
           file_url: "https://commons.wikimedia.org/wiki/File:Discovery_Park_bluff_view.jpg", credit: "Ann & Bo · CC BY-SA 4.0",
           caption: "Discovery Park bluff view" }
       ] }, result)
-    commons = requests.find { |params| params["ggsnamespace"] == "6" }
-    assert_equal ["47.66|-122.4", "2000", "500", "!hidden"], commons.values_at("ggscoord", "ggsradius", "iiurlwidth", "clshow")
-    assert_includes commons["prop"].split("|"), "categories"
+    # Files nearby are first asked for their type and size, then those that could be photos for their details.
+    nearby = requests.find { |params| params["ggsnamespace"] == "6" }
+    assert_equal ["47.66|-122.4", "2000", "200", "imageinfo|coordinates", "mime|size"],
+      nearby.values_at("ggscoord", "ggsradius", "ggslimit", "prop", "iiprop")
+    details = requests.find { |params| params["pageids"] }
+    assert_equal [Zlib.crc32("Discovery Park bluff view.jpg").to_s, "500", "!hidden"], details.values_at("pageids", "iiurlwidth", "clshow")
+    assert_includes details["prop"].split("|"), "categories"
     assert_equal ["File:Park.jpg", "!hidden"], requests.find { |params| params["titles"] }.values_at("titles", "clshow")
   end
 
@@ -249,12 +260,93 @@ class WikipediaServiceTest < ActiveSupport::TestCase
     stubbed = connection([page("Discovery Park", lat: 47.66)], files: [commons_file("Lake view.jpg")]) { |request| requests << request.params }
     2.times { WikipediaService.photos_near([[47.6601, -122.3951]], connection: stubbed, commons: stubbed, cache: cache) }
     WikipediaService.photos_near([[47.6649, -122.4011]], connection: stubbed, commons: stubbed, cache: cache)
-    assert_equal ["47.66|-122.4", "File:Park.jpg", "47.66|-122.4"],
-      requests.map { |params| params["ggscoord"] || params["titles"] }
+    # The details of the photos found nearby are asked for once too.
+    assert_equal ["47.66|-122.4", "File:Park.jpg", "47.66|-122.4", "details"],
+      requests.map { |params| params["ggscoord"] || params["titles"] || ("details" if params["pageids"]) }
 
     failing = Faraday.new do |builder|
       builder.adapter :test, Faraday::Adapter::Test::Stubs.new { |stub| stub.get("/") { [503, {}, "{}"] } }
     end
     assert_raises(SearchErrors::UpstreamError) { WikipediaService.photos_near([[47.66, -122.4]], connection: failing, commons: failing) }
+  end
+
+  test "only files that could be photos of the scenery are asked for their details, the nearest first" do
+    requests = []
+    files = [commons_file("Lake view.jpg", lat: 0.004), commons_file("Small lake.jpg", width: 640, height: 480),
+      commons_file("Lake map.png", mime: "image/png"), commons_file("Lake panorama.jpg", width: 4000, height: 1000),
+      commons_file("Near lake.jpg", lat: 0.002)]
+    result = stub_const(WikipediaService, :DETAILED_PER_POINT, 1) do
+      photos([], files: files) { |request| requests << request.params["pageids"] if request.params["pageids"] }
+    end
+    assert_equal ["Near lake"], result[:photos].pluck(:caption)
+    assert_equal [Zlib.crc32("Near lake.jpg").to_s], requests
+  end
+
+  test "categories continued in another answer are checked too" do
+    requests = []
+    stubs = Faraday::Adapter::Test::Stubs.new do |stub|
+      stub.get("/") do |request|
+        requests << request.params["clcontinue"]
+        file = commons_file("Lake view.jpg", categories: ["Lakes of Seattle"])
+        body = if request.params["ggsnamespace"] then { "query" => { "pages" => [file] } }
+        elsif request.params["clcontinue"]
+          { "query" => { "pages" => [file.slice("pageid", "title").merge("categories" => category_list(["Roads in Seattle"]))] } }
+        else
+          { "query" => { "pages" => [file] }, "continue" => { "clcontinue" => "#{file['pageid']}|Roads", "continue" => "||" } }
+        end
+        [200, { "Content-Type" => "application/json" }, JSON.generate(body)]
+      end
+    end
+    commons = Faraday.new { |builder| builder.adapter :test, stubs }
+    # The road in the continued categories leaves the photo out.
+    assert_nil WikipediaService.photos_near([[47.66, -122.4]], connection: connection([]), commons: commons,
+      cache: ActiveSupport::Cache::MemoryStore.new)
+    assert_equal [nil, nil, "#{Zlib.crc32('Lake view.jpg')}|Roads"], requests
+  end
+
+  test "a lookup that fails leaves out only its photos" do
+    files = { "47.66|-122.4" => [commons_file("Lake view.jpg")] }
+    flaky = Faraday::Adapter::Test::Stubs.new do |stub|
+      stub.get("/") do |request|
+        next [503, {}, "{}"] if request.params["ggscoord"] == "47.71|-122.4"
+
+        ids = request.params["pageids"].to_s.split("|").map(&:to_i)
+        pages = request.params["pageids"] ? files.values.flatten.select { |file| ids.include?(file["pageid"]) } : files.fetch(request.params["ggscoord"], [])
+        [200, { "Content-Type" => "application/json" }, JSON.generate("query" => { "pages" => pages })]
+      end
+    end
+    commons = Faraday.new { |builder| builder.adapter :test, flaky }
+    result = WikipediaService.photos_near([[47.66, -122.4], [47.71, -122.4]], connection: connection([]), commons: commons,
+      cache: ActiveSupport::Cache::MemoryStore.new)
+    assert_equal ["Lake view"], result[:photos].pluck(:caption)
+  end
+
+  test "houses, castles, and palaces aren't natural areas, though their gardens are described as such" do
+    assert_nil area([page("Starborough Castle", lat: 47.66, description: "Garden House in Dormansland, Surrey")])
+    assert_nil area([page("Kew Palace", lat: 47.66, description: "Royal palace and gardens in Richmond")])
+    assert_equal "Castle Rock State Park", area([page("Castle Rock State Park", lat: 47.66)])[:title]
+  end
+
+  test "photos are looked for for at most so long altogether, keeping what's found by then" do
+    asked = []
+    files = { "47.66|-122.4" => [commons_file("Lake view.jpg")], "47.71|-122.4" => [commons_file("Ridge view.jpg", lat: 0.05)] }
+    slow = Faraday::Adapter::Test::Stubs.new do |stub|
+      stub.get("/") do |request|
+        asked << request.params["ggscoord"] if request.params["ggscoord"]
+        # The second point's files take longer than the time there is.
+        sleep 1 if request.params["ggscoord"] == "47.71|-122.4"
+        ids = request.params["pageids"].to_s.split("|").map(&:to_i)
+        pages = request.params["pageids"] ? files.values.flatten.select { |file| ids.include?(file["pageid"]) } : files.fetch(request.params["ggscoord"], [])
+        [200, { "Content-Type" => "application/json" }, JSON.generate("query" => { "pages" => pages })]
+      end
+    end
+    commons = Faraday.new { |builder| builder.adapter :test, slow }
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    result = WikipediaService.photos_near([[47.66, -122.4], [47.71, -122.4], [47.61, -122.4]], connection: connection([]),
+      commons: commons, cache: ActiveSupport::Cache::MemoryStore.new, timeout: 0.5)
+    # The first point's photos are kept, the second's lookup stops when time's up, and the third isn't asked about.
+    assert_equal ["Lake view"], result[:photos].pluck(:caption)
+    assert_equal ["47.66|-122.4", "47.71|-122.4"], asked
+    assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 0.9
   end
 end

@@ -25,7 +25,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    # Cities that fail or come out incomplete are built twice, with pauses between.
+    timeout-minutes: 300
     env:
       GH_TOKEN: ${{ github.token }}
     steps:

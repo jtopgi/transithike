@@ -32,6 +32,9 @@ class Results {
     this.done = false
     // Trips are looked up one card at a time: the transit planner answers each visitor's requests in turn.
     this.tripQueue = Promise.resolve()
+    // Photos two at a time, so a page never keeps more of the server busy looking for them.
+    this.photoQueues = [Promise.resolve(), Promise.resolve()]
+    this.photoTurn = 0
     this.previews = new IntersectionObserver((entries) => this.visible(entries, (card) => this.preview(card)),
       { rootMargin: "200px" })
     this.trips = new IntersectionObserver((entries) => this.visible(entries, (card) => this.queueTrip(card)),
@@ -187,7 +190,8 @@ class Results {
   preview(card) {
     this.previews.unobserve(card)
     const map = drawMap(card.querySelector(".trail-map"))
-    showPhotos(card, map).catch(() => {})
+    const lane = this.photoTurn++ % this.photoQueues.length
+    this.photoQueues[lane] = this.photoQueues[lane].then(() => showPhotos(card, map)).catch(() => {})
   }
 
   queueTrip(card) {

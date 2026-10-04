@@ -9,27 +9,19 @@ namespace :guides do
     guides = GuideService.guides.select { |guide| only.nil? || only.include?(guide.slug) }
     abort "No guides match CITIES=#{ENV['CITIES']}" if guides.empty?
 
-    # Free providers are busy at times, so a city whose search fails is tried again after a pause.
+    # Free providers are busy at times, so a city whose search fails or is incomplete is tried again after a pause,
+    # and Overpass limits how much each address asks, so cities are a minute apart.
     pause = Integer(ENV.fetch("RETRY_PAUSE", "120"))
-    written = guides.count do |guide|
-      attempts = 0
-      begin
-        attempts += 1
-        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        data = GuideService.build(guide, previous: GuideService.previous(guide))
-        kept = GuideService.write(guide, data)
-        seconds = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).round
-        puts "#{guide.name}: #{data[:hikes].size} hikes in #{seconds}s#{kept ? '' : ', too few, so the last guide stays'}"
-        kept
-      rescue SearchErrors::UpstreamError, SearchErrors::InvalidInput => error
-        if attempts < 2 && error.is_a?(SearchErrors::UpstreamError)
-          puts "#{guide.name}: failed (#{error.message}), trying again in #{pause}s"
-          sleep pause
-          retry
-        end
-        puts "#{guide.name}: failed (#{error.message}), so the last guide stays"
-        false
-      end
+    between = Integer(ENV.fetch("CITY_PAUSE", "60"))
+    written = guides.each_with_index.count do |guide, index|
+      sleep between if index.positive?
+      data = GuideService.rebuild(guide, pause: pause, log: ->(line) { puts line })
+      kept = data && GuideService.write(guide, data)
+      puts "#{guide.name}: #{data ? 'too few hikes' : 'no guide built'}, so the last guide stays" unless kept
+      kept
+    rescue SearchErrors::InvalidInput => error
+      puts "#{guide.name}: failed (#{error.message}), so the last guide stays"
+      false
     end
     puts "#{written} of #{guides.size} guides written to #{GuideService.directory}"
     # Lookups left running finish, and their pools stop, before Ruby exits, which can otherwise hang killing their threads.

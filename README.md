@@ -207,12 +207,22 @@ test Overpass connectivity from your deployment before launching.
 - **Photos** are only of nature. Each card shows up to eight in a gallery of
   thumbnails, taken within 2 km of three points along the route (its middle and
   a sixth of the way from each end), which are not necessarily of the route: the
-  lead image of the nearest park or natural area's Wikipedia article, then photos
-  taken along the route from Wikimedia Commons, views and waterfalls first, then
-  the nearest, with at most two from a series (such as "Sugarloaf Mountain in
-  summer 2" and "3"). Articles count as natural areas by the kind of thing their
-  short description names first ("State park in New York" or "Range of hills in
-  central England", but not "Fort on the Hudson River", "Mountain village in
+  lead image of the nearest park or natural area's Wikipedia article within 5 km
+  (big parks' articles are placed at their middle), then photos taken along the
+  route from Wikimedia Commons, views and waterfalls first, then the nearest, with
+  at most two from a series (such as "Sugarloaf Mountain in summer 2" and "3").
+  Commons is asked for the type and size of 200 files near each point, then for
+  the credits and categories of the nearest 50 that could be photos of the
+  scenery, following its answers until every category is in, since near towns the
+  nearest files are mostly of streets and buildings. Commons gets up to 20 seconds
+  to answer and Wikipedia 10, but a route's lookups stop after 15 seconds
+  altogether (60 in guide builds), keeping what's found by then, so a slow Commons
+  doesn't hold up the server, and cards load their photos two at a time. A lookup
+  that fails only leaves out its own photos, and guide builds try a failed lookup
+  once more after 10 seconds. Articles count as
+  natural areas by the kind of thing their short description names first ("State
+  park in New York" or "Range of hills in central England", but not "Fort on the
+  Hudson River", "Garden House in Dormansland, Surrey", "Mountain village in
   Switzerland", or "Series of chains across the Hudson River"), or by their title
   when they have none. Photos are JPEGs at least 800 px wide and at most three
   times wider than tall, whose title or a visible Commons category names a
@@ -225,7 +235,9 @@ test Overpass connectivity from your deployment before launching.
   leave out the names Commons repeats in hidden elements.
 - Provider failures produce a friendly error, not misleading empty results. The
   origin's area, the tiles after the first four, highlights, terrain, and photos
-  only refine a search, which goes ahead without them. Highlights not found within
+  only refine a search, which goes ahead without them; when any tile's routes
+  don't load, the page says some hikes couldn't be checked, and guide builds try
+  that city again. Highlights not found within
   5 seconds of the last batch, and terrain not found within 8 seconds after that,
   are left out, and the lookups finish in the background so later searches have
   them. When the way back can't be looked up, hikes are shown with a notice saying
@@ -299,8 +311,11 @@ planning, linked from the home page, the navigation, and an index of cities.
 - **Weekly builds.** The [Guides workflow](.github/workflows/guides.yml) runs on
   Wednesdays (and from the Actions tab, for some cities if you like). It runs
   `bin/rails guides:build`, which searches from each city with the live
-  providers (trying a city again after two minutes when a provider is busy),
-  plans every hike's trips there and back with `TripPlans`, finds their photos,
+  providers a minute apart, since Overpass limits how much each address asks
+  (trying a city again after two minutes when a provider is busy or some of its
+  hikes couldn't be checked, as when the farther tiles' routes don't load, and
+  keeping a complete build, or else the one with more hikes), plans every hike's
+  trips there and back with `TripPlans`, finds their photos and where they are,
   and writes `db/guides/<city>.json`. A city's guide is only
   replaced when the new one has at least 12 hikes and at least 60% as many as
   the last, so a provider's bad day doesn't empty its pages, and hikes keep their
@@ -440,9 +455,10 @@ bin/azure-setup
 ```
 
 The idempotent script creates the `rg-transithike` resource group with the
-registry, App Service plan and web app, and two managed identities: one pulls
+registry, App Service plan and web app, two managed identities (one pulls
 images, and the other is trusted only by this repository's `production` GitHub
-environment to deploy. It stores a generated `SECRET_KEY_BASE` as an app setting
+environment to deploy), and the Application Insights resource that counts
+visits, with its Log Analytics workspace. It stores a generated `SECRET_KEY_BASE` as an app setting
 and restricts that GitHub environment to the default branch. It keeps the short
 `<app>.azurewebsites.net` host name, so set `AZURE_WEBAPP` if `transithike` is
 taken. Credit-based subscriptions have no App Service quota in some regions; the
@@ -464,6 +480,41 @@ az group delete -n rg-transithike                                         # remo
 Image tags are `<commit>-<run>-<attempt>`, one for each deployment, because the
 same commit is deployed again whenever the guides are rebuilt. Builds from
 before then are tagged with just the commit.
+
+## Visits
+
+TransitHike counts visits in [Application Insights](https://learn.microsoft.com/azure/azure-monitor/app/app-insights-overview)
+from the server, with no cookies or anything else kept in visitors' browsers
+(`VisitTracker`), so it needs no consent banner. After each response, a
+background thread sends:
+
+- a **page view** for each page a person sees: its path without the query
+  string (so no typed addresses), the site they came from (its host name only),
+  their kind of device, browser, system, and language, and their country and
+  city, which Application Insights works out from the IP address and keeps
+  instead of it;
+- a **search** for each finished search: the area it starts from, as
+  "Seattle, Washington, United States", the day, how many hikes it found, and
+  how long it took;
+- a **crawler visit** for each request from a search engine, AI assistant, or
+  other bot, named by its user agent (Google, Bing, ChatGPT, Claude,
+  Perplexity, and so on), with the path, so you can see which pages they read.
+
+Visitors are told apart for a day by a hash of their IP address and browser
+with a random salt that is replaced daily and only kept in memory, so the same
+person can't be followed from one day to the next: a visitor counts once a day,
+and a restart starts a new salt. Prefetches and Azure's own checks aren't
+counted. Nothing is counted without the `APPLICATIONINSIGHTS_CONNECTION_STRING`
+app setting, as in development and tests.
+
+To see the numbers, run `bin/stats` (or `bin/stats 7` for a week) after
+`az login`, for visitors and page views by day, the most-seen pages, the sites
+people come from, countries and cities, devices, where searches start, and
+crawlers' visits. The Azure portal shows the same under the `appi-transithike`
+resource: **Usage → Users** and **Events**, or **Logs** for queries such as
+`pageViews | summarize dcount(user_Id) by bin(timestamp, 1d)`. Data is kept for
+90 days, and ingestion is capped at 100 MB a day, well within the free 5 GB a
+month.
 
 ## License
 

@@ -51,14 +51,17 @@ class PlacesAndPhotosTest < ActionDispatch::IntegrationTest
   test "returns credited photos of nature along a route" do
     # Wikipedia and Wikimedia Commons answer at the same path, and Commons is asked for files near each point.
     points = []
+    view = { pageid: 7, title: "File:Discovery Park bluff view.jpg", coordinates: [{ lat: 47.661, lon: -122.41 }],
+      categories: [{ ns: 14, title: "Category:Discovery Park (Seattle)" }],
+      imageinfo: [{ mime: "image/jpeg", width: 1600, height: 1200, thumburl: "https://upload.wikimedia.org/view.jpg",
+        descriptionurl: "https://commons.wikimedia.org/wiki/File:Discovery_Park_bluff_view.jpg",
+        extmetadata: { Artist: { value: "Bo" }, LicenseShortName: { value: "CC0" } } }] }
     @stubs.get(URI(WikipediaService::API_URL).path) do |env|
       body = if env.params["ggsnamespace"] == "6"
         points << env.params["ggscoord"]
-        { query: { pages: [{ title: "File:Discovery Park bluff view.jpg", coordinates: [{ lat: 47.661, lon: -122.41 }],
-          categories: [{ ns: 14, title: "Category:Discovery Park (Seattle)" }],
-          imageinfo: [{ mime: "image/jpeg", width: 1600, height: 1200, thumburl: "https://upload.wikimedia.org/view.jpg",
-            descriptionurl: "https://commons.wikimedia.org/wiki/File:Discovery_Park_bluff_view.jpg",
-            extmetadata: { Artist: { value: "Bo" }, LicenseShortName: { value: "CC0" } } }] }] } }
+        { query: { pages: [view] } }
+      elsif env.params["pageids"] == "7"
+        { query: { pages: [view] } }
       elsif env.params["generator"] == "geosearch"
         { query: { pages: [{ title: "Discovery Park (Seattle)", pageimage: "Park.jpg", fullurl: "https://en.wikipedia.org/wiki/Discovery_Park",
           thumbnail: { source: "https://upload.wikimedia.org/park.jpg" }, coordinates: [{ lat: 47.66, lon: -122.41 }] }] } }

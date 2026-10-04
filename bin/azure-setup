@@ -46,7 +46,7 @@ assign_role() { # principal-id role scope
 }
 
 step "Registering resource providers (first run can take a few minutes)"
-for namespace in Microsoft.Web Microsoft.ContainerRegistry Microsoft.ManagedIdentity; do
+for namespace in Microsoft.Web Microsoft.ContainerRegistry Microsoft.ManagedIdentity Microsoft.OperationalInsights Microsoft.Insights; do
   az provider register --namespace "$namespace" --wait --output none
 done
 
@@ -103,6 +103,30 @@ az webapp config set --resource-group "$group" --name "$app" --always-on true --
 az webapp log config --resource-group "$group" --name "$app" --docker-container-logging filesystem \
   --output none
 host="$(az webapp show --resource-group "$group" --name "$app" --query defaultHostName --output tsv)"
+
+step "Visit counting: Application Insights, without cookies, at most 100 MB a day"
+workspace="log-$app"
+insights="appi-$app"
+if ! az monitor log-analytics workspace show --resource-group "$group" --workspace-name "$workspace" --output none 2>/dev/null; then
+  az monitor log-analytics workspace create --resource-group "$group" --workspace-name "$workspace" \
+    --location "$webapp_location" --retention-time 90 --quota 0.1 --output none
+fi
+az extension show --name application-insights --output none 2>/dev/null ||
+  az extension add --name application-insights --only-show-errors
+if ! az monitor app-insights component show --resource-group "$group" --app "$insights" --output none 2>/dev/null; then
+  az monitor app-insights component create --resource-group "$group" --app "$insights" --location "$webapp_location" \
+    --workspace "$(az monitor log-analytics workspace show --resource-group "$group" --workspace-name "$workspace" \
+      --query id --output tsv)" --application-type web --kind web --output none
+fi
+connection="$(az monitor app-insights component show --resource-group "$group" --app "$insights" \
+  --query connectionString --output tsv)"
+current="$(az webapp config appsettings list --resource-group "$group" --name "$app" \
+  --query "[?name=='APPLICATIONINSIGHTS_CONNECTION_STRING'].value" --output tsv)"
+# Changing an app setting restarts the app, so it's only set when it changes.
+if [ "$current" != "$connection" ]; then
+  az webapp config appsettings set --resource-group "$group" --name "$app" --output none \
+    --settings "APPLICATIONINSIGHTS_CONNECTION_STRING=$connection"
+fi
 
 step "GitHub environment 'production' in $repository (deploys only from $branch)"
 gh api --method PUT "repos/$repository/environments/production" --silent --input - \

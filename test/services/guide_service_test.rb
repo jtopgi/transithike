@@ -48,7 +48,7 @@ class GuideServiceTest < ActiveSupport::TestCase
   end
 
   class FakePhotos
-    def photos_near(points)
+    def photos_near(points, **)
       { title: "Hudson Highlands State Park (New York)", article_url: nil,
         photos: [{ image_url: "https://upload.wikimedia.org/a.jpg", file_url: "https://commons.wikimedia.org/a", credit: "Ann",
           caption: "Ridge" }] }
@@ -64,6 +64,63 @@ class GuideServiceTest < ActiveSupport::TestCase
 
   def guide
     GuideService.guides.find { |candidate| candidate.slug == "new-york-city" }
+  end
+
+  # Searches that answer in turn: an exception is raised, and otherwise how many trails and whether all were checked.
+  class TurnsSearch < FakeSearch
+    def initialize(turns, trail)
+      @turns, @trail = turns, trail
+      super([])
+    end
+
+    def search(origin:, day:)
+      turn = @turns.shift
+      raise turn if turn.is_a?(Exception)
+
+      count, complete = turn
+      super.tap do |result|
+        result.trails = (1..count).map { |id| @trail.(id) }
+        result.complete = complete
+      end
+    end
+  end
+
+  test "a city's guide is built again when a provider fails or some hikes couldn't be checked" do
+    build = lambda do |*turns|
+      lines = []
+      search = TurnsSearch.new(turns, ->(id) { trail("Route #{id}", id) })
+      data = GuideService.rebuild(guide, pause: 0, log: ->(line) { lines << line }, search: search, transit: FakeTransit.new,
+        photos: FakePhotos.new, places: FakePlaces.new)
+      [data && [data[:hikes].size, data[:complete]], lines.map { |line| line.sub(/(hikes) in \d+s/, '\1') }]
+    end
+
+    assert_equal [[2, true], ["New York City: 2 hikes"]], build.([2, true])
+    assert_equal [[3, true], ["New York City: 4 hikes, but some couldn't be checked, trying again in 0s", "New York City: 3 hikes"]],
+      build.([4, false], [3, true])
+    assert_equal [[4, false], ["New York City: 4 hikes, but some couldn't be checked, trying again in 0s",
+      "New York City: 1 hikes, but some couldn't be checked"]], build.([4, false], [1, false])
+    assert_equal [[2, true], ["New York City: failed (busy), trying again in 0s", "New York City: 2 hikes"]],
+      build.(SearchErrors::UpstreamError.new("busy"), [2, true])
+    assert_equal [nil, ["New York City: failed (busy), trying again in 0s", "New York City: failed (busy)"]],
+      build.(SearchErrors::UpstreamError.new("busy"), SearchErrors::UpstreamError.new("busy"))
+  end
+
+    test "a photo lookup that fails is tried once more" do
+    flaky = Class.new(FakePhotos) do
+      attr_reader :calls
+
+      def photos_near(points, **)
+        @calls = @calls.to_i + 1
+        raise SearchErrors::UpstreamError, "slow" if @calls == 1
+
+        super
+      end
+    end.new
+    data = stub_const(GuideService, :PHOTO_RETRY_SECONDS, 0) do
+      GuideService.build(guide, search: FakeSearch.new([trail("Ridge Loop", 1)]), transit: FakeTransit.new, photos: flaky,
+        places: FakePlaces.new)
+    end
+    assert_equal [1, 2], [data[:hikes].sole[:photos].size, flaky.calls]
   end
 
   test "a guide plans each hike's trips and photos, most scenic first, and tells plain or shared names apart by place" do
@@ -101,7 +158,7 @@ class GuideServiceTest < ActiveSupport::TestCase
 
   test "hikes keep the slugs they had, and without a place, plain names stay as they are" do
     previous = { hikes: [{ slug: "old-white-trail", trail: { osm_id: 1 } }] }
-    photos = Class.new { def photos_near(_) = nil }.new
+    photos = Class.new { def photos_near(_, **) = nil }.new
     data = GuideService.build(guide, previous: previous, search: FakeSearch.new([trail("White Trail", 1), trail("Loop 2", 2)]),
       transit: FakeTransit.new, photos: photos, places: FakePlaces.new)
     # Without a park nearby, the station the train goes to tells them apart.
