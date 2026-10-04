@@ -15,6 +15,9 @@ class SearchesTest < ApplicationSystemTestCase
   PHOTOS = ["Ridge view.jpg", "Lake at dawn.jpg", "Autumn woods.jpg"].freeze
 
   setup do
+    # It's 10 AM on Tuesday, October 6, in Seattle, so trips are for the weekend of October 10, when the sun sets at
+    # about 6:30 PM, between the buses back. The server's waits go by the monotonic clock, which this doesn't stop.
+    travel_to Time.utc(2026, 10, 6, 17)
     # The browser keeps the trips each test looks up, as the server lets it, and tests' trips differ.
     page.driver.browser.execute_cdp("Network.clearBrowserCache")
     @old_adapter = Faraday.default_adapter
@@ -142,27 +145,25 @@ class SearchesTest < ApplicationSystemTestCase
     assert_selector "h1", text: "Day hikes by train from Pike Place Market, Seattle, Washington, United States"
     assert_includes current_url, "lat=47.6"
     assert_includes current_url, "day=sunday"
-    # On Sunday morning, the trip is that day.
-    assert_selector "[data-departure]", text: /\A(Sunday, \w+ \d+|Today), leaving (at 8:00 AM|now)/
+    # Capybara reads non-breaking spaces as spaces.
+    assert_selector "[data-departure]", text: "Sunday, October 11, leaving at 8:00 AM PDT, with a way back by 11 PM."
     assert_selector "input[name=day][value=sunday]:checked", visible: false
     assert_selector "article.trail-card", count: 3
     assert_no_selector "[data-skeleton]"
     assert_selector ".trail-map.leaflet-container", minimum: 1
-    # Each card's deadline: sunset, or the last trip back when that leaves first, as on summer days.
-    assert_selector "article.trail-card .trail-return", text: /(Sunset|Last trip back( from the far end)?) \d+:\d\d [AP]M/, count: 3
-    # Capybara reads non-breaking spaces as spaces.
-    assert_selector "[data-departure]", text: /with a way back by 11 PM/
+    # Each card's deadline is sunset, well before the last trip back at 9 PM.
+    assert_selector "article.trail-card .trail-return", text: /\A🌇 Sunset 6:28 PM · up to [89] h of daylight there\z/, count: 3
     # Each card shows the trains and other transit there and back once the search is done, and the planned
     # trips replace the search's estimates: the rides there and back, and the last trip back and time there.
     assert_selector ".trail-trip", text: /There: 🚆 Sounder N Line · leave \d+:\d\d [AP]M, arrive/, minimum: 1
     within find("article.trail-card", text: "Short Loop") do
-      # The first bus back after the hike, and the last one, which leaves time to stay longer.
+      # The first bus back after the hike, and the first after sunset, which is also the last.
       assert_selector ".trail-trip", text: "First back: 🚌 11 · leave 5:00 PM, home 6:15 PM"
       assert_selector ".trail-trip", text: "Last back: 🚌 11 · leave 8:00 PM, home 9:15 PM"
       assert_selector "[data-travel-time]", text: "2 h 30 min"
       assert_selector "[data-travel-detail]", text: "1 h 15 min there · 1 h 15 min back"
-      # The time there runs until sunset when that's the deadline, which depends on the day searched.
-      assert_selector ".trail-return", text: /\A(🌇 Sunset \d+:\d\d PM · up to \d h of daylight|↩️ Last trip back 8:00 PM · up to 10 h) there\z/
+      # Arriving at 9:25 AM, there's until sunset.
+      assert_selector ".trail-return", text: /\A🌇 Sunset 6:28 PM · up to 9 h of daylight there\z/
     end
   end
 
@@ -202,8 +203,8 @@ class SearchesTest < ApplicationSystemTestCase
     # hiked 8 miles to its far end. Planned trips there and back keep these orders.
     within(find("article.trail-card", text: "Long Traverse")) do
       assert_text(/Hike\s+≈ 8.0 mi\s+one way, back from the far end/)
-      assert_selector ".trail-return",
-        text: /\A(🌇 Sunset \d+:\d\d PM · up to \d h of daylight|↩️ Last trip back from the far end 8:00 PM · up to \d+ h) there\z/
+      # Arriving at 9:45 AM, there's until sunset.
+      assert_selector ".trail-return", text: /\A🌇 Sunset 6:29 PM · up to 8 h of daylight there\z/
       assert_selector ".trail-trip", text: "First back from the end: 🚌 11 · leave 5:00 PM, home 6:35 PM"
       assert_selector ".trail-trip", text: "Last back from the end: 🚌 11 · leave 8:00 PM, home 9:35 PM"
       assert_link "🧭 Directions back"
