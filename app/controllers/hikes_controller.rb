@@ -29,23 +29,27 @@ class HikesController < ApplicationController
 
     @trail.latitude, @trail.longitude, @trail.plan, @trail.finish = start.latitude, start.longitude, params[:plan].to_sym, finish&.then { |place| [place.latitude, place.longitude] }
     @trail.origin = @origin_name
-    # The route's highlights, terrain, photos, and where it is are looked up while transit is planned.
+    # The route's highlights, terrain, and photos, and where it is, are looked up while transit is planned,
+    # where it is on its own, so a slow lookup of it doesn't hold up the rest.
     trail = @trail
     extras = TrailsService.start do
       [optional { OverpassService.highlights([trail])[trail.osm_id] }, optional { ElevationService.terrain([trail])[trail.osm_id] },
-        optional { WikipediaService.photos_near(trail.photo_points) }, optional { TrailsService.location(trail, origin) }]
+        optional { WikipediaService.photos_near(trail.photo_points) }]
     end
+    where = TrailsService.start { TrailsService.location(trail, origin) }
     @origin, @leave, @back_by = origin, leave.in_time_zone(@zone), back_by.in_time_zone(@zone)
     @results_path = search_path({ origin: @origin_name || SearchOrigin::CURRENT_LOCATION, lat: origin.latitude,
       lon: origin.longitude, day: @leave.saturday? ? "saturday" : "sunday", tz: @zone.tzinfo.name })
     trips = TripPlans.plan(@trail, origin: origin, leave: leave, back_by: back_by)
     @there, @ways, @departures = trips.values_at(:there, :ways, :departures)
-    highlights, @trail.terrain, @photos, @trail.location = TrailsService.settle([extras], timeout: EXTRAS_WAIT_SECONDS).first.value(0) || []
+    TrailsService.settle([extras, where], timeout: EXTRAS_WAIT_SECONDS)
+    highlights, @trail.terrain, @photos = extras.value(0) || []
     @trail.highlights = highlights || []
+    @trail.location = where.value(0)
     expires_in TransitousService::TRIP_CACHE_TTL
   rescue SearchErrors::UpstreamError
     # The lookups started alongside finish rather than outlive the request.
-    TrailsService.settle([extras], timeout: EXTRAS_WAIT_SECONDS) if extras
+    TrailsService.settle([extras, where].compact, timeout: EXTRAS_WAIT_SECONDS) if extras
     @unavailable = true
     render :show, status: :service_unavailable
   end

@@ -509,7 +509,23 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
       back_by: "2026-09-24T06:00:00Z", tz: "America/Los_Angeles", origin: "Pike Place Market" }.merge(changes)
   end
 
-  test "a hike's page shows its route, the trips there that leave time to hike all of it, and the trips back" do
+  test "a hike's page shows its highlights when where it is takes too long to look up" do
+    hiking([route_element(latitude: 47.3, name: "Ridge Trail")], highlights: [highlight_node("waterfall", 47.31, -122.0, name: "Twin Falls")])
+    elevation
+    stub_get(WikipediaService::API_URL, {})
+    planner(window: [train_there("15:19", "17:31")], back: [train_back("20:00", "21:30")])
+    stub_get(PhotonService::REVERSE_URL) do
+      sleep 1.5
+      [200, {}, JSON.generate(features: [{ properties: { city: "Auburn", state: "Washington" } }])]
+    end
+    stub_const(HikesController, :EXTRAS_WAIT_SECONDS, 1) { get hike_path(hike_params) }
+
+    assert_response :success
+    assert_select ".trail-chip", text: /Twin Falls/
+    assert_select ".trail-location", count: 0
+  end
+
+    test "a hike's page shows its route, the trips there that leave time to hike all of it, and the trips back" do
     hiking([route_element(latitude: 47.3, name: "Ridge Trail")], highlights: [highlight_node("waterfall", 47.31, -122.0, name: "Twin Falls")])
     elevation
     stub_get(WikipediaService::API_URL, {})
