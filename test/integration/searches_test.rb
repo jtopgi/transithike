@@ -152,6 +152,9 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_select "input[name=lat][value='47.0']:not([disabled])"
     assert_select "input[name=tz][value='America/New_York']"
     assert_select "input[name=day][value=sunday][checked]"
+    # On phones, the page closes the search box behind a button it shows; without the page's script, it stays open.
+    assert_select "button[data-search-toggle][hidden][aria-controls='change-search'][aria-expanded='true']", text: /Change search/
+    assert_select "#change-search.results-search:not(.is-collapsed) form.place-search"
     assert_select "[data-progress][role=status]", text: /Finding the stations trains reach/
     assert_select "[data-skeleton]", count: 2
     # Hikes are only ever most scenic first, the sliders narrowing them down.
@@ -412,6 +415,8 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
       assert_response :unprocessable_content
       assert_select "[role=alert]", text: /Enter a starting point/
       assert_select "[data-stream-url]", count: 0
+      # The search box stays open to fix the search.
+      assert_select "[data-search-toggle]", count: 0
 
       search_all(origin: origin)
       assert_equal [["failure", { "message" => "Enter a starting point of at most 200 characters." }]], events

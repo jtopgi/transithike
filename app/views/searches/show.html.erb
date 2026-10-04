@@ -14,9 +14,12 @@
             Weekend day trips by train, with a way back the same evening.
           </p>
           <p class="mb-0 mt-2 results-stations small" data-stations hidden></p>
+          <%# On phones, the search box opens from here, so the hikes come first. The page shows the button. %>
+          <button type="button" class="btn btn-light btn-sm mt-3 d-lg-none" aria-controls="change-search" aria-expanded="true"
+                  data-search-toggle hidden><span aria-hidden="true">✏️</span> Change search</button>
         <% end %>
       </div>
-      <div class="col-lg-6">
+      <div class="col-lg-6 results-search" id="change-search">
         <div class="card search-card border-0 shadow">
           <div class="card-body p-3">
             <%= render "search_box", origin: @origin %>
