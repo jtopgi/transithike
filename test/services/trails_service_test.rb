@@ -142,11 +142,12 @@ class TrailsServiceTest < ActiveSupport::TestCase
 
     # stuck names the lookups that wait for release: :first_tiles, :other_tiles, :trails_for, or :highlights.
     # A lookup of routes including a failing one fails, and unstored routes are left out of a lookup that finds
-    # others, as those stored are where Overpass can't be reached, saying so in its failures.
-    def initialize(trails, far: [], highlights: {}, failing: [], unstored: [], release: nil, stuck: [:highlights],
-      tiles_failing: [])
+    # others, as those stored are where Overpass can't be reached, saying so in its failures, until it's been
+    # looked up busy times.
+    def initialize(trails, far: [], highlights: {}, failing: [], unstored: [], busy: Float::INFINITY, release: nil,
+      stuck: [:highlights], tiles_failing: [])
       @trails, @far, @highlights, @failing, @release, @stuck = trails, far, highlights, failing, release, stuck
-      @unstored, @tiles_failing = unstored, tiles_failing
+      @unstored, @busy, @tiles_failing = unstored, busy, tiles_failing
       @batches, @threads, @tile_requests, @reliefs = [], [], Concurrent::Array.new, []
     end
 
@@ -180,7 +181,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
       @batches << ids
       raise SearchErrors::UpstreamError, "busy" if ids.intersect?(@failing)
 
-      found = ids - @unstored
+      found = @batches.count { |batch| batch.intersect?(@unstored) } > @busy ? ids : ids - @unstored
       if found.size < ids.size
         raise SearchErrors::UpstreamError, "busy" if found.empty?
 
@@ -892,16 +893,22 @@ class TrailsServiceTest < ActiveSupport::TestCase
     refute result.complete
   end
 
-  test "a batch keeps the routes that are stored when others can't be looked up, without looking again" do
+  test "a batch keeps the routes that are stored when others can't be looked up, and looks again once" do
     stored = (1..3).map { |index| trail("stored #{index}") }
     unstored = trail("unstored")
     transit = FakeTransit.new(trips: (stored + [unstored]).to_h { |trail| [trail.name, minutes(30)] })
+    ids = (stored + [unstored]).map(&:osm_id)
     hiking = FakeHiking.new(stored + [unstored], unstored: [unstored.osm_id])
     result = stub_const(TrailsService, :BATCH_SIZE, 4) { search(transit: transit, hiking: hiking) }
-
-    assert_equal [(stored + [unstored]).map(&:osm_id)], hiking.batches
+    assert_equal [ids, ids], hiking.batches
     assert_equal stored.map(&:name), result.trails.map(&:name).sort
     refute result.complete
+
+    hiking = FakeHiking.new(stored + [unstored], unstored: [unstored.osm_id], busy: 1)
+    result = stub_const(TrailsService, :BATCH_SIZE, 4) { search(transit: transit, hiking: hiking) }
+    assert_equal [ids, ids], hiking.batches
+    assert_equal (stored + [unstored]).map(&:name).sort, result.trails.map(&:name).sort
+    assert result.complete
   end
 
   test "a station's search is shared by searches that start there at once, and kept for a while once done" do

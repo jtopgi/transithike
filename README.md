@@ -122,9 +122,11 @@ test Overpass connectivity from your deployment before launching.
   near stations, there are few results.
 - Routes are checked in batches of 40, starting with the first tiles' while the
   others are found, and each batch's hikes show as soon as their trips there and
-  back are known. A batch whose routes can't be looked up at once, as when
-  Overpass is busy, is tried again in halves after a pause, and a half that still
-  can't be is skipped; a search fails only when nothing is found.
+  back are known. Routes that can't be looked up at once, as when Overpass is
+  busy, are looked up again after a pause: a batch none of whose routes could be
+  in halves, and a half that still can't be is skipped, or else the batch, with
+  those found already read again from the cache or database, and any still
+  missing left out. A search fails only when nothing is found.
 - **Shared searches.** Each major station's search runs in the background, at
   most three at once per server process for searches visitors wait on and one
   more searching again in the background, and is shared by every search that
