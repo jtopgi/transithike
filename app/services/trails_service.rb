@@ -50,6 +50,9 @@ module TrailsService
   # Quiet surroundings, away from road, rail, and air traffic, count up to as
   # much as a good view, about 200 m up, where the noise map shows them.
   QUIET_SCENIC = 2.0
+  # Hikes need at least this much scenery to be shown: about 100 m of climb or
+  # relief, a waterfall, or a smaller climb with a viewpoint or summit.
+  SCENIC_MIN = 1.0
   # Searches wait at most this long for the noise along a batch's routes, which
   # are kept without it otherwise.
   NOISE_WAIT_SECONDS = 8
@@ -221,7 +224,7 @@ module TrailsService
     # Routes in the other tiles only add to the search, so it goes ahead without them.
     farther = start(overpass_pool) { hiking.routes_in(tiles.drop(FIRST_TILES), failures: failures) } if tiles.size > FIRST_TILES
     noise = noise_at(station, noise)
-    search = Search.new(station, place, access, result, transit, hiking, noise, on_found)
+    search = Search.new(station, place, access, result, transit, hiking, elevation, noise, on_found)
     routes = finished(nearby).value!
     relief = reliefs(routes, elevation)
     search.check(hiking.pick(routes, access: access, relief: relief).first(BATCH_SIZE))
@@ -246,9 +249,9 @@ module TrailsService
   class Search
     attr_reader :lookups, :error
 
-    def initialize(station, place, access, result, transit, hiking, noise, on_found)
+    def initialize(station, place, access, result, transit, hiking, elevation, noise, on_found)
       @station, @place, @access, @result, @transit, @hiking, @on_found = station, place, access, result, transit, hiking, on_found
-      @noise = noise
+      @elevation, @noise = elevation, noise
       @checked, @lookups, @budget = Set.new, [], { planned: MAX_PLANNED_ROUTES }
       # Once planning trips is stuck, the search plans no more.
       @stuck = Concurrent::AtomicBoolean.new
@@ -266,22 +269,34 @@ module TrailsService
       @checked.merge(ids)
       @on_found&.call(:checking, [ids.size, @station])
       trails = routes(ids)
-      # The noise along the routes is looked up while transit is checked.
+      # The noise along the routes, and their terrain, are looked up while transit is checked.
       noise = TrailsService.noise_lookups(trails, @noise) if @noise
+      terrain = TrailsService.terrain_lookups(trails, @elevation)
       found = TrailsService.round_trips(@place, trails, @result, @transit, @budget)
       found = TrailsService.away_from_traffic(found, noise) if noise
-      return if found.empty?
+      # Routes on flat land are only planned when their highlights, such as a waterfall, make up for it.
+      scenic, flat = TrailsService.with_terrain(found, terrain).partition { |trail| TrailsService.scenic_enough?(trail) }
+      highlights = TrailsService.start(TrailsService.overpass_pool) { @hiking.highlights(flat) } if flat.any?
+      kept = plan(scenic)
+      @lookups << [kept, TrailsService.start(TrailsService.overpass_pool) { @hiking.highlights(kept) }] if kept.any?
+      return unless highlights
 
-      # Each hike shows as soon as its trips are planned.
-      kept = TrailsService.frequent(found, @place, @result, @transit, failed: method(:fail_with), stuck: @stuck) do |trail|
+      kept = plan(TrailsService.with_highlights(flat, highlights).select { |trail| TrailsService.scenic_enough?(trail) })
+      @lookups << [kept, highlights] if kept.any?
+    rescue SearchErrors::UpstreamError => error
+      fail_with(error)
+    end
+
+    # Plans the trails' trips, showing each hike as soon as they're planned, and returns those kept.
+    def plan(trails)
+      return [] if trails.empty?
+
+      TrailsService.frequent(trails, @place, @result, @transit, failed: method(:fail_with), stuck: @stuck) do |trail|
         trail.station = @station
         trail.score = TrailsService.score(trail).round(2)
         @result.trails << trail
         @on_found&.call(:trails, [trail.dup])
       end
-      @lookups << [kept, TrailsService.start(TrailsService.overpass_pool) { @hiking.highlights(kept) }] if kept.any?
-    rescue SearchErrors::UpstreamError => error
-      fail_with(error)
     end
 
     # The routes with the ids, or, when they can't be looked up at once, as
@@ -505,7 +520,7 @@ module TrailsService
       found = (lookup.value if lookup.fulfilled?) || {}
       trails.each { |trail| trail.highlights = found[trail.osm_id] || [] }
     end
-    add_terrain(result.trails.max_by(MAX_TERRAIN_LOOKUPS) { |trail| score(trail) }, elevation)
+    add_terrain(result.trails.reject(&:terrain).max_by(MAX_TERRAIN_LOOKUPS) { |trail| score(trail) }, elevation)
     rank(result.trails)
   end
 
@@ -541,20 +556,38 @@ module TrailsService
     settle(lookups.map(&:last), timeout: NOISE_WAIT_SECONDS)
     found = lookups.select { |_, lookup| lookup.fulfilled? }.map { |_, lookup| lookup.value }.reduce({}, :merge)
     trails.each { |trail| trail.noise = found.fetch(trail.osm_id, trail.noise) }
-    trails.reject { |trail| NoiseService.loud?(trail.noise) }
+    trails.reject { |trail| NoiseService.too_loud?(trail.noise) }
+  end
+
+  # Lookups of the routes' terrain, near ones together so they share tiles, as
+  # [routes, future] pairs.
+  def self.terrain_lookups(trails, elevation)
+    trails.sort_by { |trail| trail.midpoint.map { |degrees| (degrees.to_f / TERRAIN_CELL_DEGREES).floor } }
+      .each_slice(TERRAIN_CHUNK).map { |chunk| [chunk, start { elevation.terrain(chunk) }] }
+  end
+
+  # The trails with their terrain, waiting at most TERRAIN_WAIT_SECONDS for
+  # it. Trails whose terrain isn't found in time keep what was known of it, and
+  # the lookups finish in the background for later searches.
+  def self.with_terrain(trails, lookups)
+    settle(lookups.map(&:last), timeout: TERRAIN_WAIT_SECONDS)
+    found = lookups.select { |_, lookup| lookup.fulfilled? }.map { |_, lookup| lookup.value }.reduce({}, :merge)
+    trails.each { |trail| trail.terrain = found.fetch(trail.osm_id, trail.terrain) }
+  end
+
+  # The trails with their highlights, waiting at most HIGHLIGHT_WAIT_SECONDS
+  # for the lookup, or with none when it isn't done in time.
+  def self.with_highlights(trails, lookup)
+    settle([lookup], timeout: HIGHLIGHT_WAIT_SECONDS)
+    found = (lookup.value if lookup.fulfilled?) || {}
+    trails.each { |trail| trail.highlights = found[trail.osm_id] || [] }
   end
 
   # How far the routes climb and how far their high points stand above the land
   # around them. Routes whose terrain isn't found in time are ranked without it,
   # and the lookups finish in the background for later searches.
   def self.add_terrain(trails, elevation)
-    chunks = trails.sort_by { |trail| trail.midpoint.map { |degrees| (degrees.to_f / TERRAIN_CELL_DEGREES).floor } }
-      .each_slice(TERRAIN_CHUNK).to_a
-    lookups = settle(chunks.map { |chunk| start { elevation.terrain(chunk) } }, timeout: TERRAIN_WAIT_SECONDS)
-    lookups.zip(chunks).each do |lookup, chunk|
-      found = (lookup.value if lookup.fulfilled?) || {}
-      chunk.each { |trail| trail.terrain = found[trail.osm_id] }
-    end
+    with_terrain(trails, terrain_lookups(trails, elevation))
   end
 
   # Scores the trails, ranking routes after the first MAX_PER_AREA within
@@ -601,15 +634,30 @@ module TrailsService
     [hours - 3, 0].max * 0.25 + [hours - 6, 0].max * 0.5
   end
 
-  # How scenic a route is, from 0 to about 10: the best of its views and
-  # waterfalls counts in full, the next one half, and the one after a quarter,
-  # so one grand view outweighs many small ones, and quiet surroundings up to
-  # QUIET_SCENIC more.
+  # How scenic a route is, from 0 to about 10: its scenery, and quiet
+  # surroundings up to QUIET_SCENIC more.
   def self.scenic(trail)
+    (scenery(trail) + trail.noise&.dig(:quiet).to_f * QUIET_SCENIC).round(2)
+  end
+
+  # A route's views and waterfalls, from 0 to about 8: the best counts in full,
+  # the next one half, and the one after a quarter, so one grand view outweighs
+  # many small ones.
+  def self.scenery(trail)
     waterfalls = Array(trail.highlights).select { |highlight| highlight[:kind] == "waterfall" }
     features = [views(trail), *waterfalls.map { |highlight| waterfall(highlight) }].sort.reverse
-    quiet = trail.noise&.dig(:quiet).to_f
-    (features.first(3).each_with_index.sum { |value, index| value / 2**index } + quiet * QUIET_SCENIC).round(2)
+    features.first(3).each_with_index.sum { |value, index| value / 2**index }
+  end
+
+  # Whether a route has the scenery hikes need, SCENIC_MIN, or its terrain isn't known.
+  def self.scenic_enough?(trail)
+    trail.terrain.nil? || scenery(trail) >= SCENIC_MIN
+  end
+
+  # Whether a hike is shown: under 45 dB along most of it, where the noise map
+  # says, and scenic enough.
+  def self.shown?(trail)
+    !NoiseService.too_loud?(trail.noise) && scenic_enough?(trail)
   end
 
   # Views, from 0 to about 5.75: a point for every 100 m the route climbs or

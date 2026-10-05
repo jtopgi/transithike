@@ -132,8 +132,8 @@ test Overpass connectivity from your deployment before launching.
   who started it leaves. Kept searches show at once, and once 12 hours old (10
   minutes when some routes couldn't be checked), the station is searched again
   in the background for later visitors, keeping routes an earlier search found
-  that the new one couldn't check, unless found mostly beside loud traffic
-  since. Where a station hasn't been searched for the day yet, its search for
+  that the new one couldn't check, unless found too loud since; kept searches
+  show without hikes that aren't shown now. Where a station hasn't been searched for the day yet, its search for
   the same weekday and time from up to two weeks before shows at once, moved to
   the day, while the day is searched in the background: timetables rarely change
   from one week to the next, and each card plans its trips for the day. Searches
@@ -239,7 +239,11 @@ test Overpass connectivity from your deployment before launching.
   viewpoint with a Wikipedia article. Each waterfall scores 1.5, plus half a point
   for a name, one for a Wikipedia article, and one for every 20 m of mapped height,
   up to 1.5. Cards show "Big views" when the higher of the climb and the relief is
-  at least 300 m (about 1,000 ft), and "Views" from 150 m. In the 48 contiguous
+  at least 300 m (about 1,000 ft), and "Views" from 150 m. Hikes need at least a
+  point of scenery to be shown: about 100 m (330 ft) of climb or relief, a
+  waterfall, or a smaller climb with a viewpoint or summit. A batch's routes
+  whose terrain is flatter are only planned when their highlights make up for
+  it, and those whose terrain isn't found in time are kept. In the 48 contiguous
   states, quiet surroundings score up to two points more, about as much as a good
   view: a point's quietness is 1 under 45 dB, two thirds from 45, a third from 50,
   and none from 55 dB, averaged over up to 64 points along the route. Cards show
@@ -251,9 +255,9 @@ test Overpass connectivity from your deployment before launching.
   road, rail, and aviation noise, modeled for 2022 as the average sound level over
   a day, in public map tiles with no key. Zoom-12 tiles, about 7 km across with a
   level about every 30 m, are fetched as palette PNG images and decoded in Ruby,
-  each color standing for the band of decibels the map's legend gives it. Hikes
-  with more than half their points at 60 dB or more, beside busy roads, highways,
-  or railways, or under flight paths, aren't shown. Cards and hike pages show the
+  each color standing for the band of decibels the map's legend gives it. Only
+  hikes under 45 dB along at least half of the way are shown, away from busy
+  roads, highways, railways, and flight paths. Cards and hike pages show the
   level along at least half of a route as the legend's band, such as "< 45 dB",
   and a louder one in places when at least a twentieth of it reaches one, so
   crossing a road doesn't count. Each batch's noise is looked up while its
@@ -283,9 +287,11 @@ test Overpass connectivity from your deployment before launching.
   points along it, and its relief is how far that high point stands above the
   lowest of 16 points 1 and 2 km around it. Heights below sea level count as sea
   level, since the tiles hold river and sea beds and a few gaps in the data there.
-  Terrain is looked up for up to 100 of the most promising hikes, a few near each
-  other at a time, and cached for 30 days per route; each server process keeps up
-  to 200 decoded tiles (128 KB each). The footer credits the data's sources, linking
+  Terrain is looked up for each batch's routes while their transit is checked,
+  waiting at most 8 seconds, and again at the end for up to 100 of the most
+  promising hikes still without it, a few near each other at a time, and cached
+  for 30 days per route; each server process keeps up to 200 decoded tiles (128
+  KB each). The footer credits the data's sources, linking
   to their [attribution](https://github.com/tilezen/joerd/blob/master/docs/attribution.md).
 - **Photos** are only of nature. Each card shows up to eight in a gallery of
   thumbnails, taken within 2 km of three points along the route (its middle and

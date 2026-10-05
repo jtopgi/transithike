@@ -87,7 +87,8 @@ module GuideService
       places: PhotonService)
       place = guide.place
       result = search.search(origin: place, day: "saturday", fresh: fresh)
-      trails = result.trails.sort_by { |trail| [-TrailsService.scenic(trail), -trail.score.to_f, trail.duration.to_i] }
+      trails = result.trails.select { |trail| TrailsService.shown?(trail) }
+        .sort_by { |trail| [-TrailsService.scenic(trail), -trail.score.to_f, trail.duration.to_i] }
       hikes = trails.map { |trail| hike_data(trail, place, result, transit, photos, places) }
       titled(hikes, previous)
       { slug: guide.slug, name: guide.name, origin: guide.origin, built_at: Time.current.utc.iso8601,
@@ -193,14 +194,15 @@ module GuideService
       (2..).lazy.map { |number| "#{slug}-#{number}" }.find { |candidate| !taken.include?(candidate) }
     end
 
-    # Whether a guide's hike is done by sunset and, where its trips were
-    # planned, has enough of them there and back.
+    # Whether a guide's hike is shown, as searches show them, is done by sunset,
+    # and, where its trips were planned, has enough of them there and back.
     def kept?(hike)
-      (hike.trail.arrival.nil? || TrailsService.daylight?(hike.trail)) &&
+      TrailsService.shown?(hike.trail) && (hike.trail.arrival.nil? || TrailsService.daylight?(hike.trail)) &&
         (hike.there.nil? || TripPlans.frequent?(departures: hike.departures, ways: hike.ways))
     end
 
-    # The guide's page, without hikes there isn't the daylight for, or without
+    # The guide's page, without hikes searches don't show, too loud or not
+    # scenic enough, hikes there isn't the daylight for, or hikes without
     # TripPlans::MIN_TRIPS trips there and as many back before dark. Guides
     # built before sunsets were kept have theirs worked out, and their trips
     # back after dark are left out.

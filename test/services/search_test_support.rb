@@ -26,9 +26,10 @@ module SearchTestSupport
     }
   end
 
-  def highlight_node(kind, latitude, longitude, name: nil, id: rand(1..1_000_000))
+  def highlight_node(kind, latitude, longitude, name: nil, id: rand(1..1_000_000), tags: {})
     key, value = OverpassService::HIGHLIGHT_TAGS.fetch(kind)
-    { "type" => "node", "id" => id, "lat" => latitude, "lon" => longitude, "tags" => { key => value, "name" => name }.compact }
+    { "type" => "node", "id" => id, "lat" => latitude, "lon" => longitude,
+      "tags" => { key => value, "name" => name }.compact.merge(tags) }
   end
 
   # The tiles, route details, or highlights response for an Overpass query,

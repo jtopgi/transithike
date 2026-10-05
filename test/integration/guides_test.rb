@@ -43,7 +43,7 @@ class GuidesTest < ActionDispatch::IntegrationTest
     assert_match(/↩️ Last trip back 6:05 PM\z/, breakneck.text.squish)
     # Only the hike away from traffic is called quiet, and each says how loud it is along most of it and in places.
     assert_equal [["Quiet"], []], cards.map { |card| card.css(".trail-chip-label").map(&:text).grep(/Quiet/) }
-    assert_equal ["🔈 Noise < 45 dB 60–70 dB in places", "🔈 Noise 50–55 dB 70–80 dB in places"],
+    assert_equal ["🔈 Noise < 45 dB 60–70 dB in places", "🔈 Noise < 45 dB 50–55 dB in places"],
       cards.map { |card| card.at_css("[data-noise]").ancestors("div").first.text.squish }
     # Without a photo, a card previews its route once it scrolls into view.
     assert cards.last.at_css(".trail-map[data-lazy-map][data-path]")

@@ -34,17 +34,18 @@ module GuideFixtures
             highlights: [{ kind: "viewpoint", name: "Breakneck Ridge" }, { kind: "peak", name: "Sugarloaf Mountain" }],
             notable: true, paved: 0.0, loop: false, duration: 5_880, transfers: 0, arrival: "2026-10-10T13:40:00Z",
             last_return: "2026-10-11T00:50:00Z", terrain: { climb: 380, relief: 360 }, score: 3.4, plan: "out_and_back",
-            finish: nil, location: "Cold Spring, New York", sunset: "2026-10-10T22:23:00Z", noise: { quiet: 0.9, loud: 0.05, typical: 0, loudest: 60 } },
+            finish: nil, location: "Cold Spring, New York", sunset: "2026-10-10T22:23:00Z", noise: { quiet: 0.9, typical: 0, loudest: 60 } },
           there: there, ways: { back: back, last: last, same_way: true, trips: [back, *evening, last] }, departures: [there, *later],
           photos: [{ image_url: "https://upload.wikimedia.org/thumb/Breakneck.jpg/500px-Breakneck.jpg",
             file_url: "https://commons.wikimedia.org/wiki/File:Breakneck.jpg", credit: "Ann · CC BY 4.0",
             caption: "Breakneck Ridge view" }] },
         { slug: "white-trail-tarrytown-lakes", title: "White Trail (Tarrytown Lakes)", area: "Tarrytown Lakes",
           trail: { name: "White Trail", summary: "A walk around the lakes.", latitude: 41.08, longitude: -73.85,
-            length: 3.0, osm_id: 202, path: [[[41.08, -73.85], [41.09, -73.84], [41.08, -73.85]]], highlights: [],
+            length: 3.0, osm_id: 202, path: [[[41.08, -73.85], [41.09, -73.84], [41.08, -73.85]]],
+            highlights: [{ kind: "waterfall", name: "Tarrytown Falls" }],
             notable: false, paved: 0.0, loop: true, duration: 3_600, transfers: 1, arrival: "2026-10-10T13:00:00Z",
             last_return: "2026-10-11T01:30:00Z", terrain: { climb: 40, relief: 30 }, score: 1.2, plan: "loop",
-            finish: nil, noise: { quiet: 0.4, loud: 0.2, typical: 50, loudest: 70 } },
+            finish: nil, noise: { quiet: 0.6, typical: 0, loudest: 50 } },
           there: nil, ways: {}, departures: [], photos: [] }
       ]
     }
