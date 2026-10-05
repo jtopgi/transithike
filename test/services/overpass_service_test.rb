@@ -357,7 +357,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
     OverpassService::LOOKING_UP.delete("tile:shared")
   end
 
-  test "queries wait for one of the process's two slots, highlights don't wait, and cached lookups need none" do
+  test "queries wait for one of the process's two slots, highlights a visitor waits on don't, and cached lookups need none" do
     slots = Rails.configuration.x.overpass_slots
     cache = ActiveSupport::Cache::MemoryStore.new
     calls = 0
@@ -373,8 +373,15 @@ class OverpassServiceTest < ActiveSupport::TestCase
     end
     assert_equal OverpassService::BUSY, error.message
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    assert_raises(SearchErrors::ProviderBusy) { OverpassService.highlights(trails, connections: [counted], cache: cache) }
+    assert_raises(SearchErrors::ProviderBusy) do
+      ProviderSlots.with_priority(ProviderSlots::VISITOR) { OverpassService.highlights(trails, connections: [counted], cache: cache) }
+    end
     assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 0.05
+    # Highlights no visitor waits on, as in guide builds, wait for a slot like other queries.
+    stub_const(OverpassService, :SLOT_WAIT_SECONDS, 0.05) do
+      assert_raises(SearchErrors::ProviderBusy) { OverpassService.highlights(trails, connections: [counted], cache: cache) }
+    end
+    assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :>=, 0.05
     assert_equal 0, calls
     assert_nil cache.read(OverpassService::FAILOVER_KEY)
   ensure
@@ -588,6 +595,11 @@ class OverpassServiceTest < ActiveSupport::TestCase
   end
 
   test "highlights are cached per route, and failures are not" do
+    ProviderSlots.with_priority(ProviderSlots::VISITOR) { highlights_cached_per_route }
+  end
+
+  # As a visitor's lookup, which isn't tried again.
+  def highlights_cached_per_route
     cache = ActiveSupport::Cache::MemoryStore.new
     trails = fetch([route_element(id: 1)])
     calls = 0

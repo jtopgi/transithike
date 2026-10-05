@@ -24,6 +24,8 @@ module NoiseService
   LATITUDES = (24.0..50.0)
   LONGITUDES = (-125.0..-66.0)
   CACHE_TTL = 90.days
+  # Where each route's noise is cached, by its id.
+  KEY = "noise:v2:".freeze
   # Decoded tiles, 64 KB each, are shared by the lookups in this process.
   MAX_TILES = 200
   INVALID = "The noise map returned an invalid tile.".freeze
@@ -51,8 +53,9 @@ module NoiseService
   # noise is cached, and only uncached routes are looked up. Raises when a tile
   # can't be loaded.
   def self.noise(trails, connection: nil, cache: Rails.cache, tiles: TILES)
-    keys = trails.to_h { |trail| [trail.osm_id, "noise:v2:#{trail.osm_id}"] }
+    keys = trails.to_h { |trail| [trail.osm_id, "#{KEY}#{trail.osm_id}"] }
     found = keys.empty? ? {} : cache.read_multi(*keys.values)
+    RouteStore.noise(trails.map(&:osm_id).reject { |id| found.key?(keys[id]) }).each { |id, noise| found[keys[id]] = noise }
     missing = trails.reject { |trail| found.key?(keys[trail.osm_id]) || ElevationService.profile(trail.path).empty? }
     if missing.any?
       connection ||= SearchHttp.connection(TILE_URL, timeout: 10)

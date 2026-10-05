@@ -73,11 +73,19 @@ jobs:
           # The log says which provider failed when the city's search does.
           RAILS_LOG_TO_STDOUT: "1"
           CITIES: ${{ matrix.city }}
+          # What the build looked up of each hiking route, for the site's database.
+          ROUTE_DATA: tmp/routes-${{ matrix.city }}.ndjson.gz
       # The city's guide, as built or, when the build was refused, as published, or none for a new city without one.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: guide-${{ matrix.city }}
           path: db/guides/${{ matrix.city }}.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: routes-${{ matrix.city }}
+          path: tmp/routes-${{ matrix.city }}.ndjson.gz
           if-no-files-found: ignore
           retention-days: 7
 
@@ -101,5 +109,14 @@ jobs:
           merge-multiple: true
       - name: Publish the guides
         run: bin/publish-guides
+      - name: Collect the route data
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: routes-*
+          path: tmp/routes
+          merge-multiple: true
+      # The site imports it within hours, without a deploy.
+      - name: Publish the route data
+        run: bin/publish-routes tmp/routes
       - name: Deploy them
         run: gh workflow run ci.yml --ref master --field indexnow=true

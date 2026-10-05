@@ -10,6 +10,10 @@ module OverpassService
   # Routes are found in tiles this many degrees across that hold routes within
   # a walk of the stations. Each tile's routes are shared by every search.
   TILE_DEGREES = 0.5
+  # Where tiles' routes, routes' details, and their highlights are cached, by tile or route id.
+  TILE_KEY = "overpass:tile:v2:".freeze
+  ROUTE_KEY = "overpass:route:v2:".freeze
+  HIGHLIGHTS_KEY = "overpass:highlights:v3:".freeze
   # At most this many tiles are searched in each band of travel time, the
   # quickest first, so the scenery farther out is searched as well as the nearest.
   TILE_BANDS = [[120, 8], [180, 7], [Float::INFINITY, 5]].freeze
@@ -53,7 +57,8 @@ module OverpassService
   # overloaded, the preferred one is asked once more after a pause
   # (config.x.overpass_retry_pause_seconds).
   QUICK_FAILURE_SECONDS = 15
-  # Highlights only refine a search: they are looked up when a slot is free, and briefly.
+  # Highlights only refine a search: they are looked up when a slot is free,
+  # unless no visitor waits on them, as in guide builds, and briefly.
   HIGHLIGHT_TIMEOUT_SECONDS = 15
   BUSY = "The hiking route provider is busy. Please try again later.".freeze
   PREVIEW_POINTS = 150
@@ -152,6 +157,8 @@ module OverpassService
   def self.routes_in(tiles, connections: nil, cache: Rails.cache, failures: nil)
     keys = tiles.to_h { |tile| [tile, tile_key(tile)] }
     found = keys.empty? ? {} : cache.read_multi(*keys.values)
+    # Tiles the guide builds collected, where the cache has none.
+    RouteStore.tiles(tiles.reject { |tile| found.key?(keys[tile]) }).each { |tile, kept| found[keys[tile]] = kept }
     stale = tiles.select { |tile| found[keys[tile]] && found[keys[tile]][:at] < TILE_REFRESH_AFTER.ago }
     refresh_tiles(stale, connections, cache) if stale.any?
     missing = tiles.reject { |tile| found.key?(keys[tile]) }
@@ -183,7 +190,7 @@ module OverpassService
   end
 
   def self.tile_key(tile)
-    "overpass:tile:v2:#{tile.join(':')}"
+    "#{TILE_KEY}#{tile.join(':')}"
   end
 
   # The tiles' routes, in one query, kept as { tile key => { routes:, at: } },
@@ -332,8 +339,9 @@ module OverpassService
   def self.routes(ids, connections, cache)
     return [] if ids.empty?
 
-    keys = ids.to_h { |id| [id, "overpass:route:v2:#{id}"] }
+    keys = ids.to_h { |id| [id, "#{ROUTE_KEY}#{id}"] }
     found = cache.read_multi(*keys.values)
+    RouteStore.details(ids.reject { |id| found.key?(keys[id]) }).each { |id, details| found[keys[id]] = details }
     missing = ids.reject { |id| found.key?(keys[id]) }
     if missing.any?
       id_of = keys.invert
@@ -375,14 +383,16 @@ module OverpassService
   def self.highlights(trails, connections: nil, cache: Rails.cache)
     return {} if trails.empty?
 
-    keys = trails.to_h { |trail| [trail.osm_id, "overpass:highlights:v3:#{trail.osm_id}"] }
+    keys = trails.to_h { |trail| [trail.osm_id, "#{HIGHLIGHTS_KEY}#{trail.osm_id}"] }
     found = cache.read_multi(*keys.values)
+    RouteStore.highlights(trails.map(&:osm_id).reject { |id| found.key?(keys[id]) }).each { |id, list| found[keys[id]] = list }
     missing = trails.reject { |trail| found.key?(keys[trail.osm_id]) }
     if missing.any?
       filters = HIGHLIGHT_TAGS.values.map { |key, value| %(node(around.ways:#{HIGHLIGHT_METERS})["#{key}"="#{value}"];) }
       query = "[out:json][timeout:20];relation(id:#{missing.map(&:osm_id).join(',')});way(r)->.ways;(#{filters.join});out;"
       connections ||= [SearchHttp.connection(urls(cache).first, timeout: HIGHLIGHT_TIMEOUT_SECONDS)]
-      points = elements(query, connections, cache, wait: 0).filter_map { |element| highlight_point(element) }
+      wait = ProviderSlots.priority == ProviderSlots::BACKGROUND ? SLOT_WAIT_SECONDS : 0
+      points = elements(query, connections, cache, wait: wait).filter_map { |element| highlight_point(element) }
       missing.each do |trail|
         found[keys[trail.osm_id]] = highlights_near(trail.path, points)
         cache.write(keys[trail.osm_id], found[keys[trail.osm_id]], expires_in: ROUTE_CACHE_TTL)

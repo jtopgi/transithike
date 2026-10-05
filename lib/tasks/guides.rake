@@ -3,8 +3,11 @@ namespace :guides do
   task build: :environment do
     # Each city's line shows as it finishes, with the time, in a workflow's log.
     $stdout.sync = true
-    # Lookups are shared within a build, as they are within the server.
-    Rails.cache = ActiveSupport::Cache::MemoryStore.new(size: 256.megabytes)
+    # Lookups are shared within a build, as they are within the server, and what it looks up of each hiking route is
+    # recorded, for the server's database (see RouteData).
+    Rails.cache = RouteData::Recorder.new(size: 256.megabytes)
+    # Builds collect hiking routes from the providers, rather than read a database.
+    RouteStore.enabled = false
     only = ENV["CITIES"].to_s.split(",").map(&:strip).presence
     guides = GuideService.guides.select { |guide| only.nil? || only.include?(guide.slug) }
     abort "No guides match CITIES=#{ENV['CITIES']}" if guides.empty?
@@ -31,6 +34,10 @@ namespace :guides do
     end
     pools.each(&:shutdown)
     pools.each { |pool| pool.wait_for_termination(60) }
+    if (path = ENV["ROUTE_DATA"].presence)
+      RouteData.export(Rails.cache.recorded, path)
+      puts "Route data written to #{path}"
+    end
     # A city whose new guide is refused keeps its last one, which the workflow publishes again, so its job succeeds.
   end
 end

@@ -40,3 +40,5 @@ plugin :tmp_restart
 # Keeps searches from the guide cities' stations ready in the background, in
 # the web server only (see SearchWarmer).
 after_booted { SearchWarmer.start } if ENV["WARM_SEARCHES"] == "1"
+# Imports the hiking routes the guide builds collect, in the web server only (see RouteData).
+after_booted { RouteData.start } if ENV["IMPORT_ROUTES"] == "1"

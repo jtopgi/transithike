@@ -53,10 +53,12 @@ module TrailsService
   # Searches wait at most this long for the noise along a batch's routes, which
   # are kept without it otherwise.
   NOISE_WAIT_SECONDS = 8
-  # Highlights only refine the ranking, so searches wait at most this long for
-  # them once every batch is checked. Slower lookups finish in the background
-  # and are cached for later searches.
+  # Highlights only refine the ranking, so searches visitors wait on wait at
+  # most HIGHLIGHT_WAIT_SECONDS for them once every batch is checked, and those
+  # in the background, as guide builds' are, longer, so they have them. Slower
+  # lookups finish in the background and are cached for later searches.
   HIGHLIGHT_WAIT_SECONDS = 5
+  BACKGROUND_HIGHLIGHT_WAIT_SECONDS = 60
   # Searches give up on the first tiles' routes after this long, waiting for a query slot included.
   OVERPASS_WAIT_SECONDS = 90
   # Routes are picked with how far the land rises around them, looked up for
@@ -505,7 +507,8 @@ module TrailsService
   # Adds the highlights found in time and the terrain of the most promising
   # routes still without it, then scores and orders every route.
   def self.enrich(result, lookups, elevation)
-    settle(lookups.map(&:last), timeout: HIGHLIGHT_WAIT_SECONDS)
+    background = ProviderSlots.priority == ProviderSlots::BACKGROUND
+    settle(lookups.map(&:last), timeout: background ? BACKGROUND_HIGHLIGHT_WAIT_SECONDS : HIGHLIGHT_WAIT_SECONDS)
     lookups.each do |trails, lookup|
       # Routes are shown without highlights when they cannot be looked up in time.
       found = (lookup.value if lookup.fulfilled?) || {}

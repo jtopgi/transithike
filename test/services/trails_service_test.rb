@@ -748,13 +748,22 @@ class TrailsServiceTest < ActiveSupport::TestCase
     release.set
   end
 
-  test "a slow highlights lookup does not hold up the search" do
+  test "a slow highlights lookup does not hold up a search a visitor waits on, but one in the background waits for it" do
     release = Concurrent::Event.new
     route = trail("loop")
     transit = FakeTransit.new(trips: { "loop" => minutes(10) })
-    hiking = FakeHiking.new([route], highlights: { route.osm_id => [{ kind: "peak", name: "Knob" }] }, release: release)
-    result = stub_const(TrailsService, :HIGHLIGHT_WAIT_SECONDS, 0.05) { search(transit: transit, hiking: hiking) }
+    knob = [{ kind: "peak", name: "Knob" }]
+    hiking = FakeHiking.new([route], highlights: { route.osm_id => knob }, release: release)
+    result = stub_const(TrailsService, :HIGHLIGHT_WAIT_SECONDS, 0.05) do
+      ProviderSlots.with_priority(ProviderSlots::VISITOR) { search(transit: transit, hiking: hiking) }
+    end
     assert_equal [[]], result.trails.map(&:highlights)
+
+    # As guide builds' searches are.
+    later = FakeHiking.new([trail("loop", at: route.latitude).tap { |each| each.osm_id = route.osm_id }],
+      highlights: { route.osm_id => knob }, release: Concurrent::Event.new.tap { |event| Thread.new { sleep 0.2; event.set } })
+    result = stub_const(TrailsService, :HIGHLIGHT_WAIT_SECONDS, 0.05) { search(transit: transit, hiking: later) }
+    assert_equal [knob], result.trails.map(&:highlights)
   ensure
     release.set
   end
