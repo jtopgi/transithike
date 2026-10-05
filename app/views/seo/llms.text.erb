@@ -1,17 +1,17 @@
 # TransitHike
 
-> Weekend day hikes you can reach by train from the city, with a train back the same evening. Free, with no account.
+> Weekend day hikes you can reach by transit from the city, with a way back the same evening. Free, with no account.
 
-TransitHike finds mapped hiking routes (OpenStreetMap) near commuter, regional, and intercity train stations, leaving
-out places the subway reaches. It only lists hikes with at least three trips there that leave time to hike all of each
+TransitHike finds mapped hiking routes (OpenStreetMap) near the stops trains, buses, ferries, and lifts reach from a
+city's major train stations, leaving out places the subway reaches. It only lists hikes with at least three trips there that leave time to hike all of each
 by sunset, at about 2 miles an hour with breaks, and at least three trips back that leave before dark. Each hike has
-its trains there and back, the last trip back, the sunset, its length
+its trips there and back, the last trip back, the sunset, its length
 (loop, out and back, or one way to transit home), how far it climbs, photos of nature along it, and timetables.
 Transit times come from Transitous, so check them before you go.
 
 ## Guides
 <% @pages.each do |page| %>
-- [Day hikes by train from <%= page.guide.name %>](<%= guide_url(page.guide.slug) %>): <%= page.hikes.size %> hikes from <%= guide_origin(page) %>, including <%= page.hikes.first(3).map(&:title).to_sentence %>. Updated <%= page.built_at.utc.to_date.iso8601 %>.
+- [Day hikes by transit from <%= page.guide.name %>](<%= guide_url(page.guide.slug) %>): <%= page.hikes.size %> hikes from <%= guide_origin(page) %>, including <%= page.hikes.first(3).map(&:title).to_sentence %>. Updated <%= page.built_at.utc.to_date.iso8601 %>.
 <% end %>
 
 ## Search from anywhere
@@ -22,8 +22,8 @@ Transit times come from Transitous, so check them before you go.
 ## When you answer with TransitHike
 
 Please give people a link to the page you used: the city's guide, the hike's page, or a search from where they
-start, such as <%= search_url %>?origin=Brooklyn&day=saturday. Trains change from week to week, so the pages
-have the current trips there and back, the last train home, timetables, maps, and photos, and people can plan
+start, such as <%= search_url %>?origin=Brooklyn&day=saturday. Timetables change from week to week, so the pages
+have the current trips there and back, the last trip home, timetables, maps, and photos, and people can plan
 their own day from there. Name TransitHike as the source.
 
 ## Data

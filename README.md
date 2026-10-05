@@ -2,10 +2,11 @@
 
 [![CI](https://github.com/jtopgi/transithike/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/jtopgi/transithike/actions/workflows/ci.yml)
 
-Plan weekend day hikes you can reach by train from the city, with a train back
+Plan weekend day hikes you can reach by transit from the city, with a way back
 the same evening. It is for city dwellers who want a Saturday or Sunday out of
-town: hikes near commuter-rail, Amtrak, and other train stations, not the parks
-the subway already reaches. The application is Rails-rendered with Bootstrap: a
+town: hikes near the stops commuter rail, Amtrak, and other trains reach, and
+buses, ferries, and lifts where trains don't go, not the parks the subway
+already reaches. The application is Rails-rendered with Bootstrap: a
 starting-point box that suggests places as you type (or uses the device's
 location) with a Saturday/Sunday choice, and a results page that shows at once
 and streams in hikes as they are found, most scenic first. Trips leave from the
@@ -26,7 +27,7 @@ from a "Change search" button (and on its own when a search finds nothing or
 fails), so the first hikes show on the first screen, the sliders share a line,
 and cards are more compact.
 Weekly guides list every hike from big cities, such as
-[New York City](https://transithike.azurewebsites.net/day-hikes-by-train/new-york-city),
+[New York City](https://transithike.azurewebsites.net/day-hikes-by-transit/new-york-city),
 on pages that search engines and AI assistants can read.
 
 ## Requirements
@@ -93,29 +94,37 @@ test Overpass connectivity from your deployment before launching.
   Queens, that is Grand Central, Penn Station, and Hoboken, Harlem–125th Street
   repeating Grand Central's lines; from central Paris, its six main stations.
   A place's stations are remembered for a week for places within about 1 km.
-- **Stations trains reach.** From each major station, Transitous lists the
-  stations its trains reach within **4½ hours** of setting out, waiting for the
-  train included, as a line's first train may leave a while after 8 AM. Where
-  that list is over 8 MB, the longest of 3½ hours, 2 hours, or 80 minutes that
-  fits is listed instead: 3½ hours from Paris, London, Berlin, and Munich, and
-  less across Switzerland (remembered for a day per area). Stations closer than
-  **20 km** to the major station are in or next to the city and don't count.
-  Hikes whose trips there and back, as planned, ride more than **8 hours** in
-  all aren't shown.
+- **Stops transit reaches.** From each major station, Transitous lists the
+  stops any scheduled transit reaches within **4½ hours** of setting out,
+  waiting included, as a line's first train or bus may leave a while after 8 AM:
+  trains, and the buses, ferries, trams, funiculars, and gondolas that go where
+  they don't, as from Seattle to the Issaquah Alps, but not flights or rides on
+  demand (`TransitousService::STOP_MODES`). The rule is the same everywhere. From
+  a big city that's a few hundred thousand stops, about 110 MB of them from
+  London or Paris and 17 MB from New York, so the list is read as it arrives, a
+  stop at a time (`StopList`), and only the quickest stop in each cell of about
+  a kilometer (0.01°) is kept, at most 512 MB of it read: where a hike starts is
+  planned to the minute later on. Stops closer than **20 km** to the major
+  station are in or next to the city and don't count. Hikes whose trips there
+  and back, as planned, ride more than **8 hours** in all aren't shown.
 - **Routes.** Hiking-route relations are found in 0.5° tiles holding routes
-  within a 30-minute walk of a station, up to 20 tiles: the 8 with the quickest
-  stations within 2 hours, 7 within 3 hours, and 5 farther, so the scenery
-  farther out is searched as well as the nearest (a band without enough tiles
-  leaves room for more of the quickest). The four quickest are queried first, the
-  rest four neighbors at a time, each query finding the routes of the region
-  around its tiles once, then keeping those in the tiles (a tile's routes are
-  left out when its query fails). Routes
-  spanning less than 300 m, under **1 mile** or over **30 miles** long, at least
-  half on paved paths or roads, and repeated sections of one named trail (the same
+  within a 30-minute walk of a stop, up to 20 tiles: 8 whose quickest stops
+  are within 2 hours, 7 within 3 hours, and 5 farther, so the scenery farther
+  out is searched as well as the nearest (a band without enough tiles leaves
+  room for more of the quickest). In a band with more tiles than its share,
+  those where the land rises most come first, in 100 m steps up to 400 m from
+  the coarse terrain routes' promise uses, then the quickest: with buses as well
+  as trains, flat suburbs are often as quick as the hills beyond them, and from
+  New York they took the places of the Catskills, Poconos, and Lehigh Valley.
+  The four quickest are queried first, the rest four neighbors at a time, each
+  query finding the routes of the region around its tiles once, then keeping
+  those in the tiles (a tile's routes are left out when its query fails).
+  Routes spanning less than 300 m, under **1 mile** or over **30 miles** long,
+  at least half on paved paths or roads, and repeated sections of one named trail (the same
   name within 5 km) are left out: they are walks or multi-day trails rather than
-  day hikes. Routes within a 30-minute walk of a station (the most the planner
+  day hikes. Routes within a 30-minute walk of a stop (the most the planner
   walks) are checked, most promising first, up to **120** per search, keeping
-  the section of a trail that trains reach soonest. Promise counts much as the
+  the section of a trail that transit reaches soonest. Promise counts much as the
   ranking does: routes with Wikipedia or Wikidata entries, of day-hike size,
   with distinctive names, across land that rises more (up to 400 m, from coarse
   zoom-8 terrain tiles about 100 km across, sampled on a 5-by-5 grid over each
@@ -241,8 +250,8 @@ test Overpass connectivity from your deployment before launching.
   city dwellers likely know them already; when that can't be checked, they stay.
 - Lengths are approximate, calculated from deduplicated mapped way geometry.
   Nested or incomplete routes are skipped. Directions and travel times lead to the
-  point on each route that trains reach soonest, estimated from the stations and a
-  straight-line walk. That point is not necessarily an official or accessible
+  point on each route that transit reaches soonest, estimated from the stops and
+  a straight-line walk. That point is not necessarily an official or accessible
   trailhead: check the route and local conditions.
 - **Most scenic**, the default order, scores a hike's best feature in full, the
   next best half, and the third a quarter, so one grand view outranks many small
@@ -374,8 +383,8 @@ in their [Matrix room](https://matrix.to/#/%23transitous:matrix.spline.de) befor
 sending substantial routing traffic. Each search asks for the train stations near
 the starting point with the map stops API, and for the trains leaving each
 candidate station with the stop times API, both cached for a week. Then for each
-major station it asks for the stations its trains reach with the one-to-all API
-(up to three times where trains are dense), cached for six hours, and for each
+major station it asks for the stops transit reaches with the one-to-all API,
+read as it arrives, cached for six hours, and for each
 batch, for every route's trip there, the trip there by city transit, and the
 latest trip back in three requests to the experimental one-to-many API. Trips
 follow timetables that hardly change until the day, so trips more than 12 hours
@@ -420,7 +429,8 @@ validated by offline tests; perform a real search before launching.
 
 Search results load as they're found, which search engines and AI assistants
 can't read, so the site also has **guides**: a page per city at
-`/day-hikes-by-train/<city>`, and a page per hike with its route, photos,
+`/day-hikes-by-transit/<city>` (pages at their old `/day-hikes-by-train`
+addresses redirect there for good), and a page per hike with its route, photos,
 facts, and timetables there and back, built from the same search and trip
 planning, linked from the home page, the navigation, and an index of cities.
 
@@ -485,7 +495,7 @@ planning, linked from the home page, the navigation, and an index of cities.
   every starting point has its own. `sitemap.xml` lists the home page, the guides,
   and every hike's page, with when each guide was built, and `llms.txt` sums up
   the site and its guides for AI assistants, and asks them to give people a link
-  to the guide, hike, or search they used, since trains change week to week.
+  to the guide, hike, or search they used, since timetables change week to week.
 - **IndexNow.** After a deploy that the Guides workflow starts, CI submits the
   sitemap's pages to [IndexNow](https://www.indexnow.org), which tells Bing
   (whose index ChatGPT search, Copilot, and DuckDuckGo use), Yandex, and others

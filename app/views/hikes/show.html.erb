@@ -1,4 +1,4 @@
-<% content_for :title, @trail ? "#{@trail.name} by train" : "Hike details" %>
+<% content_for :title, @trail ? "#{@trail.name} by transit" : "Hike details" %>
 <% content_for :robots, "noindex" %>
 <% origin_name = @origin_name || "your starting point"
    from_name = @from_name || origin_name %>
@@ -10,7 +10,7 @@
     <h1 class="h2 fw-bold mb-1"><%= @trail&.name || "Hike details" %></h1>
     <% if @trail && @leave %>
       <p class="mb-0 results-subtitle">
-        Day hike by train from <%= from_name %>, <%= @leave.strftime("%A, %B %-d") %>, with a way back by
+        Day hike by transit from <%= from_name %>, <%= @leave.strftime("%A, %B %-d") %>, with a way back by
         <%= @back_by.strftime("%-I %p") %>.
       </p>
     <% end %>

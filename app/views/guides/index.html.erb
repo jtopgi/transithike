@@ -1,13 +1,13 @@
-<% content_for :title, "Day hikes by train from big cities" %>
-<% content_for :description, "Weekend day hikes you can reach by train from #{@pages.map { |page| page.guide.name }.to_sentence}, " \
-  "with a train back the same evening, updated weekly." %>
+<% content_for :title, "Day hikes by transit from big cities" %>
+<% content_for :description, "Weekend day hikes you can reach by transit from #{@pages.map { |page| page.guide.name }.to_sentence}, " \
+  "with a way back the same evening, updated weekly." %>
 <% content_for :canonical, guides_url %>
 <section class="results-hero text-white">
   <div class="container py-4">
-    <h1 class="h2 fw-bold mb-2">Day hikes by train from big cities</h1>
+    <h1 class="h2 fw-bold mb-2">Day hikes by transit from big cities</h1>
     <p class="mb-0 results-subtitle">
-      Weekend day hikes you can reach by commuter, regional, and intercity trains, with a train back the same evening
-      and time to hike all of each. Updated every week.
+      Weekend day hikes you can reach by train, bus, or ferry, with a way back the same evening and time to hike all
+      of each. Updated every week.
     </p>
   </div>
 </section>
@@ -17,7 +17,7 @@
       <div class="col">
         <article class="card h-100 border-0 shadow-sm">
           <div class="card-body p-4">
-            <h2 class="h5"><%= link_to "Day hikes by train from #{page.guide.name}", guide_path(page.guide.slug) %></h2>
+            <h2 class="h5"><%= link_to "Day hikes by transit from #{page.guide.name}", guide_path(page.guide.slug) %></h2>
             <p class="text-body-secondary mb-2"><%= pluralize(page.hikes.size, "hike") %>, including:</p>
             <ul class="mb-0">
               <% page.hikes.first(3).each do |hike| %>

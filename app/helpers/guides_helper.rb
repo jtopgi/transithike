@@ -18,15 +18,26 @@ module GuidesHelper
   end
 
 
-  # The train that rides longest on the way there, such as "Hudson train to Cold Spring", or nil.
-  # Lines are named "Hudson" or "Port Jefferson Branch", so they're called trains.
-  def main_train(hike)
-    legs = Array(hike.there&.dig(:legs))
-    train = legs.select { |leg| leg[:mode].to_s.match?(/RAIL|SUBURBAN|LONG_DISTANCE|METRO/) }
-      .max_by { |leg| leg[:arrival] && leg[:departure] ? Time.iso8601(leg[:arrival]) - Time.iso8601(leg[:departure]) : 0 }
-    return unless train
+  # What each kind of ride is called, by Transitous's modes.
+  RIDE_KINDS = { /RAIL|SUBURBAN|LONG_DISTANCE|METRO/ => "train", /\A(?:BUS|COACH)\z/ => "bus", /\AFERRY\z/ => "ferry",
+    /\ATRAM\z/ => "tram", /\ASUBWAY\z/ => "subway", /\AFUNICULAR\z/ => "funicular", /\AAERIAL_LIFT\z/ => "gondola" }.freeze
 
-    [train[:name] ? "#{train[:name]} train" : "Train", ("to #{train[:to_name]}" if train[:to_name])].compact.join(" ")
+  # The train that rides longest on the way there, such as "Hudson train to
+  # Cold Spring", or where no train goes, the longest ride, such as "554 bus to
+  # Issaquah", or nil. Lines are named "Hudson" or "Port Jefferson Branch", so
+  # they're called trains.
+  def main_ride(hike)
+    rides = Array(hike.there&.dig(:legs)).filter_map do |leg|
+      kind = RIDE_KINDS.find { |modes, _| leg[:mode].to_s.match?(modes) }&.last
+      [leg, kind] if kind
+    end
+    trains = rides.select { |_, kind| kind == "train" }
+    ride, kind = (trains.presence || rides).max_by do |leg, _|
+      leg[:arrival] && leg[:departure] ? Time.iso8601(leg[:arrival]) - Time.iso8601(leg[:departure]) : 0
+    end
+    return unless ride
+
+    [ride[:name] ? "#{ride[:name]} #{kind}" : kind.capitalize, ("to #{ride[:to_name]}" if ride[:to_name])].compact.join(" ")
   end
 
   # The one-way ride there, such as "1 h 20 min", from the planned trip or the search's estimate.
@@ -39,11 +50,11 @@ module GuidesHelper
     trail = hike.trail
     miles = number_with_precision(TrailsService.hike_miles(trail), precision: 1)
     climb = " that climbs about #{feet(trail.terrain[:climb])}" if trail.terrain && trail.terrain[:climb].to_i >= 15
-    train = main_train(hike)
+    ride = main_ride(hike)
     last = last_trip_time(hike)
     [
       "#{hike.title} is a #{miles}-mile hike#{" near #{trail.location}" if trail.location} (#{hike_plan_label(trail)})#{climb}.",
-      "From #{trail.station&.name || page.guide.origin}, it's about #{each_way_label(hike)} each way#{", taking the #{train}" if train}.",
+      "From #{trail.station&.name || page.guide.origin}, it's about #{each_way_label(hike)} each way#{", taking the #{ride}" if ride}.",
       ("On #{page.departure_time.strftime('%A')}s, the last trip back before dark leaves at " \
         "#{last.in_time_zone(page.departure_time.time_zone).strftime('%-I:%M %p')}." if last)
     ].compact.join(" ")

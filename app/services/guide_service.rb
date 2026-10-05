@@ -1,6 +1,6 @@
 require "json"
 
-# Guides to day hikes by train from big cities: pages that search engines and
+# Guides to day hikes by transit from big cities: pages that search engines and
 # AI assistants can read, built from a weekly search from each city rather than
 # looked up as visitors ask. config/guides.yml lists the cities, and each
 # city's guide is kept in db/guides/<slug>.json, which deploys download from
@@ -10,7 +10,7 @@ module GuideService
   # A new guide replaces the last one only when it has at least MIN_HIKES
   # hikes and at least KEEP_SHARE as many as the last one still shows, so a
   # provider's bad day doesn't empty a city's pages, while a city with few
-  # quiet hikes by train still gets a small guide.
+  # quiet hikes still gets a small guide.
   MIN_HIKES = 3
   KEEP_SHARE = 0.6
   # A photo lookup that fails is tried again after this long, since Commons is

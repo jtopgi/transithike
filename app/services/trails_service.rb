@@ -1,4 +1,4 @@
-# Weekend day hikes by train from the city's major stations, with a train back the same evening.
+# Weekend day hikes by transit from the city's major stations, with a way back the same evening.
 module TrailsService
   # stations are the stations trips leave from, return_by is when everyone
   # should be back there, returns_checked is false when the way back could
@@ -12,9 +12,9 @@ module TrailsService
   MORNING_HOUR = 8
   LATEST_START_HOUR = 10
   RETURN_BY_HOUR = 23
-  # Stations closer than this are in or next to the city, so hikes near them aren't day trips.
+  # Stops closer than this are in or next to the city, so hikes near them aren't day trips.
   MIN_DISTANCE_METERS = 20_000
-  # Routes in the tiles with the quickest stations are checked first, while the rest are found.
+  # Routes in the tiles with the quickest stops are checked first, while the rest are found.
   FIRST_TILES = 4
   # Routes are checked in batches, most promising first, so results show as they are found.
   BATCH_SIZE = 40
@@ -201,8 +201,8 @@ module TrailsService
     trail.duration + meters / CITY_METERS_PER_MINUTE * 60
   end
 
-  # Hikes by train from a station that leave at departure_time, with a train
-  # back to it by RETURN_BY_HOUR. The block, if any, is called as the search
+  # Hikes by transit from a station that leave at departure_time, with a way
+  # back to it by RETURN_BY_HOUR, near the stops transit reaches from it. The block, if any, is called as the search
   # goes: with :checking, how many routes a batch checks, and the station,
   # with :trails and each batch's routes that have a trip there and back, and
   # with :update and every route once highlights and terrain rank them, each
@@ -212,13 +212,13 @@ module TrailsService
     place = station.place(departure_time.time_zone.tzinfo.name)
     result = Result.new(place: place, stations: [station], departure_time: departure_time,
       return_by: departure_time.change(hour: RETURN_BY_HOUR), trails: [], returns_checked: true, complete: true)
-    stations = transit.rail_stations(origin: station, departure_time: departure_time).select do |stop|
+    stops = transit.reached_stops(origin: station, departure_time: departure_time).select do |stop|
       OverpassService.distance(station.latitude, station.longitude, stop[0], stop[1]) >= MIN_DISTANCE_METERS
     end
-    return result if stations.empty?
+    return result if stops.empty?
 
-    access = TransitAccess.new(station.latitude, station.longitude, stations)
-    tiles = hiking.tiles(stations)
+    access = TransitAccess.new(station.latitude, station.longitude, stops)
+    tiles = hiking.tiles(stops, relief: ->(corners) { tile_reliefs(corners, elevation) })
     # Tiles whose routes don't load leave their scenery unchecked, and the search incomplete.
     failures = Concurrent::Array.new
     nearby = start(overpass_pool) { hiking.routes_in(tiles.first(FIRST_TILES), failures: failures) }
@@ -554,6 +554,15 @@ module TrailsService
       .select(&:fulfilled?).map(&:value).reduce({}, :merge)
   end
 
+  # How far the land rises across each tile with these [south, west] corners,
+  # as { corner => meters }, found as routes' reliefs are.
+  def self.tile_reliefs(corners, elevation)
+    size = OverpassService::TILE_DEGREES
+    reliefs(corners.map do |south, west|
+      { id: [south, west], bounds: [south, west, south + size, west + size], latitude: south + size / 2, longitude: west + size / 2 }
+    end, elevation)
+  end
+
   # The noise provider for searches from the station, where the noise map
   # covers the station's time zone, so that it's the same whoever searches, or
   # else nil.
@@ -641,7 +650,7 @@ module TrailsService
     [here[:locality], here[:region], country].compact.uniq.join(", ").presence
   end
 
-  # Day trips by train often take up to three hours there and back; longer ones count against a hike.
+  # Day trips by transit often take up to three hours there and back; longer ones count against a hike.
   def self.travel_penalty(hours)
     [hours - 3, 0].max * 0.25 + [hours - 6, 0].max * 0.5
   end

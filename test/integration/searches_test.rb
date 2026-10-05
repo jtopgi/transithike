@@ -63,7 +63,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
       nextStops: [{ lat: 48.0, lon: -122.0, arrival: "2026-09-26T16:30:00Z" }], tripTo: { lat: 48.0, lon: -122.0 } }] })
   end
 
-  # Trains from King Street reach the stations, [latitude, longitude,
+  # Transit from King Street reaches the stops, [latitude, longitude,
   # minutes]. By default, one 32 km north.
   def rail(stations = [[47.3, -122.0, 50]])
     major_station
@@ -175,7 +175,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_select "input[name=day][value=saturday][checked]"
     assert_select "input[name=day][value=sunday]:not([checked])"
     assert_select "button[data-use-location][hidden]"
-    assert_select "h1", text: "Weekend hikes you can reach by train"
+    assert_select "h1", text: "Weekend hikes you can reach by transit"
   end
 
   test "the results page shows at once, ready to stream the search for the day asked for" do
@@ -183,7 +183,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_empty @requests
-    assert_select "h1[data-heading]", text: "Day hikes by train from Pike Place Market"
+    assert_select "h1[data-heading]", text: "Day hikes by transit from Pike Place Market"
     assert_select "[data-stream-url='#{search_stream_path(origin: 'Pike Place Market', lat: '47.0', lon: '-122.0',
       day: 'sunday', tz: 'America/New_York')}']"
     assert_select "input[name=lat][value='47.0']:not([disabled])"
@@ -192,7 +192,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     # On phones, the page closes the search box behind a button it shows; without the page's script, it stays open.
     assert_select "button[data-search-toggle][hidden][aria-controls='change-search'][aria-expanded='true']", text: /Change search/
     assert_select "#change-search.results-search:not(.is-collapsed) form.place-search"
-    assert_select "[data-progress][role=status]", text: /Finding the stations trains reach/
+    assert_select "[data-progress][role=status]", text: /Finding the stops transit reaches/
     assert_select "[data-skeleton]", count: 2
     # Hikes are only ever most scenic first, the sliders narrowing them down.
     assert_select "[data-results-toolbar][hidden]"
@@ -235,7 +235,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     VisitTracker.delivery = nil
   end
 
-  test "a typed place streams the place and its stations, each batch of hikes by train with the way back, and the ranking" do
+  test "a typed place streams the place and its stations, each batch of hikes by transit with the way back, and the ranking" do
     geocode
     area
     rail
@@ -251,8 +251,9 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     # Trips leave from King Street, the major train station near the place, whose trains go far out.
     assert_equal TransitousService::TRAIN_MODES.join(","), @requests[URI(TransitousService::STOPS_URL).path].sole.params["modes"]
     assert_equal "king-street", @requests[URI(TransitousService::STOP_TIMES_URL).path].sole.params["stopId"]
+    # Hikes are looked for near the stops any scheduled transit reaches from it.
     rides = @requests[URI(TransitousService::ONE_TO_ALL_URL).path].sole.params
-    assert_equal ["king-street", "2026-09-26T15:00:00Z", TransitousService::TRAIN_MODES.join(",")],
+    assert_equal ["king-street", "2026-09-26T15:00:00Z", TransitousService::STOP_MODES.join(",")],
       rides.values_at("one", "time", "transitModes")
     trips, city, returns = @requests[URI(TransitousService::ONE_TO_MANY_URL).path].map(&:params)
     assert_equal ["47.0100000;-122.0000000", "47.3000000;-122.0000000", "2026-09-26T15:00:00Z", nil],
@@ -265,7 +266,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_includes @requests["overpass"].first, 'relation["type"="route"]["route"="hiking"](47.0,-122.5,47.5,-121.5)->.region;'
 
     place = data_for("place").sole
-    assert_equal "Day hikes by train from Seattle, Washington, United States", place["heading"]
+    assert_equal "Day hikes by transit from Seattle, Washington, United States", place["heading"]
     assert_equal "Saturday, September 26, leaving at 8:00\u00a0AM\u00a0PDT, with a way back by 11\u00a0PM.", place["departure"]
     assert_equal "America/Los_Angeles", place["time_zone"]
     stations = Nokogiri::HTML5.fragment(place["stations"])
@@ -293,7 +294,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_nil card.at_css("[data-distance]")
     assert_match(/Round trip\s+≈ 3 h\s+≈ 1 h 30 min each way · 1 transfer/, card.at_css(".trail-stats").text.squish)
     assert_match(/Hike ≈ 2.8 mi out and back/, card.at_css(".trail-stats").text.squish)
-    assert_equal "🚉 Trains from King Street", card.at_css(".trail-station").text.squish
+    assert_equal "🚉 From King Street", card.at_css(".trail-station").text.squish
     trip_url = card.at_css("[data-trip-url]")["data-trip-url"]
     # Trips leave from the station, and the way back is planned from after the 2 hours the search requires for hiking.
     assert_equal trip_path(from: "47.01,-122.0", to: "47.3,-122.0", leave: "2026-09-26T15:00:00Z", back_by: "2026-09-27T06:00:00Z",
@@ -341,7 +342,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     search_all(origin: "Pike Place Market", lat: "47.0", lon: "-122.0")
 
     assert_empty @requests["/api/"]
-    assert_equal "Day hikes by train from Pike Place Market", data_for("place").sole["heading"]
+    assert_equal "Day hikes by transit from Pike Place Market", data_for("place").sole["heading"]
     assert_equal "47.3200000;-122.0000000", @requests[URI(TransitousService::ONE_TO_MANY_URL).path].first.params["many"]
     card = cards.at_css("[data-trail]")
     assert card.at_css(".trail-map[data-start='[47.32,-122.0]']")
@@ -390,7 +391,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     elevation
     search_all(origin: SearchesController::CURRENT_LOCATION, lat: "47.0", lon: "-122.0")
 
-    assert_equal "Day hikes by train from your location in Seattle", data_for("place").sole["heading"]
+    assert_equal "Day hikes by transit from your location in Seattle", data_for("place").sole["heading"]
     assert_match(/≈ 2 h 15 min\s+≈ 1 h 5 min each way · direct/, cards.at_css(".trail-stats").text.squish)
     # Google Maps starts directions to the station from wherever the device is, and to the hike from the station.
     href = Nokogiri::HTML5.fragment(data_for("place").sole["stations"]).at_css("a")["href"]
@@ -698,7 +699,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     # Back to the search from where it started, while trips leave from the station.
     assert_select "a[href='#{search_path(origin: 'Pike Place Market', lat: 47.6, lon: -122.3, day: 'sunday', tz: 'America/Los_Angeles')}']",
       text: "← All hikes from Pike Place Market"
-    assert_select ".results-subtitle", text: /Day hike by train from King Street, Wednesday, September 23/
+    assert_select ".results-subtitle", text: /Day hike by transit from King Street, Wednesday, September 23/
     assert_select "caption", text: "Trips there from King Street"
     assert_select "[data-hike-map][data-path='[[[47.3,-122.0],[47.32,-122.0]]]'][data-start='[47.3,-122.0]']:not([data-finish])"
     assert_select ".trail-chip", text: /Twin Falls/

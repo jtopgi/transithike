@@ -79,8 +79,8 @@ class Results {
     const on = (name, handler) => events.addEventListener(name, (event) => handler(JSON.parse(event.data)))
     on("place", (place) => this.place(place))
     on("checking", ({ count, station }) => this.status(this.found
-      ? `Found ${this.found} so far. Checking trains from ${station} to ${count} more hikes…`
-      : `Checking trains from ${station} to ${count} hikes and back…`))
+      ? `Found ${this.found} so far. Checking trips from ${station} to ${count} more hikes…`
+      : `Checking trips from ${station} to ${count} hikes and back…`))
     on("trails", ({ html }) => this.add(html))
     on("update", ({ trails }) => this.refresh(trails))
     on("done", (summary) => { events.close(); this.finish(summary) })
