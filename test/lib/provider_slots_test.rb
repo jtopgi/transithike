@@ -51,6 +51,38 @@ class ProviderSlotsTest < ActiveSupport::TestCase
     assert_equal [ProviderSlots::VISITOR, ProviderSlots::SEARCH], Array.new(2) { served.pop }
   end
 
+  test "while visitors are around, background work leaves the reserve free for them, and takes it again once they've gone" do
+    slots = ProviderSlots.new(3, reserve: 1)
+    # Before any visitor, background work takes every slot.
+    assert slots.try_acquire(3)
+    slots.release(3)
+    visitor = -> { ProviderSlots.with_priority(ProviderSlots::VISITOR) { slots.try_acquire } }
+    assert visitor.call
+    slots.release
+    assert slots.try_acquire(2)
+    refute slots.try_acquire(1, 0.05)
+    assert visitor.call
+    slots.release(3)
+
+    stub_const(ProviderSlots, :RESERVE_SECONDS, 0.1) do
+      sleep 0.15
+      assert slots.try_acquire(3)
+    end
+    slots.release(3)
+  end
+
+  test "a background request kept out by the reserve gets a slot once the reserve lapses" do
+    slots = ProviderSlots.new(2, reserve: 1)
+    stub_const(ProviderSlots, :RESERVE_SECONDS, 0.2) do
+      ProviderSlots.with_priority(ProviderSlots::VISITOR) { slots.acquire }
+      slots.release
+      assert slots.try_acquire
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      assert slots.try_acquire(1, 5)
+      assert_in_delta 0.2, Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, 0.15
+    end
+  end
+
   test "an urgency others wait on is raised to theirs, and never lowered" do
     shared = ProviderSlots::Shared.new(ProviderSlots::BACKGROUND)
     assert_equal ProviderSlots::BACKGROUND, shared.provider_priority

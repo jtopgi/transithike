@@ -1141,6 +1141,10 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal [["a"], true], shown(start.(Concurrent::ImmediateExecutor.new))
   end
 
+  test "only the US guide cities' searches are kept ready" do
+    assert_equal %w[new-york-city boston washington-dc chicago seattle san-francisco los-angeles], SearchWarmer.cities.map(&:slug)
+  end
+
   test "the guide cities' stations are searched one at a time for the weekend, kept ready, and failures don't stop the rest" do
     guide = Struct.new(:name, :place, :time_zone)
     guides = [guide.new("Seattle", Place.new(latitude: 47.6, longitude: -122.3), "America/Los_Angeles"),

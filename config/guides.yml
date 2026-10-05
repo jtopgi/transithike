@@ -9,6 +9,42 @@ new-york-city:
   latitude: 40.7536
   longitude: -73.9832
   time_zone: America/New_York
+boston:
+  name: Boston
+  origin: downtown Boston
+  latitude: 42.3555
+  longitude: -71.0603
+  time_zone: America/New_York
+washington-dc:
+  name: Washington, DC
+  origin: downtown Washington
+  latitude: 38.8977
+  longitude: -77.0365
+  time_zone: America/New_York
+chicago:
+  name: Chicago
+  origin: the Loop
+  latitude: 41.8818
+  longitude: -87.6298
+  time_zone: America/Chicago
+seattle:
+  name: Seattle
+  origin: downtown Seattle
+  latitude: 47.6062
+  longitude: -122.3321
+  time_zone: America/Los_Angeles
+san-francisco:
+  name: San Francisco
+  origin: downtown San Francisco
+  latitude: 37.7897
+  longitude: -122.3972
+  time_zone: America/Los_Angeles
+los-angeles:
+  name: Los Angeles
+  origin: downtown Los Angeles
+  latitude: 34.0522
+  longitude: -118.2437
+  time_zone: America/Los_Angeles
 london:
   name: London
   origin: central London

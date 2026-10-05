@@ -1,8 +1,9 @@
 name: Guides
 
 # Builds the weekly guides to day hikes by train from config/guides.yml's
-# cities with the live providers, publishes them as the guides-data release,
-# and deploys them, telling search engines about their pages.
+# cities with the live providers, a city per job, publishes them as the
+# guides-data release, and deploys them, telling search engines about their
+# pages.
 on:
   schedule:
     # Wednesdays, so the guides plan the coming Saturday's trips.
@@ -23,10 +24,36 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  cities:
     runs-on: ubuntu-latest
-    # Cities that fail or come out incomplete are built twice, with pauses between.
-    timeout-minutes: 300
+    outputs:
+      slugs: ${{ steps.slugs.outputs.slugs }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      # The cities asked for, or every city in config/guides.yml.
+      - id: slugs
+        run: |
+          ruby -ryaml -rjson -e '
+            all = YAML.load_file("config/guides.yml").keys
+            asked = ENV["CITIES"].to_s.split(",").map(&:strip).reject(&:empty?)
+            unknown = asked - all
+            abort "No guides match CITIES=#{unknown.join(",")}" if unknown.any?
+            puts "slugs=#{(asked.empty? ? all : asked).to_json}"
+          ' >> "$GITHUB_OUTPUT"
+        env:
+          CITIES: ${{ inputs.cities }}
+
+  build:
+    needs: cities
+    runs-on: ubuntu-latest
+    # A city that fails or comes out incomplete is built twice, with a pause between.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      # Two cities at a time, so the free providers aren't asked too much at once.
+      max-parallel: 2
+      matrix:
+        city: ${{ fromJSON(needs.cities.outputs.slugs) }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -38,14 +65,39 @@ jobs:
       # Only the first build, before the release exists, starts without them.
       - name: Download the published guides
         run: bin/download-guides
-      - name: Build the guides
+      - name: Build the guide
         run: bin/rails guides:build
         env:
           RAILS_ENV: production
           SECRET_KEY_BASE_DUMMY: "1"
-          # The log says which provider failed when a city's search does.
+          # The log says which provider failed when the city's search does.
           RAILS_LOG_TO_STDOUT: "1"
-          CITIES: ${{ inputs.cities }}
+          CITIES: ${{ matrix.city }}
+      # The city's guide, as built or, when the build was refused, as published.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: guide-${{ matrix.city }}
+          path: db/guides/${{ matrix.city }}.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  publish:
+    needs: build
+    # Cities whose builds failed keep their published guides.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Download the published guides
+        run: bin/download-guides
+      - name: Collect the new guides
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: guide-*
+          path: db/guides
+          merge-multiple: true
       - name: Publish the guides
         run: bin/publish-guides
       - name: Deploy them
