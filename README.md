@@ -63,8 +63,9 @@ builds assets, and prepares the database. For frontend development, run
 `yarn build --watch` in a second terminal. No separate webpack server is needed.
 
 Rails also accepts `DATABASE_URL` when PostgreSQL is not available through a
-local socket. Use a separate database for tests. The only table is the cache's
-(`solid_cache_entries`), and no seed data is required.
+local socket. Use a separate database for tests. The tables are the cache's
+(`solid_cache_entries`) and the hiking routes the guide builds collect
+(`hiking_routes` and `route_tiles`), and no seed data is required.
 
 ## External services and changed behavior
 
@@ -455,10 +456,14 @@ planning, linked from the home page, the navigation, and an index of cities.
   `IMPORT_ROUTES=1` the web server imports the newest into the `hiking_routes`
   and `route_tiles` tables a minute after it boots and every 6 hours, without a
   deploy. Searches, hike pages, and their lookups read these tables wherever
-  their cache has nothing (`RouteStore`), so near the guide cities they never
-  wait on Overpass, and only ask it about places the builds haven't reached.
-  Each import replaces what was stored of each route and tile it has, so
-  routes are refreshed every week. Builds don't read the database.
+  their cache has nothing (`RouteStore`), so near the guide cities they seldom
+  wait on Overpass, and only ask it about routes and places the builds haven't
+  looked up, as a search on another day may pick. Routes it can't look up are
+  left out, while the rest of their batch is kept. A database that can't be
+  reached is left alone for 30 seconds, as the cache does. Each import replaces
+  what was stored of each route and tile it has, so routes are refreshed every
+  week. Builds don't read the database, and publish the route data after the
+  guides, so the guides go live whatever happens to it.
 - **What search engines read.** Every page has a description, a canonical
   address, and link previews (Open Graph and Twitter tags, with the hike's first
   photo or `public/og-image.png`). Guides have structured data (an `ItemList` of
@@ -608,12 +613,12 @@ images, and the other is trusted only by this repository's `production` GitHub
 environment to deploy), the Application Insights resource that counts
 visits, with its Log Analytics workspace, and the PostgreSQL server with its
 firewall rules. It stores a generated `SECRET_KEY_BASE`, the database's
-`DATABASE_URL` with a generated password, and `WARM_SEARCHES=1` as app settings
-and restricts that GitHub environment to the default branch. It keeps the short
-`<app>.azurewebsites.net` host name, so set `AZURE_WEBAPP` if `transithike` is
-taken. Credit-based subscriptions have no App Service quota in some regions; the
-production plan is in `centralus` for that reason (`AZURE_WEBAPP_LOCATION`).
-Push or merge to `master` to deploy.
+`DATABASE_URL` with a generated password, `WARM_SEARCHES=1`, and
+`IMPORT_ROUTES=1` as app settings and restricts that GitHub environment to the
+default branch. It keeps the short `<app>.azurewebsites.net` host name, so set
+`AZURE_WEBAPP` if `transithike` is taken. Credit-based subscriptions have no App
+Service quota in some regions; the production plan is in `centralus` for that
+reason (`AZURE_WEBAPP_LOCATION`). Push or merge to `master` to deploy.
 
 ### Operations
 

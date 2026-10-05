@@ -292,21 +292,30 @@ module TrailsService
       end
     end
 
-    # The routes with the ids, or, when they can't be looked up at once, as
+    # The routes with the ids, or, when none can be looked up at once, as
     # when Overpass is busy, each half of them after a pause, leaving out a
     # half that still can't be.
     def routes(ids)
-      @hiking.trails_for(ids, lat: @place.latitude, lon: @place.longitude, access: @access)
+      trails(ids)
     rescue SearchErrors::UpstreamError => error
       raise error if ids.size < 2
 
       sleep Rails.configuration.x.overpass_retry_pause_seconds
       ids.each_slice((ids.size / 2.0).ceil).flat_map do |half|
-        @hiking.trails_for(half, lat: @place.latitude, lon: @place.longitude, access: @access)
+        trails(half)
       rescue SearchErrors::UpstreamError => failure
         fail_with(failure)
         []
       end
+    end
+
+    # The routes with the ids that can be looked up, as those stored are
+    # where Overpass can't be reached; the search is incomplete without the rest.
+    def trails(ids)
+      failures = []
+      found = @hiking.trails_for(ids, lat: @place.latitude, lon: @place.longitude, access: @access, failures: failures)
+      fail_with(failures.first) if failures.any?
+      found
     end
 
     def fail_with(error)

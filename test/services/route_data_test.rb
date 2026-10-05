@@ -1,14 +1,25 @@
 require "test_helper"
+require_relative "search_test_support"
 
 class RouteDataTest < ActiveSupport::TestCase
+  include SearchTestSupport
+
   PATH = [[[47.3, -122.0], [47.32, -122.0]]].freeze
 
-  teardown { RouteStore.enabled = true }
+  teardown do
+    RouteStore.enabled = true
+    RouteStore.reachable!
+  end
 
   # A connection that fails any request, so lookups must use what's stored.
   def unreachable
     stubs = Faraday::Adapter::Test::Stubs.new
     Faraday.new(url: "https://provider.test") { |builder| builder.adapter :test, stubs }
+  end
+
+  # A connection whose queries fail, as Overpass's do from the Azure server.
+  def failing
+    stub_connection(:post, ->(_) { raise Faraday::ConnectionFailed, "timed out" })
   end
 
   # What a build records, as a guide build's cache does, exported and read back.
@@ -56,6 +67,42 @@ class RouteDataTest < ActiveSupport::TestCase
       OverpassService.highlights([trail], connections: [unreachable], cache: cache))
     assert_equal({ 7 => { climb: 220, relief: 198 } }, ElevationService.terrain([trail], connection: unreachable, cache: cache))
     assert_equal({ 7 => { quiet: 1.0, typical: 0, loudest: 45 } }, NoiseService.noise([trail], connection: unreachable, cache: cache))
+  end
+
+  test "what's stored is kept when the other routes looked up with it can't be" do
+    import(collected)
+    cache = ActiveSupport::Cache::MemoryStore.new
+    failures = []
+    trails = OverpassService.trails_for([9, 7], lat: 47.0, lon: -122.0, connections: [failing], cache: cache, failures: failures)
+    assert_equal ["Ridge Loop"], trails.map(&:name)
+    assert_equal [SearchErrors::UpstreamError], failures.map(&:class)
+    assert_raises(SearchErrors::UpstreamError) do
+      OverpassService.trails_for([9], lat: 47.0, lon: -122.0, connections: [failing], cache: cache)
+    end
+
+    unstored = OverpassService::Trail.new(osm_id: 9, path: PATH)
+    assert_equal({ 7 => [{ kind: "waterfall", name: "Twin Falls" }] },
+      OverpassService.highlights([unstored, trails.sole], connections: [failing], cache: cache))
+    assert_raises(SearchErrors::UpstreamError) { OverpassService.highlights([unstored], connections: [failing], cache: cache) }
+  end
+
+  test "a database that can't be reached is left alone for a while, so lookups don't each wait for it" do
+    import(collected)
+    calls = 0
+    HikingRoute.define_singleton_method(:where) do |*|
+      calls += 1
+      raise ActiveRecord::ConnectionNotEstablished, "timeout expired"
+    end
+    stub_const(FailOpenCache, :PAUSE_SECONDS, 0.2) do
+      assert_empty RouteStore.details([7])
+      assert_empty RouteStore.tiles([[47.0, -122.5]])
+      assert_equal 1, calls
+      HikingRoute.singleton_class.remove_method(:where)
+      sleep 0.25
+      assert_equal "Ridge Loop", RouteStore.details([7])[7][:name]
+    end
+  ensure
+    HikingRoute.singleton_class.remove_method(:where) if HikingRoute.singleton_class.method_defined?(:where, false)
   end
 
   test "a newer file replaces what was stored of each route, and keeps the rest" do

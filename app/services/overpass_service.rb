@@ -269,9 +269,10 @@ module OverpassService
 
   # The routes with these ids, measured, leaving out those too short, too long,
   # or mostly paved for a day hike, and joined where transit reaches them
-  # soonest when access is known; distance is in miles from the origin.
-  def self.trails_for(ids, lat:, lon:, access: nil, connections: nil, cache: Rails.cache)
-    routes(ids, connections, cache).filter_map do |trail|
+  # soonest when access is known; distance is in miles from the origin. Routes
+  # are left out as #routes leaves them out.
+  def self.trails_for(ids, lat:, lon:, access: nil, connections: nil, cache: Rails.cache, failures: nil)
+    routes(ids, connections, cache, failures: failures).filter_map do |trail|
       next unless trail.length.between?(MIN_LENGTH_MILES, MAX_LENGTH_MILES) && trail.paved.to_f < MOSTLY_PAVED
 
       if access
@@ -335,8 +336,9 @@ module OverpassService
 
   # Trails for the route ids, in order. Each route's details are cached, and
   # only uncached routes are queried, once for searches that need them at
-  # once. Raises when some can't be looked up.
-  def self.routes(ids, connections, cache)
+  # once. Routes that can't be looked up are left out, unless none are found,
+  # and their failure is added to failures when given.
+  def self.routes(ids, connections, cache, failures: nil)
     return [] if ids.empty?
 
     keys = ids.to_h { |id| [id, "#{ROUTE_KEY}#{id}"] }
@@ -345,6 +347,7 @@ module OverpassService
     missing = ids.reject { |id| found.key?(keys[id]) }
     if missing.any?
       id_of = keys.invert
+      error = nil
       found.merge!(shared(missing.map { |id| keys[id] }, cache) do |own|
         own_ids = own.map { |key| id_of[key] }
         fetched = fetch_routes(own_ids, connections, cache)
@@ -353,9 +356,16 @@ module OverpassService
           cache.write(keys[id], fetched.fetch(id, false), expires_in: ROUTE_CACHE_TTL)
           [keys[id], fetched.fetch(id, false)]
         end
+      rescue SearchErrors::UpstreamError => failure
+        error = failure
+        {}
       end)
       # Routes another search was looking up, but couldn't in time.
-      raise SearchErrors::ProviderBusy, BUSY unless missing.all? { |id| found.key?(keys[id]) }
+      error ||= SearchErrors::ProviderBusy.new(BUSY) unless missing.all? { |id| found.key?(keys[id]) }
+      if error
+        failures&.push(error)
+        raise error if ids.none? { |id| found.key?(keys[id]) }
+      end
     end
     # Kept details hold only the attributes a Trail still has.
     ids.filter_map { |id| Trail.new(**found[keys[id]].slice(*Trail.members)) if found[keys[id]] }
@@ -379,7 +389,8 @@ module OverpassService
   # without the attributes they don't have: waterfalls first, then famous and
   # named ones before the others. notable is true for highlights with a Wikipedia
   # article, and height is a waterfall's in meters. Each route's list is cached,
-  # and only uncached routes are queried.
+  # and only uncached routes are queried. Routes whose highlights can't be
+  # looked up are left out, unless none are found.
   def self.highlights(trails, connections: nil, cache: Rails.cache)
     return {} if trails.empty?
 
@@ -392,13 +403,17 @@ module OverpassService
       query = "[out:json][timeout:20];relation(id:#{missing.map(&:osm_id).join(',')});way(r)->.ways;(#{filters.join});out;"
       connections ||= [SearchHttp.connection(urls(cache).first, timeout: HIGHLIGHT_TIMEOUT_SECONDS)]
       wait = ProviderSlots.priority == ProviderSlots::BACKGROUND ? SLOT_WAIT_SECONDS : 0
-      points = elements(query, connections, cache, wait: wait).filter_map { |element| highlight_point(element) }
-      missing.each do |trail|
-        found[keys[trail.osm_id]] = highlights_near(trail.path, points)
-        cache.write(keys[trail.osm_id], found[keys[trail.osm_id]], expires_in: ROUTE_CACHE_TTL)
+      begin
+        points = elements(query, connections, cache, wait: wait).filter_map { |element| highlight_point(element) }
+        missing.each do |trail|
+          found[keys[trail.osm_id]] = highlights_near(trail.path, points)
+          cache.write(keys[trail.osm_id], found[keys[trail.osm_id]], expires_in: ROUTE_CACHE_TTL)
+        end
+      rescue SearchErrors::UpstreamError
+        raise if found.empty?
       end
     end
-    keys.transform_values { |key| found[key] }
+    keys.transform_values { |key| found[key] }.compact
   end
 
   def self.route_attributes(element, paved)
