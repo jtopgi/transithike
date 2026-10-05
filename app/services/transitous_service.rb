@@ -82,10 +82,11 @@ module TransitousService
   STREET_MODES = %w[WALK BIKE RENTAL CAR HGV CAR_PARKING CAR_DROPOFF ODM RIDE_SHARING FLEX].freeze
   # Trips follow the timetable, which hardly changes until the day, so trips
   # more than TRIP_AHEAD before they leave are shared for TRIP_AHEAD_CACHE_TTL,
-  # and the day's for TRIP_CACHE_TTL.
+  # longer than kept searches go before they're searched again, so cards plan
+  # the trips their search did at once, and the day's for TRIP_CACHE_TTL.
   TRIP_CACHE_TTL = 15.minutes
   TRIP_AHEAD = 12.hours
-  TRIP_AHEAD_CACHE_TTL = 6.hours
+  TRIP_AHEAD_CACHE_TTL = 1.day
   AREA_CACHE_TTL = 30.days
   TIME_ZONE_FORMAT = %r{\A[A-Za-z]+(?:/[A-Za-z0-9_+-]+)*\z}
   INVALID_RESPONSE = "The transit provider returned an invalid response."
