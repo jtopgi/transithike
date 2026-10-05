@@ -154,7 +154,7 @@ module OverpassService
     rises = relief && crowded.any? ? relief.call(crowded) : {}
     picked = bands.flat_map do |band, share|
       # Equally hilly tiles stay quickest first.
-      band.sort_by.with_index { |(tile, _), index| [-[rises[corner.(tile)].to_i, MAX_TILE_RELIEF].min / TILE_RELIEF_STEP, index] }
+      band.sort_by.with_index { |(tile, _), index| [-([rises[corner.(tile)].to_i, MAX_TILE_RELIEF].min / TILE_RELIEF_STEP), index] }
         .first(share)
     end
     # Bands without enough tiles leave room for more of the quickest.
