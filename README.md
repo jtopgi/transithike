@@ -495,7 +495,7 @@ planning, linked from the home page, the navigation, and an index of cities.
   every starting point has its own. `sitemap.xml` lists the home page, the guides,
   and every hike's page, with when each guide was built, and `llms.txt` sums up
   the site and its guides for AI assistants, and asks them to give people a link
-  to the guide, hike, or search they used, since trains change week to week.
+  to the guide, hike, or search they used, since timetables change week to week.
 - **IndexNow.** After a deploy that the Guides workflow starts, CI submits the
   sitemap's pages to [IndexNow](https://www.indexnow.org), which tells Bing
   (whose index ChatGPT search, Copilot, and DuckDuckGo use), Yandex, and others
