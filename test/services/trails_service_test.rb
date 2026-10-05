@@ -516,6 +516,13 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal [["b"], [nil]], [found.trails.map(&:name), found.trails.map(&:noise)]
   end
 
+  test "hikes whose trips there and back ride over eight hours in all aren't shown" do
+    trails = [trail("far"), trail("too far")]
+    # Trips back ride an hour.
+    transit = FakeTransit.new(trips: { "far" => minutes(400), "too far" => minutes(430) })
+    assert_equal ["far"], search(transit: transit, hiking: FakeHiking.new(trails)).trails.map(&:name)
+  end
+
   test "hikes need at least three trips there that arrive in time and three back before dark, so missing one isn't a worry" do
     trails = %w[frequent sparse-there sparse-back late-there].map { |name| trail(name) }
     transit = FakeTransit.new(trips: trails.to_h { |trail| [trail.name, minutes(60)] }, there: { "sparse-there" => 2 },

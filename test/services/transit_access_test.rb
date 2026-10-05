@@ -37,11 +37,13 @@ class TransitAccessTest < ActiveSupport::TestCase
     assert_in_delta 35 + walk(500), stops.reach([near_end.first, -122.0, far_end.first, -122.0]), 0.01
   end
 
-  test "stops beyond a half-hour walk and trips over four hours do not count" do
+  test "stops beyond a half-hour walk and trips over five hours do not count" do
     too_far = north(TransitAccess::WALK_METERS + 50)
+    limit = TransitAccess::MAX_TRIP_MINUTES
+    assert_equal 300, limit
     assert_nil access([47.3, -122.0, 20, 1]).reach([47.3 + too_far, -122.0, 47.31 + too_far, -122.0])
-    assert_nil access([47.3, -122.0, 235, 2]).reach([47.3 + north(1_000), -122.0, 47.31, -122.0])
-    assert_in_delta 210 + walk(1_000), access([47.3, -122.0, 210, 2]).reach([47.3 + north(1_000), -122.0, 47.31, -122.0]), 0.01
+    assert_nil access([47.3, -122.0, limit - 5, 2]).reach([47.3 + north(1_000), -122.0, 47.31, -122.0])
+    assert_in_delta limit - 30 + walk(1_000), access([47.3, -122.0, limit - 30, 2]).reach([47.3 + north(1_000), -122.0, 47.31, -122.0]), 0.01
   end
 
   test "the quickest stop wins, even across grid cells" do

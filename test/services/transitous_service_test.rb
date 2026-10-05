@@ -207,7 +207,8 @@ class TransitousServiceTest < ActiveSupport::TestCase
     assert_equal [[47.65, -122.35, 18], [47.2, -122.4, 40], [47.9, -122.2, 70.0]], rail_stations(connection)
 
     trains = TransitousService::TRAIN_MODES.join(",")
-    assert_equal [{ "one" => "king-street", "time" => "2026-09-23T15:00:00Z", "maxTravelTime" => "210", "transitModes" => trains }],
+    assert_equal [{ "one" => "king-street", "time" => "2026-09-23T15:00:00Z", "maxTravelTime" => TransitousService::STATION_MINUTES.to_s,
+      "transitModes" => trains }],
       requests
     assert_includes trains.split(","), "REGIONAL_RAIL"
     assert_includes trains.split(","), "SUBURBAN"
@@ -229,13 +230,14 @@ class TransitousServiceTest < ActiveSupport::TestCase
         { "all" => [reached_stop(48.0, -122.0, 70)] }
       })
       assert_equal [[48.0, -122.0, 70]], rail_stations(connection, cache: cache)
-      assert_equal %w[210 120 80], limits
+      reach = TransitousService::STATION_MINUTES.to_s
+      assert_equal [reach, "120", "80"], limits
 
       rail_stations(connection, cache: cache, station: station(id: "nearby", latitude: 47.62))
-      assert_equal %w[210 120 80 80], limits
+      assert_equal [reach, "120", "80", "80"], limits
       travel 1.day + 1.minute
       rail_stations(connection, cache: cache, station: station(id: "another"))
-      assert_equal %w[210 120 80 80 210 120 80], limits
+      assert_equal [reach, "120", "80", "80", reach, "120", "80"], limits
 
       too_many = stub_connection(:get, {}) { raise SearchErrors::ResponseTooLarge }
       assert_raises(SearchErrors::UpstreamError) { rail_stations(too_many) }
@@ -721,7 +723,7 @@ class TransitousServiceTest < ActiveSupport::TestCase
       assert_equal "47.6000000;-122.3000000", request.params["one"]
       assert_equal "47.5000000;-122.0000000,47.4000000;-122.0000000", request.params["many"]
       assert_equal "2026-09-23T15:00:00Z", request.params["time"]
-      assert_equal "240", request.params["maxTravelTime"]
+      assert_equal TransitousService::MAX_TRAVEL_MINUTES.to_s, request.params["maxTravelTime"]
       assert_equal "1800", request.params["maxPostTransitTime"]
       assert_nil request.params["transitModes"]
     end

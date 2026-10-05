@@ -94,10 +94,12 @@ test Overpass connectivity from your deployment before launching.
   repeating Grand Central's lines; from central Paris, its six main stations.
   A place's stations are remembered for a week for places within about 1 km.
 - **Stations trains reach.** From each major station, Transitous lists the
-  stations its trains reach within **3½ hours**, or within 120 or 80 minutes
-  where that list is over 8 MB, as across Switzerland (remembered for a day per
-  area). Stations closer than **20 km** to the major station are in or next to
-  the city and don't count.
+  stations its trains reach within **4½ hours** of setting out, waiting for the
+  train included, as a line's first train may leave a while after 8 AM, or
+  within 120 or 80 minutes where that list is over 8 MB, as across Switzerland
+  (remembered for a day per area). Stations closer than **20 km** to the major
+  station are in or next to the city and don't count. Hikes whose trips there
+  and back, as planned, ride more than **8 hours** in all aren't shown.
 - **Routes.** Hiking-route relations are found in 0.5° tiles holding routes
   within a 30-minute walk of a station, up to 20 tiles: the 8 with the quickest
   stations within 2 hours, 7 within 3 hours, and 5 farther, so the scenery
@@ -115,11 +117,13 @@ test Overpass connectivity from your deployment before launching.
   ranking does: routes with Wikipedia or Wikidata entries, of day-hike size,
   with distinctive names, across land that rises more (up to 400 m, from coarse
   zoom-8 terrain tiles about 100 km across, sampled on a 5-by-5 grid over each
-  route's bounding box), and without long trips there. Without the land, an area
-  where most routes have Wikidata entries, such as Franconia's, took most checks
-  from Munich, and the Alps few. Results are not an
-  exhaustive trail inventory; where few hiking routes are mapped in OpenStreetMap
-  near stations, there are few results.
+  route's bounding box), and without long trips there. Up to 40 of the 120 are
+  routes 3 hours or more away, however promising nearer ones are: otherwise the
+  trip there kept them from being checked, and from Grand Central no hike found
+  rode over 5 hours there and back. Without the land, an area where most routes
+  have Wikidata entries, such as Franconia's, took most checks from Munich, and
+  the Alps few. Results are not an exhaustive trail inventory; where few hiking
+  routes are mapped in OpenStreetMap near stations, there are few results.
 - Routes are checked in batches of 40, starting with the first tiles' while the
   others are found, and each batch's hikes show as soon as their trips there and
   back are known. Routes that can't be looked up at once, as when Overpass is
@@ -229,7 +233,7 @@ test Overpass connectivity from your deployment before launching.
   it links back to the search from the starting point.
 - **Not the city's parks.** Hikes the subway, metro, or light rail
   (`TransitousService::CITY_MODES`: Transitous's `SUBWAY` and `TRAM`; its `METRO`
-  means suburban trains) reach within those 4 hours are left out, since
+  means suburban trains) reach within those 5 hours are left out, since
   city dwellers likely know them already; when that can't be checked, they stay.
 - Lengths are approximate, calculated from deduplicated mapped way geometry.
   Nested or incomplete routes are skipped. Directions and travel times lead to the

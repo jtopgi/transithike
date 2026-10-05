@@ -50,6 +50,8 @@ module TrailsService
   # Quiet surroundings, away from road, rail, and air traffic, count up to as
   # much as a good view, about 200 m up, where the noise map shows them.
   QUIET_SCENIC = 2.0
+  # Hikes whose trips there and back ride longer than this in all aren't shown.
+  MAX_ROUND_TRIP_HOURS = 8
   # Searches wait at most this long for the noise along a batch's routes, which
   # are kept without it otherwise.
   NOISE_WAIT_SECONDS = 8
@@ -376,6 +378,7 @@ module TrailsService
         next
       end
       next unless (trips = done.value)
+      next if ride_hours(trips) > MAX_ROUND_TRIP_HOURS
 
       trail.arrival = Time.iso8601(trips[:there][:arrival])
       trail.last_return = Time.iso8601(trips[:ways][:last][:departure])
@@ -385,6 +388,14 @@ module TrailsService
     # Hikes skipped once planning was stuck weren't checked either.
     result.complete = false if stuck.true?
     kept
+  end
+
+  # Hours riding the soonest trip there and the first back after the hike, as
+  # each card's round trip adds them, or the last back when it's the only one.
+  def self.ride_hours(trips)
+    [trips[:there], trips[:ways][:back] || trips[:ways][:last]].sum do |trip|
+      (Time.iso8601(trip[:arrival]) - Time.iso8601(trip[:departure])) / 3600.0
+    end
   end
 
   # Searches no visitor waits on plan trips on a pool of their own.

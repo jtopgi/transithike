@@ -396,6 +396,18 @@ class OverpassServiceTest < ActiveSupport::TestCase
     assert_equal (1..OverpassService::MAX_TRANSIT_ROUTES).to_a, pick(many, access: FakeAccess.new(Hash.new { |_, box| box[0] }))
   end
 
+  test "some routes three hours or more away are checked, however promising nearer ones are" do
+    near = (1..130).map { |id| candidate(id, 1, notable: true) }
+    far = (131..300).map { |id| candidate(id, 3) }
+    access = FakeAccess.new(Hash.new { |_, box| box[0] > 47.02 ? OverpassService::FAR_MINUTES : 60 })
+    picked = pick(near + far, access: access)
+    assert_equal [80, 40], picked.partition { |id| id <= 130 }.map(&:size)
+    assert_equal picked.select { |id| id <= 130 }, picked.first(80)
+
+    # Without enough near routes, more far ones are checked.
+    assert_equal [30, 90], pick(near.first(30) + far, access: access).partition { |id| id <= 130 }.map(&:size)
+  end
+
   test "promising routes are checked first" do
     routes = [candidate(1, 2, name: "Trail 1"), candidate(2, 3, span: 500), candidate(3, 4, notable: true, span: 500),
       candidate(4, 5)]

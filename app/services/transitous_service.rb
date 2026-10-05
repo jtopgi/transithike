@@ -15,9 +15,11 @@ module TransitousService
   SOURCES_URL = "https://transitous.org/sources/"
   # Route starts are often farther than the default 15-minute walk from a stop.
   MAX_POST_TRANSIT_SECONDS = 30 * 60
-  # Day trips by train take up to four hours from setting out, waiting for the
-  # train included, which reaches the scenery farther out while leaving time to hike.
-  MAX_TRAVEL_MINUTES = 240
+  # Day trips by train ride up to four hours each way (see
+  # TrailsService::MAX_ROUND_TRIP_HOURS), and a line's first train may leave a
+  # while after setting out, so trips up to five hours from setting out,
+  # waiting for the train included, are looked at.
+  MAX_TRAVEL_MINUTES = 300
   # Stations reached by then leave time to walk to a route within MAX_TRAVEL_MINUTES.
   STATION_MINUTES = MAX_TRAVEL_MINUTES - 30
   # Commuter, regional, and intercity trains, which take city dwellers out for

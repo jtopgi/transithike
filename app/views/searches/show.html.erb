@@ -97,7 +97,8 @@
       <%= TripPlans::MIN_TRIPS %> trips there that arrive in time to hike it all by sunset, and at least
       <%= TripPlans::MIN_TRIPS %> back to its station that leave before dark, with twilight left for the walk to the
       station, so missing one isn't a worry. Each card shows the soonest trip there and the last trip back, which rides
-      the same trains back where it can; the round trip adds the rides there and back. Hikes with the grandest view
+      the same trains back where it can; the round trip adds the rides there and back, up to
+      <%= TrailsService::MAX_ROUND_TRIP_HOURS %> hours. Hikes with the grandest view
       or waterfall come first: views count for how far a route climbs and how far its high point stands above the
       land around it, and more with a mapped viewpoint or a named or famous summit, while waterfalls count more with
       a name, a Wikipedia article, or height. The best counts in full and the next only half, so one grand view
