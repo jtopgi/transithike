@@ -270,7 +270,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_equal "Saturday, September 26, leaving at 8:00\u00a0AM\u00a0PDT, with a way back by 11\u00a0PM.", place["departure"]
     assert_equal "America/Los_Angeles", place["time_zone"]
     stations = Nokogiri::HTML5.fragment(place["stations"])
-    assert_equal "Trains leave from King Street. Getting to the station is up to you: select one for directions.",
+    assert_equal "Trips leave from King Street. Getting to the station is up to you: select one for directions.",
       stations.text.squish.delete_prefix("🚉 ")
     # Directions to the station start from the place.
     query = URI.decode_www_form(URI(stations.at_css("a.results-station")["href"]).query).to_h
