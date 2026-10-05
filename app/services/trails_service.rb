@@ -56,6 +56,9 @@ module TrailsService
   # Searches wait at most this long for the noise along a batch's routes, which
   # are kept without it otherwise.
   NOISE_WAIT_SECONDS = 8
+  # A batch's flat routes wait at most this long, once its other routes are
+  # planned, for the highlights that decide whether they're shown.
+  FLAT_HIGHLIGHT_WAIT_SECONDS = 45
   # Highlights only refine the ranking, so searches wait at most this long for
   # them once every batch is checked. Slower lookups finish in the background
   # and are cached for later searches.
@@ -160,6 +163,11 @@ module TrailsService
       when :trails
         show(:trails, payload.select { |trail| @shown[trail.osm_id].nil? || TrailsService.sooner?(trail, @shown[trail.osm_id], @result.place) })
       when :update then show(:update, payload.select { |trail| @shown[trail.osm_id]&.station == trail.station })
+      when :hidden
+        # Only as found from the station shown.
+        hidden = payload.select { |trail| @shown[trail.osm_id]&.station == trail.station }
+        hidden.each { |trail| @shown.delete(trail.osm_id) }
+        @on_found&.call(:hidden, hidden) if hidden.any?
       when :done
         @result.returns_checked &&= payload.returns_checked
         @result.complete &&= payload.complete
@@ -204,7 +212,8 @@ module TrailsService
   # back to it by RETURN_BY_HOUR. The block, if any, is called as the search
   # goes: with :checking, how many routes a batch checks, and the station,
   # with :trails and each batch's routes that have a trip there and back, and
-  # with :update and every route once highlights and terrain rank them, each
+  # with :hidden and routes shown before their terrain came, which is too flat,
+  # and with :update and every route once highlights and terrain rank them, each
   # time with copies, so the search can go on. Returns the station's result.
   def self.from_station(station, departure_time, transit: TransitousService, hiking: OverpassService,
     elevation: ElevationService, noise: NoiseService, &on_found)
@@ -240,7 +249,8 @@ module TrailsService
     raise search.error if result.trails.empty? && search.error
     return result if result.trails.empty?
 
-    enrich(result, search.lookups, elevation)
+    hidden = enrich(result, search.lookups, elevation)
+    on_found&.call(:hidden, hidden.map(&:dup)) if hidden.any?
     on_found&.call(:update, result.trails.map(&:dup))
     result
   end
@@ -281,7 +291,12 @@ module TrailsService
       @lookups << [kept, TrailsService.start(TrailsService.overpass_pool) { @hiking.highlights(kept) }] if kept.any?
       return unless highlights
 
-      kept = plan(TrailsService.with_highlights(flat, highlights).select { |trail| TrailsService.scenic_enough?(trail) })
+      # Without their highlights, flat routes can't be checked, and the search says so.
+      found = TrailsService.settle([highlights], timeout: FLAT_HIGHLIGHT_WAIT_SECONDS).first.value(0)
+      return fail_with(SearchErrors::ProviderBusy.new(OverpassService::BUSY)) unless highlights.fulfilled?
+
+      flat.each { |trail| trail.highlights = found[trail.osm_id] || [] }
+      kept = plan(flat.select { |trail| TrailsService.scenic_enough?(trail) })
       @lookups << [kept, highlights] if kept.any?
     rescue SearchErrors::UpstreamError => error
       fail_with(error)
@@ -512,7 +527,8 @@ module TrailsService
   end
 
   # Adds the highlights found in time and the terrain of the most promising
-  # routes, then scores and orders every route.
+  # routes still without it, then scores and orders every route shown, and
+  # returns those no longer shown.
   def self.enrich(result, lookups, elevation)
     settle(lookups.map(&:last), timeout: HIGHLIGHT_WAIT_SECONDS)
     lookups.each do |trails, lookup|
@@ -521,7 +537,11 @@ module TrailsService
       trails.each { |trail| trail.highlights = found[trail.osm_id] || [] }
     end
     add_terrain(result.trails.reject(&:terrain).max_by(MAX_TERRAIN_LOOKUPS) { |trail| score(trail) }, elevation)
+    # Routes shown before their terrain came, which turns out too flat, are no longer.
+    hidden = result.trails.reject { |trail| shown?(trail) }
+    result.trails -= hidden
     rank(result.trails)
+    hidden
   end
 
   # How far the land rises around each route, as { id => meters }, looked up a
@@ -573,14 +593,6 @@ module TrailsService
     settle(lookups.map(&:last), timeout: TERRAIN_WAIT_SECONDS)
     found = lookups.select { |_, lookup| lookup.fulfilled? }.map { |_, lookup| lookup.value }.reduce({}, :merge)
     trails.each { |trail| trail.terrain = found.fetch(trail.osm_id, trail.terrain) }
-  end
-
-  # The trails with their highlights, waiting at most HIGHLIGHT_WAIT_SECONDS
-  # for the lookup, or with none when it isn't done in time.
-  def self.with_highlights(trails, lookup)
-    settle([lookup], timeout: HIGHLIGHT_WAIT_SECONDS)
-    found = (lookup.value if lookup.fulfilled?) || {}
-    trails.each { |trail| trail.highlights = found[trail.osm_id] || [] }
   end
 
   # How far the routes climb and how far their high points stand above the land

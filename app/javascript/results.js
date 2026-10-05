@@ -83,6 +83,7 @@ class Results {
       : `Checking trains from ${station} to ${count} hikes and back…`))
     on("trails", ({ html }) => this.add(html))
     on("update", ({ trails }) => this.refresh(trails))
+    on("hidden", ({ ids }) => this.hide(ids))
     on("done", (summary) => { events.close(); this.finish(summary) })
     on("failure", ({ message }) => { events.close(); this.fail(message) })
     events.addEventListener("error", () => {
@@ -300,6 +301,14 @@ class Results {
   }
 
   // Takes a hike its planned trips don't suit off the page.
+  // Hikes shown before their terrain came, which turned out too flat.
+  hide(ids) {
+    ids.forEach((id) => {
+      const card = this.list.querySelector(`[data-osm-id="${Number(id)}"]`)
+      if (card) this.drop(card)
+    })
+  }
+
   drop(card) {
     this.previews.unobserve(card)
     this.trips.unobserve(card)

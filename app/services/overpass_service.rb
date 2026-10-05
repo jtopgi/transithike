@@ -53,7 +53,8 @@ module OverpassService
   # overloaded, the preferred one is asked once more after a pause
   # (config.x.overpass_retry_pause_seconds).
   QUICK_FAILURE_SECONDS = 15
-  # Highlights only refine a search: they are looked up when a slot is free, and briefly.
+  # Highlights wait for a slot like other queries, as they decide whether flat
+  # routes are shown, but are given less time.
   HIGHLIGHT_TIMEOUT_SECONDS = 15
   BUSY = "The hiking route provider is busy. Please try again later.".freeze
   PREVIEW_POINTS = 150
@@ -382,7 +383,7 @@ module OverpassService
       filters = HIGHLIGHT_TAGS.values.map { |key, value| %(node(around.ways:#{HIGHLIGHT_METERS})["#{key}"="#{value}"];) }
       query = "[out:json][timeout:20];relation(id:#{missing.map(&:osm_id).join(',')});way(r)->.ways;(#{filters.join});out;"
       connections ||= [SearchHttp.connection(urls(cache).first, timeout: HIGHLIGHT_TIMEOUT_SECONDS)]
-      points = elements(query, connections, cache, wait: 0).filter_map { |element| highlight_point(element) }
+      points = elements(query, connections, cache).filter_map { |element| highlight_point(element) }
       missing.each do |trail|
         found[keys[trail.osm_id]] = highlights_near(trail.path, points)
         cache.write(keys[trail.osm_id], found[keys[trail.osm_id]], expires_in: ROUTE_CACHE_TTL)

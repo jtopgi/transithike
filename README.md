@@ -256,7 +256,7 @@ test Overpass connectivity from your deployment before launching.
   a day, in public map tiles with no key. Zoom-12 tiles, about 7 km across with a
   level about every 30 m, are fetched as palette PNG images and decoded in Ruby,
   each color standing for the band of decibels the map's legend gives it. Only
-  hikes under 45 dB along at least half of the way are shown, away from busy
+  hikes under 45 dB along most of the way are shown, away from busy
   roads, highways, railways, and flight paths. Cards and hike pages show the
   level along at least half of a route as the legend's band, such as "< 45 dB",
   and a louder one in places when at least a twentieth of it reaches one, so
@@ -323,14 +323,17 @@ test Overpass connectivity from your deployment before launching.
   Some hikes have no photos of nature nearby, and then show only the map. Credits
   leave out the names Commons repeats in hidden elements.
 - Provider failures produce a friendly error, not misleading empty results. The
-  origin's area, the tiles after the first four, highlights, terrain, and photos
-  only refine a search, which goes ahead without them; when any tile's routes
-  don't load, the page says some hikes couldn't be checked, and guide builds try
-  that city again. Highlights not found within
-  5 seconds of the last batch, and terrain not found within 8 seconds after that,
-  are left out, and the lookups finish in the background so later searches have
-  them. When the way back can't be looked up, hikes are shown with a notice saying
-  so.
+  origin's area, the tiles after the first four, and photos only refine a
+  search, which goes ahead without them, and so do highlights and terrain,
+  except that a flat route is only shown once its highlights are found; when
+  they or any tile's routes don't load, the page says some hikes couldn't be
+  checked, and guide builds try that city again. A hike shown before its
+  terrain came is taken off the page when that terrain is too flat. Highlights
+  not found within 5 seconds of the last batch, and terrain not found within 8
+  seconds after that, are left out, and the lookups finish in the background so
+  later searches have them; a batch's flat routes wait up to 45 seconds for
+  theirs. When the way back can't be looked up, hikes are shown with a notice
+  saying so.
 
 Route data is © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright),
 available under the ODbL. The public Overpass server is shared infrastructure:
@@ -420,8 +423,9 @@ planning, linked from the home page, the navigation, and an index of cities.
   keeping a complete build, or else the one with more hikes), plans every hike's
   trips there and back with `TripPlans`, finds their photos and where they are,
   and writes `db/guides/<city>.json`. A city's guide is only
-  replaced when the new one has at least 12 hikes and at least 60% as many as
-  the last, so a provider's bad day doesn't empty its pages, and hikes keep their
+  replaced when the new one has at least 3 hikes and at least 60% as many as
+  the last one still shows under the current rules, so a provider's bad day
+  doesn't empty its pages, and hikes keep their
   pages' addresses from week to week. Plain or shared names such as "White Trail"
   get the natural area nearby, or the station trains go to, in their title.
   Guides keep each hike's sunset, and a city's page leads with its sunset among

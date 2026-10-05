@@ -498,6 +498,31 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_not_includes transit.timetables, "flat"
     # Terrain is known as hikes are shown, and the waterfall makes up for the flat land: 2 and half of 0.2.
     assert_equal [{ climb: 150, relief: 120 }, 2.1], [shown["ridge"].terrain, TrailsService.scenery(shown["falls"])]
+    assert found.complete
+
+    # Without its highlights, a flat route can't be checked, and the search says so.
+    busy = FakeHiking.new(trails.map(&:dup), highlights: SearchErrors::ProviderBusy.new("busy"))
+    found = search(transit: FakeTransit.new(trips: trails.to_h { |trail| [trail.name, minutes(60)] }), hiking: busy,
+      elevation: elevation)
+    assert_equal [%w[ridge unknown], false], [found.trails.map(&:name).sort, found.complete]
+  end
+
+  test "a hike shown before its terrain came is taken off once that terrain is too flat" do
+    elevation = FakeElevation.new({ "flatloop" => { climb: 30, relief: 20 } })
+    lookups = Concurrent::AtomicFixnum.new
+    # The batch's lookup is too slow, and the last one quick.
+    elevation.define_singleton_method(:terrain) do |trails|
+      sleep 0.5 if lookups.increment == 1
+      super(trails)
+    end
+    events = Concurrent::Array.new
+    found = stub_const(TrailsService, :TERRAIN_WAIT_SECONDS, 0.1) do
+      search(transit: FakeTransit.new(trips: { "flatloop" => minutes(30) }), hiking: FakeHiking.new([trail("flatloop")]),
+        elevation: elevation) { |event, payload| events << [event, Array(payload).map { |each| each.try(:name) }] }
+    end
+    assert_empty found.trails
+    assert_includes events, [:trails, ["flatloop"]]
+    assert_includes events, [:hidden, ["flatloop"]]
   end
 
   test "noise is looked up from stations on the noise map, whoever searches, and when it fails, routes are kept without it" do

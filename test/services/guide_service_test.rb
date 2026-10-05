@@ -222,6 +222,11 @@ class GuideServiceTest < ActiveSupport::TestCase
     assert_equal 30, GuideService.previous(guide)[:hikes].size
     assert GuideService.write(guide, hikes.(18))
     assert_equal 18, GuideService.page("new-york-city").hikes.size
+    # The last guide counts the hikes it still shows, as one with only loud hikes left shows none.
+    loud = hikes.(20).tap { |data| data[:hikes].each { |hike| hike[:trail] = hike[:trail].merge(noise: { quiet: 0.1, typical: 60 }) } }
+    assert GuideService.write(guide, loud)
+    assert_empty GuideService.page("new-york-city").hikes
+    assert GuideService.write(guide, hikes.(GuideService::MIN_HIKES))
   end
 
   test "a guide's page has its hikes' routes, trips, and photos, in the city's time zone" do

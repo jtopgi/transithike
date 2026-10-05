@@ -8,9 +8,10 @@ require "json"
 module GuideService
   CONFIG = Rails.root.join("config/guides.yml")
   # A new guide replaces the last one only when it has at least MIN_HIKES
-  # hikes and at least KEEP_SHARE as many as the last one, so a provider's
-  # bad day doesn't empty a city's pages.
-  MIN_HIKES = 12
+  # hikes and at least KEEP_SHARE as many as the last one still shows, so a
+  # provider's bad day doesn't empty a city's pages, while a city where few
+  # hikes meet the rules, as around flat Berlin, still gets a small guide.
+  MIN_HIKES = 3
   KEEP_SHARE = 0.6
   # A photo lookup that fails is tried again after this long, since Commons is
   # slow at times, and builds give each lookup this long.
@@ -122,12 +123,14 @@ module GuideService
       best
     end
 
-    # Writes a city's new guide unless it has too few hikes, returning whether it did.
+    # Writes a city's new guide unless it has too few hikes, returning whether
+    # it did. The last guide counts the hikes it still shows, as one built
+    # under earlier rules may have more than those rules show now.
     def write(guide, data)
       file = directory.join("#{guide.slug}.json")
-      previous = JSON.parse(file.read, symbolize_names: true) if file.file?
+      shown = load(guide, JSON.parse(file.read, symbolize_names: true)).hikes.size if file.file?
       hikes = data[:hikes].size
-      return false if hikes < MIN_HIKES || (previous && hikes < previous[:hikes].size * KEEP_SHARE)
+      return false if hikes < MIN_HIKES || (shown && hikes < shown * KEEP_SHARE)
 
       FileUtils.mkdir_p(directory)
       file.write("#{JSON.pretty_generate(data)}\n")

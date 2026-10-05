@@ -44,6 +44,7 @@ class SearchStreamsController < ApplicationController
     when :trails
       send_event("trails", html: render_to_string(partial: "searches/trail", collection: payload, locals: { result: @result }))
     when :update then send_event("update", trails: payload.map { |trail| trail_update(trail) })
+    when :hidden then send_event("hidden", ids: payload.map(&:osm_id))
     # A comment keeps the connection open, and finds out sooner when the visitor has left.
     when :waiting then response.stream.write(": waiting\n\n")
     end
