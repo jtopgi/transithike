@@ -45,7 +45,7 @@ module GuideService
   Hike = Struct.new(:slug, :title, :trail, :area, :there, :ways, :departures, :photos, keyword_init: true)
 
   TRAIL_FIELDS = %i[name summary latitude longitude length osm_id path highlights notable paved loop duration transfers
-    arrival last_return terrain score plan finish location station sunset].freeze
+    arrival last_return terrain score plan finish location station sunset noise].freeze
 
   class << self
     attr_writer :directory

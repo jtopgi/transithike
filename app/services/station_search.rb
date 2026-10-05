@@ -29,9 +29,9 @@ class StationSearch
   # kept searches are only served while they're complete and less than
   # REFRESH_AFTER old, and earlier weeks' never.
   def self.start(station, departure_time, fresh: false, transit: TransitousService, hiking: OverpassService,
-    elevation: ElevationService, cache: Rails.cache, pool: Rails.configuration.x.station_pool)
+    elevation: ElevationService, noise: NoiseService, cache: Rails.cache, pool: Rails.configuration.x.station_pool)
     search = { station: station, departure_time: departure_time, keys: keys(station, departure_time), cache: cache,
-      providers: { transit: transit, hiking: hiking, elevation: elevation }, pool: pool }
+      providers: { transit: transit, hiking: hiking, elevation: elevation, noise: noise }, pool: pool }
     kept = cache.read(search[:keys][:day])
     if kept && !(fresh && (stale?(kept) || !complete?(kept[:result])))
       refresh(**search) if stale?(kept)
@@ -156,12 +156,16 @@ class StationSearch
 
   # When the search couldn't check some routes, it keeps those the day's last
   # search found that it didn't, ranking them all again, and returns them.
+  # Those found mostly beside loud traffic since, as when this search found
+  # them so, stay hidden.
   def with_earlier(result)
     return [] if self.class.complete?(result)
 
     earlier = @cache.read(@keys[:day])&.dig(:result)
     found = result.trails.to_set(&:osm_id)
     extra = Array(earlier&.trails).reject { |trail| found.include?(trail.osm_id) }
+    noise = TrailsService.noise_at(@station, @providers[:noise])
+    extra = TrailsService.away_from_traffic(extra, TrailsService.noise_lookups(extra, noise)) if noise && extra.any?
     result.trails = TrailsService.rank(result.trails + extra) if extra.any?
     extra
   end

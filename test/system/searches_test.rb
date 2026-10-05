@@ -107,6 +107,7 @@ class SearchesTest < ApplicationSystemTestCase
     end
     Faraday.default_adapter_options = {}
     ElevationService::TILES.clear
+    NoiseService::TILES.clear
   end
 
   teardown do

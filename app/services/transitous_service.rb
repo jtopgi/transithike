@@ -104,8 +104,7 @@ module TransitousService
         connection.get { |request| request.params = { place: format("%.5f,%.5f", latitude, longitude) } }
       end
       match = matches.find { |candidate| candidate.is_a?(Hash) } || {}
-      zone = match["tz"]
-      { time_zone: zone.is_a?(String) && zone.match?(TIME_ZONE_FORMAT) ? zone : nil, area: area_label(match["areas"]) }
+      { time_zone: time_zone(match["tz"]), area: area_label(match["areas"]) }
     end
   end
 
@@ -149,7 +148,7 @@ module TransitousService
       importance = stop["importance"].is_a?(Numeric) && stop["importance"].finite? ? stop["importance"] : 0
       # Coordinates to about 10 cm, without the provider's single-precision noise.
       station = Station.new(name: station_name(stop["name"]), latitude: stop["lat"].to_f.round(6),
-        longitude: stop["lon"].to_f.round(6), id: stop_id(stop))
+        longitude: stop["lon"].to_f.round(6), id: stop_id(stop), time_zone: time_zone(stop["tz"]))
       { station: station, importance: importance, meters: meters }
     end
     distinct = []
@@ -586,6 +585,11 @@ module TransitousService
   end
 
   # A stop's id, which plans can be asked to go via, or nil.
+  # A time zone name the provider gives, or nil when it isn't one.
+  def self.time_zone(name)
+    name if name.is_a?(String) && name.match?(TIME_ZONE_FORMAT)
+  end
+
   def self.stop_id(place)
     id = place["stopId"] if place.is_a?(Hash)
     id if id.is_a?(String) && id.match?(/\A[^,\s]{1,200}\z/)

@@ -41,6 +41,10 @@ class GuidesTest < ActionDispatch::IntegrationTest
     assert_match(/Hike ≈ 5.0 mi out and back/, breakneck.text.squish)
     # The last trip back leaves before dark, at 6:05 PM, rather than at 8:50 PM.
     assert_match(/↩️ Last trip back 6:05 PM\z/, breakneck.text.squish)
+    # Only the hike away from traffic is called quiet, and each says how loud it is along most of it and in places.
+    assert_equal [["Quiet"], []], cards.map { |card| card.css(".trail-chip-label").map(&:text).grep(/Quiet/) }
+    assert_equal ["🔈 Noise < 45 dB 60–70 dB in places", "🔈 Noise 50–55 dB 70–80 dB in places"],
+      cards.map { |card| card.at_css("[data-noise]").ancestors("div").first.text.squish }
     # Without a photo, a card previews its route once it scrolls into view.
     assert cards.last.at_css(".trail-map[data-lazy-map][data-path]")
     list = structured_data.fetch("ItemList")
@@ -95,6 +99,7 @@ class GuidesTest < ActionDispatch::IntegrationTest
     assert_select "link[rel=canonical][href='http://www.example.com/day-hikes-by-train/new-york-city/breakneck-ridge-trail']"
     assert_select "[data-hike-map][data-path]"
     assert_match(/Sunset 6:23 PM hike done by then ↩️ Last trip back 6:05 PM before dark, from Cold Spring\z/, css_select(".hike-facts").sole.text.squish)
+    assert_includes css_select(".hike-facts").sole.text.squish, "🔈 Noise < 45 dB 60–70 dB in places"
     assert_equal "Taking the first trip there, you arrive at 9:40 AM and have up to 8 h 25 min until the last trip back, " \
       "before dark, for a hike of about 2 h 30 min.", css_select(".hike-intro").sole.text.squish
     # Trips back until the last one before dark, at 6:51 PM.

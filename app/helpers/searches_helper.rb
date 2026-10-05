@@ -8,6 +8,8 @@ module SearchesHelper
     "viewpoint" => ["🔭", "Viewpoint", "Viewpoints"]
   }.freeze
   FEET_PER_METER = 3.28084
+  # Routes at least this quiet, as NoiseService finds them, are mostly away from traffic.
+  QUIET_CHIP = 0.85
 
   # Where photos taken along the route are looked for, as "latitude,longitude|...".
   def photo_points(trail)
@@ -36,6 +38,9 @@ module SearchesHelper
       details = highlights.filter_map { |highlight| highlight_detail(highlight) }
       chips << [icon, label, "#{highlights.one? ? one : many}#{": #{details.join(', ')}" if details.any?}"]
     end
+    if trail.noise && trail.noise[:quiet] >= QUIET_CHIP
+      chips << ["🌲", "Quiet", "Mostly away from road, rail, and air traffic: under 45 dB on the U.S. DOT's noise map"]
+    end
     chips
   end
 
@@ -45,6 +50,14 @@ module SearchesHelper
     return highlight[:name] if notes.empty?
 
     "#{highlight[:name] || 'unnamed'} (#{notes.join(', ')})"
+  end
+
+  # A sound level from NoiseService as its band on the noise map's legend, such as "< 45 dB" or "60–70 dB".
+  def noise_band(level)
+    return "< 45 dB" if level.zero?
+
+    upper = NoiseService::LEVELS.values.find { |start| start > level }
+    upper ? "#{level}–#{upper} dB" : "#{level}+ dB"
   end
 
   # For example "≈ 1,150 ft", how far a route climbs, or nil before its terrain is known.

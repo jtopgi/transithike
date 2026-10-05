@@ -32,6 +32,7 @@
             <dd><%= climb_label(trail) %></dd>
           </div>
         <% end %>
+        <%= render "searches/noise_stat", trail: trail %>
         <% if there %>
           <div>
             <dt><span aria-hidden="true">🚆</span> Each way</dt>

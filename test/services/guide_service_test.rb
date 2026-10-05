@@ -142,7 +142,8 @@ class GuideServiceTest < ActiveSupport::TestCase
   end
 
   test "a guide plans each hike's trips and photos, most scenic first, and tells plain or shared names apart by place" do
-    trails = [trail("White Trail", 1, scenic: 1), trail("Breakneck Ridge Trail", 2, scenic: 4), trail("White Trail", 3),
+    trails = [trail("White Trail", 1, scenic: 1), trail("Breakneck Ridge Trail", 2, scenic: 4, noise: { quiet: 0.9, loud: 0.0 }),
+      trail("White Trail", 3),
       trail("Ridge Loop", 4, scenic: 2, plan: :through, loop: false, finish: [41.42, -73.9])]
     search = FakeSearch.new(trails)
     data = GuideService.build(guide, search: search, transit: FakeTransit.new, photos: FakePhotos.new, places: FakePlaces.new)
@@ -163,6 +164,8 @@ class GuideServiceTest < ActiveSupport::TestCase
     assert_nil data[:hikes].second.dig(:ways, :same_way)
     assert_equal ["2026-10-10T08:00:00-04:00", "2026-10-10T23:00:00-04:00"], data.values_at(:departure_time, :return_by)
     assert_equal({ climb: 400, relief: 400 }, hike.dig(:trail, :terrain))
+    # The noise along it is kept for its Quiet chip.
+    assert_equal [{ quiet: 0.9, loud: 0.0 }, nil], data[:hikes].first(2).map { |each| each.dig(:trail, :noise) }
     assert_equal ["2026-10-10T13:30:00Z", "2026-10-10T22:23:00Z"], hike.dig(:trail).values_at(:arrival, :sunset)
   end
 

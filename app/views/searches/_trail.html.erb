@@ -49,6 +49,7 @@
           <dt><span aria-hidden="true">⛰️</span> Climb</dt>
           <dd data-climb><%= climb_label(trail) %></dd>
         </div>
+        <%= render "searches/noise_stat", trail: trail %>
       </dl>
       <%# The last trip back leaves before dark, and the hike is done by sunset, before it. %>
       <p class="trail-return">

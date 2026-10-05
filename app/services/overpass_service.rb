@@ -83,9 +83,11 @@ module OverpassService
   # it's hiked, :loop, :out_and_back, or :through to finish, the
   # [latitude, longitude] of its far end, where the trip back leaves. station
   # is the Station the trips there leave from and the trips back return to.
+  # noise is the traffic noise along it, NoiseService's { quiet:, loud: },
+  # where the noise map covers it.
   Trail = Struct.new(:name, :summary, :latitude, :longitude, :length, :osm_id, :path, :highlights, :notable,
     :paved, :loop, :distance, :duration, :transfers, :arrival, :last_return, :origin, :terrain, :score, :plan, :finish,
-    :location, :station, :sunset, keyword_init: true) do
+    :location, :station, :sunset, :noise, keyword_init: true) do
     # A point halfway along the route, in its area even where transit reaches it from town.
     def midpoint
       points = Array(path).flatten(1)

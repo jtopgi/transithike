@@ -20,7 +20,7 @@ class ElevationServiceTest < ActiveSupport::TestCase
     Faraday.new(url: "https://tiles.test/terrarium/") { |builder| builder.adapter :test, stubs }
   end
 
-  def terrain(trails, connection:, cache: ActiveSupport::Cache::MemoryStore.new, tiles: ElevationService::TileCache.new(20))
+  def terrain(trails, connection:, cache: ActiveSupport::Cache::MemoryStore.new, tiles: TileCache.new(20))
     ElevationService.terrain(trails, connection: connection, cache: cache, tiles: tiles)
   end
 
@@ -46,7 +46,7 @@ class ElevationServiceTest < ActiveSupport::TestCase
   test "relief is roughly how far the land rises across each route's box, from coarse tiles each asked for once" do
     requests = []
     routes = [{ id: 1, bounds: [47.0, -122.0, 47.03, -121.99] }, { id: 2, bounds: [47.01, -122.0, 47.01, -122.0] }]
-    found = ElevationService.reliefs(routes, connection: rising(requests), tiles: ElevationService::TileCache.new(20))
+    found = ElevationService.reliefs(routes, connection: rising(requests), tiles: TileCache.new(20))
     # The land rises 300 m across the first route's box, to within the coarse tiles' pixels, about 400 m apart.
     assert_in_delta 300, found.fetch(1), 40
     assert_equal 0, found.fetch(2)
@@ -57,13 +57,13 @@ class ElevationServiceTest < ActiveSupport::TestCase
     requests = []
     routes = [{ id: 1, bounds: [47.0, -122.0, 47.03, -121.99] }, { id: 2, bounds: [47.01, -122.0, 47.02, -122.0] }]
     broken = tiles_returning(requests, status: 503) { "" }
-    assert_equal({}, ElevationService.reliefs(routes, connection: broken, tiles: ElevationService::TileCache.new(20)))
+    assert_equal({}, ElevationService.reliefs(routes, connection: broken, tiles: TileCache.new(20)))
     assert_equal 1, requests.size
   end
 
   test "tiles are shared by routes, and each route's terrain is cached for a month" do
     travel_to Time.utc(2026, 9, 22, 12) do
-      cache, tiles, requests = ActiveSupport::Cache::MemoryStore.new, ElevationService::TileCache.new(20), []
+      cache, tiles, requests = ActiveSupport::Cache::MemoryStore.new, TileCache.new(20), []
       connection = rising(requests)
       trails = (1..3).map { |id| trail(id, east: id * 0.001) }
       assert_equal [1, 2, 3], terrain(trails, connection: connection, cache: cache, tiles: tiles).keys
@@ -72,11 +72,11 @@ class ElevationServiceTest < ActiveSupport::TestCase
       # A route nearby needs no more tiles, and the others' terrain is cached.
       assert_equal [1, 4], terrain([trails.first, trail(4, east: 0.004)], connection: connection, cache: cache, tiles: tiles).keys
       assert_equal fetched, requests.size
-      terrain(trails, connection: connection, cache: cache, tiles: ElevationService::TileCache.new(20))
+      terrain(trails, connection: connection, cache: cache, tiles: TileCache.new(20))
       assert_equal fetched, requests.size
 
       travel 30.days + 1.minute
-      terrain(trails.first(1), connection: connection, cache: cache, tiles: ElevationService::TileCache.new(20))
+      terrain(trails.first(1), connection: connection, cache: cache, tiles: TileCache.new(20))
       assert_operator requests.size, :>, fetched
     end
   end
@@ -137,7 +137,7 @@ class ElevationServiceTest < ActiveSupport::TestCase
   end
 
   test "the tile cache keeps the most recently used tiles" do
-    tiles, made = ElevationService::TileCache.new(2), []
+    tiles, made = TileCache.new(2), []
     fetch = ->(key) { tiles.fetch(key) { made << key; "tile #{key}" } }
     %w[a b a c].each { |key| fetch.(key) }
     # Using a again kept it, so c pushed out b.
