@@ -142,7 +142,7 @@ class GuideServiceTest < ActiveSupport::TestCase
   end
 
   test "a guide plans each hike's trips and photos, most scenic first, and tells plain or shared names apart by place" do
-    trails = [trail("White Trail", 1, scenic: 1), trail("Breakneck Ridge Trail", 2, scenic: 4, noise: { quiet: 0.9, loud: 0.0 }),
+    trails = [trail("White Trail", 1, scenic: 1), trail("Breakneck Ridge Trail", 2, scenic: 4, noise: { quiet: 0.9, typical: 0 }),
       trail("White Trail", 3),
       trail("Ridge Loop", 4, scenic: 2, plan: :through, loop: false, finish: [41.42, -73.9])]
     search = FakeSearch.new(trails)
@@ -165,7 +165,7 @@ class GuideServiceTest < ActiveSupport::TestCase
     assert_equal ["2026-10-10T08:00:00-04:00", "2026-10-10T23:00:00-04:00"], data.values_at(:departure_time, :return_by)
     assert_equal({ climb: 400, relief: 400 }, hike.dig(:trail, :terrain))
     # The noise along it is kept for its Quiet chip.
-    assert_equal [{ quiet: 0.9, loud: 0.0 }, nil], data[:hikes].first(2).map { |each| each.dig(:trail, :noise) }
+    assert_equal [{ quiet: 0.9, typical: 0 }, nil], data[:hikes].first(2).map { |each| each.dig(:trail, :noise) }
     assert_equal ["2026-10-10T13:30:00Z", "2026-10-10T22:23:00Z"], hike.dig(:trail).values_at(:arrival, :sunset)
   end
 
@@ -221,6 +221,11 @@ class GuideServiceTest < ActiveSupport::TestCase
     assert_equal 30, GuideService.previous(guide)[:hikes].size
     assert GuideService.write(guide, hikes.(18))
     assert_equal 18, GuideService.page("new-york-city").hikes.size
+    # The last guide counts the hikes it still shows, as one with only loud hikes left shows none.
+    loud = hikes.(20).tap { |data| data[:hikes].each { |hike| hike[:trail] = hike[:trail].merge(noise: { quiet: 0.1, typical: 60 }) } }
+    assert GuideService.write(guide, loud)
+    assert_empty GuideService.page("new-york-city").hikes
+    assert GuideService.write(guide, hikes.(GuideService::MIN_HIKES))
   end
 
   test "a guide's page has its hikes' routes, trips, and photos, in the city's time zone" do
@@ -260,5 +265,18 @@ class GuideServiceTest < ActiveSupport::TestCase
     write_guide
     white = GuideService.page("new-york-city").hike("white-trail-tarrytown-lakes")
     assert_equal Time.utc(2026, 10, 10, 22, 23), white.trail.sunset
+  end
+
+  test "a guide leaves out hikes searches don't show" do
+    trails = [trail("Ridge Loop", 1, scenic: 1), trail("Flat Loop", 2), trail("Road Walk", 3, noise: { quiet: 0.1, typical: 60 })]
+    data = GuideService.build(guide, search: FakeSearch.new(trails), transit: FakeTransit.new, photos: FakePhotos.new,
+      places: FakePlaces.new)
+    # Flat ones are shown too, after the more scenic.
+    assert_equal ["Ridge Loop", "Flat Loop"], data[:hikes].map { |hike| hike.dig(:trail, :name) }
+  end
+
+  test "guides leave out hikes searches don't show now: 45 dB or louder along half the way" do
+    write_guide(guide_data.tap { |data| data[:hikes].last[:trail][:noise] = { quiet: 0.3, typical: 45, loudest: 55 } })
+    assert_equal ["breakneck-ridge-trail"], GuideService.page("new-york-city").hikes.map(&:slug)
   end
 end

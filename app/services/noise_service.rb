@@ -2,9 +2,9 @@
 # U.S. DOT Bureau of Transportation Statistics' National Transportation Noise
 # Map (https://www.bts.gov/geospatial/national-transportation-noise-map): road,
 # rail, and aviation noise, modeled for 2022 as the average sound level over a
-# day, served as map tiles with no key. Routes away from traffic rank higher,
-# and routes mostly beside loud traffic aren't shown. The map doesn't change,
-# so each route's noise is kept for 90 days.
+# day, served as map tiles with no key. Only routes under 45 dB along most of
+# them are shown, and the quieter rank higher. The map doesn't change, so each
+# route's noise is kept for 90 days.
 module NoiseService
   TILE_URL = "https://tiles.arcgis.com/tiles/xOi1kZaI0eWDREZv/arcgis/rest/services/" \
     "NTAD_Noise_2022_CONUS_aviation_rail_road/MapServer/tile/".freeze
@@ -17,10 +17,6 @@ module NoiseService
     [163, 0, 204] => 70, [82, 0, 204] => 80, [0, 0, 255] => 90 }.freeze
   # How quiet a place is, from 1 under 45 dB to 0 from 55 dB, about as loud as a busy street nearby.
   QUIETNESS = { 0 => 1.0, 45 => 2 / 3.0, 50 => 1 / 3.0 }.freeze
-  # Routes with more than LOUD_SHARE of their points at LOUD_DB or louder are
-  # mostly beside busy roads, highways, or railways, or under flight paths.
-  LOUD_DB = 60
-  LOUD_SHARE = 0.5
   # A route's loudest level is the one at least this share of its points
   # reach, so that crossing a road doesn't count.
   LOUDEST_SHARE = 0.05r
@@ -48,12 +44,12 @@ module NoiseService
     LATITUDES.cover?(latitude) && LONGITUDES.cover?(longitude) && covers?(transit.area(latitude, longitude)[:time_zone])
   end
 
-  # The noise along each trail, as { osm_id => { quiet:, loud:, typical:, loudest: } }:
-  # quiet is how quiet its points are on average, from 0 to 1, loud the share
-  # of them at LOUD_DB or louder, typical the level along at least half of it,
-  # in decibels from LEVELS or 0 under 45 dB, and loudest the level at least
-  # LOUDEST_SHARE of it reaches. Each route's noise is cached, and only
-  # uncached routes are looked up. Raises when a tile can't be loaded.
+  # The noise along each trail, as { osm_id => { quiet:, typical:, loudest: } }:
+  # quiet is how quiet its points are on average, from 0 to 1, typical the
+  # level along at least half of it, in decibels from LEVELS or 0 under 45 dB,
+  # and loudest the level at least LOUDEST_SHARE of it reaches. Each route's
+  # noise is cached, and only uncached routes are looked up. Raises when a tile
+  # can't be loaded.
   def self.noise(trails, connection: nil, cache: Rails.cache, tiles: TILES)
     keys = trails.to_h { |trail| [trail.osm_id, "noise:v2:#{trail.osm_id}"] }
     found = keys.empty? ? {} : cache.read_multi(*keys.values)
@@ -73,13 +69,13 @@ module NoiseService
   def self.summary(levels)
     sorted = levels.sort
     { quiet: (levels.sum { |level| QUIETNESS.fetch(level, 0.0) } / levels.size).round(2),
-      loud: levels.count { |level| level >= LOUD_DB }.fdiv(levels.size).round(2),
       typical: sorted[levels.size / 2], loudest: sorted[-(levels.size * LOUDEST_SHARE).ceil] }
   end
 
-  # Whether a route's noise, as #noise gives it, says it's mostly beside loud traffic.
-  def self.loud?(noise)
-    noise.present? && noise[:loud] > LOUD_SHARE
+  # Whether a route's noise, as #noise gives it, says it's 45 dB or louder
+  # along at least half of it, near roads, railways, or flight paths.
+  def self.too_loud?(noise)
+    noise.present? && noise[:typical].to_i.positive?
   end
 
   # The sound level at a point, in decibels from LEVELS, or 0 under 45 dB.

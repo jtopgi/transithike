@@ -8,9 +8,10 @@ require "json"
 module GuideService
   CONFIG = Rails.root.join("config/guides.yml")
   # A new guide replaces the last one only when it has at least MIN_HIKES
-  # hikes and at least KEEP_SHARE as many as the last one, so a provider's
-  # bad day doesn't empty a city's pages.
-  MIN_HIKES = 12
+  # hikes and at least KEEP_SHARE as many as the last one still shows, so a
+  # provider's bad day doesn't empty a city's pages, while a city with few
+  # quiet hikes by train still gets a small guide.
+  MIN_HIKES = 3
   KEEP_SHARE = 0.6
   # A photo lookup that fails is tried again after this long, since Commons is
   # slow at times, and builds give each lookup this long.
@@ -87,7 +88,8 @@ module GuideService
       places: PhotonService)
       place = guide.place
       result = search.search(origin: place, day: "saturday", fresh: fresh)
-      trails = result.trails.sort_by { |trail| [-TrailsService.scenic(trail), -trail.score.to_f, trail.duration.to_i] }
+      trails = result.trails.select { |trail| TrailsService.shown?(trail) }
+        .sort_by { |trail| [-TrailsService.scenic(trail), -trail.score.to_f, trail.duration.to_i] }
       hikes = trails.map { |trail| hike_data(trail, place, result, transit, photos, places) }
       titled(hikes, previous)
       { slug: guide.slug, name: guide.name, origin: guide.origin, built_at: Time.current.utc.iso8601,
@@ -121,12 +123,14 @@ module GuideService
       best
     end
 
-    # Writes a city's new guide unless it has too few hikes, returning whether it did.
+    # Writes a city's new guide unless it has too few hikes, returning whether
+    # it did. The last guide counts the hikes it still shows, as one built
+    # under earlier rules may have more than those rules show now.
     def write(guide, data)
       file = directory.join("#{guide.slug}.json")
-      previous = JSON.parse(file.read, symbolize_names: true) if file.file?
+      shown = load(guide, JSON.parse(file.read, symbolize_names: true)).hikes.size if file.file?
       hikes = data[:hikes].size
-      return false if hikes < MIN_HIKES || (previous && hikes < previous[:hikes].size * KEEP_SHARE)
+      return false if hikes < MIN_HIKES || (shown && hikes < shown * KEEP_SHARE)
 
       FileUtils.mkdir_p(directory)
       file.write("#{JSON.pretty_generate(data)}\n")
@@ -193,14 +197,15 @@ module GuideService
       (2..).lazy.map { |number| "#{slug}-#{number}" }.find { |candidate| !taken.include?(candidate) }
     end
 
-    # Whether a guide's hike is done by sunset and, where its trips were
-    # planned, has enough of them there and back.
+    # Whether a guide's hike is shown, as searches show them, is done by sunset,
+    # and, where its trips were planned, has enough of them there and back.
     def kept?(hike)
-      (hike.trail.arrival.nil? || TrailsService.daylight?(hike.trail)) &&
+      TrailsService.shown?(hike.trail) && (hike.trail.arrival.nil? || TrailsService.daylight?(hike.trail)) &&
         (hike.there.nil? || TripPlans.frequent?(departures: hike.departures, ways: hike.ways))
     end
 
-    # The guide's page, without hikes there isn't the daylight for, or without
+    # The guide's page, without hikes searches don't show, too loud, hikes
+    # there isn't the daylight for, or hikes without
     # TripPlans::MIN_TRIPS trips there and as many back before dark. Guides
     # built before sunsets were kept have theirs worked out, and their trips
     # back after dark are left out.

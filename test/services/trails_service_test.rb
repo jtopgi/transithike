@@ -470,23 +470,23 @@ class TrailsServiceTest < ActiveSupport::TestCase
     refute result.returns_checked
   end
 
-  test "in the US, quiet routes rank higher, and routes mostly beside loud traffic aren't shown or planned" do
-    trails = %w[forest suburb highway unknown].map { |name| trail(name) }
-    noise = FakeNoise.new({ "forest" => { quiet: 1.0, loud: 0.0 }, "suburb" => { quiet: 0.2, loud: 0.3 },
-      "highway" => { quiet: 0.0, loud: 0.8 } })
+  test "in the US, only routes under 45 dB along most of the way are shown or planned, and the quieter rank higher" do
+    trails = %w[forest edge suburb highway unknown].map { |name| trail(name) }
+    noise = FakeNoise.new({ "forest" => { quiet: 1.0, typical: 0, loudest: 0 }, "edge" => { quiet: 0.6, typical: 0, loudest: 50 },
+      "suburb" => { quiet: 0.3, typical: 45, loudest: 55 }, "highway" => { quiet: 0.0, typical: 70, loudest: 80 } })
     transit = FakeTransit.new(trips: trails.to_h { |trail| [trail.name, minutes(60)] })
     found = search(transit: transit, hiking: FakeHiking.new(trails), noise: noise).trails.index_by(&:name)
 
-    assert_equal %w[forest suburb unknown], found.keys.sort
-    assert_equal [{ quiet: 1.0, loud: 0.0 }, nil], found.values_at("forest", "unknown").map(&:noise)
+    assert_equal %w[edge forest unknown], found.keys.sort
+    assert_equal [{ quiet: 1.0, typical: 0, loudest: 0 }, nil], found.values_at("forest", "unknown").map(&:noise)
     # Quiet surroundings count up to two points, and unknown ones nothing.
-    assert_equal [2.0, 0.4, 0.0], found.values_at("forest", "suburb", "unknown").map { |trail| TrailsService.scenic(trail) }
-    assert_equal %w[forest highway suburb unknown], noise.asked.sort
-    assert_not_includes transit.timetables, "highway"
+    assert_equal [2.0, 1.2, 0.0], found.values_at("forest", "edge", "unknown").map { |trail| TrailsService.scenic(trail) }
+    assert_equal %w[edge forest highway suburb unknown], noise.asked.sort
+    assert_empty transit.timetables & %w[suburb highway]
   end
 
   test "noise is looked up from stations on the noise map, whoever searches, and when it fails, routes are kept without it" do
-    noise = FakeNoise.new({ "a" => { quiet: 0.0, loud: 1.0 } })
+    noise = FakeNoise.new({ "a" => { quiet: 0.0, typical: 70, loudest: 80 } })
     # A station across the border, in Vancouver, isn't on it, even for searches from Seattle.
     vancouver = Station.new(name: "Pacific Central", latitude: 49.27, longitude: -123.1, id: "pacific-central",
       time_zone: "America/Vancouver")
@@ -714,7 +714,8 @@ class TrailsServiceTest < ActiveSupport::TestCase
     hiking = FakeHiking.new(trails, highlights: { trails[5].osm_id => [{ kind: "waterfall", name: "Falls" }] })
     result = stub_const(TrailsService, :TERRAIN_CHUNK, 1) { search(transit: transit, hiking: hiking, elevation: elevation) }
 
-    assert_equal 6, elevation.lookups.size
+    # Each route's terrain is looked up while its batch's transit is checked, and once more for those still without it.
+    assert_equal({ "1" => 2, "2" => 1, "3" => 1, "4" => 1, "5" => 2, "6" => 2 }, elevation.lookups.tally)
     # The third route within 3 km of two better ones ranks lower, for variety.
     assert_equal %w[2 3 6 4 1 5], result.trails.map(&:name)
     assert_equal views, result.trails.first.terrain
@@ -723,13 +724,13 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal result.trails.map(&:score), result.trails.map(&:score).sort.reverse
   end
 
-  test "terrain is looked up for the most promising routes only" do
+  test "terrain is looked up for each batch's routes, and once more for the most promising still without it" do
     scenic, plain = trail("scenic"), trail("plain")
     transit = FakeTransit.new(trips: { "scenic" => minutes(30), "plain" => minutes(30) })
     hiking = FakeHiking.new([plain, scenic], highlights: { scenic.osm_id => [{ kind: "peak", name: "Knob" }] })
     elevation = FakeElevation.new
     stub_const(TrailsService, :MAX_TERRAIN_LOOKUPS, 1) { search(transit: transit, hiking: hiking, elevation: elevation) }
-    assert_equal ["scenic"], elevation.lookups
+    assert_equal({ "scenic" => 2, "plain" => 1 }, elevation.lookups.tally)
   end
 
   test "a slow terrain lookup does not hold up the search" do
@@ -984,13 +985,13 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal [%w[a b c], false], shown(station_search(again))
   end
 
-  test "a search that couldn't check every route doesn't bring back routes it found beside loud traffic" do
+  test "a search that couldn't check every route doesn't bring back routes it found too loud, nor ones too loud now" do
     a, b, c = trail("a"), trail("b"), trail("c")
     down = FakeNoise.new(failure: SearchErrors::UpstreamError.new("The noise map is down"))
     assert_equal [%w[a b], true], shown(station_search(FakeHiking.new([a, b, c], failing: [c.osm_id]), noise: down))
     travel 11.minutes
     # Searched again, b is beside a highway, and c still can't be checked.
-    loud = FakeNoise.new({ "a" => { quiet: 0.9, loud: 0.0 }, "b" => { quiet: 0.0, loud: 0.9 } })
+    loud = FakeNoise.new({ "a" => { quiet: 0.9, typical: 0, loudest: 45 }, "b" => { quiet: 0.0, typical: 60, loudest: 70 } })
     hiking = FakeHiking.new([a, b, c], failing: [c.osm_id])
     assert_equal [%w[a b], false], shown(station_search(hiking, noise: loud))
     assert_equal [%w[a], false], shown(station_search(hiking, noise: loud))
@@ -1000,7 +1001,14 @@ class TrailsServiceTest < ActiveSupport::TestCase
     shown(station_search(unchecked, noise: loud))
     assert_equal [%w[a], false], shown(station_search(unchecked, noise: loud))
     kept = station_search(unchecked, noise: loud).events_since(0).first.find { |event, _| event == :trails }.last
-    assert_equal [{ quiet: 0.9, loud: 0.0 }], kept.map(&:noise)
+    assert_equal [{ quiet: 0.9, typical: 0, loudest: 45 }], kept.map(&:noise)
+
+    # Kept searches show without hikes that aren't shown now, as one kept from before the rule.
+    key = StationSearch.keys(STATION, SATURDAY.in_time_zone("America/Los_Angeles"))[:day]
+    entry = @station_cache.read(key)
+    entry[:result].trails.first.noise = { quiet: 0.2, typical: 50, loudest: 60 }
+    @station_cache.write(key, entry)
+    assert_equal [[], false], shown(station_search(unchecked, noise: loud))
   end
 
   # A pool that holds what's posted to it until it's run.

@@ -121,8 +121,10 @@ class StationSearch
     end
   end
 
-  # A search that's already done, with its result.
+  # A search that's already done, with its result, without hikes that aren't
+  # shown now, as when a search kept from before left them in.
   def self.finished(result)
+    result.trails = result.trails.select { |trail| TrailsService.shown?(trail) }
     new(nil, nil, nil, nil, nil, events: [[:trails, result.trails.map(&:dup)], [:done, result]], done: true)
   end
 
@@ -187,8 +189,8 @@ class StationSearch
 
   # When the search couldn't check some routes, it keeps those the day's last
   # search found that it didn't, ranking them all again, and returns them.
-  # Those found mostly beside loud traffic since, as when this search found
-  # them so, stay hidden.
+  # Those found too loud since, as when this search found them so, and those
+  # that aren't shown now stay hidden.
   def with_earlier(result)
     return [] if self.class.complete?(result)
 
@@ -197,6 +199,7 @@ class StationSearch
     extra = Array(earlier&.trails).reject { |trail| found.include?(trail.osm_id) }
     noise = TrailsService.noise_at(@station, @providers[:noise])
     extra = TrailsService.away_from_traffic(extra, TrailsService.noise_lookups(extra, noise)) if noise && extra.any?
+    extra = extra.select { |trail| TrailsService.shown?(trail) }
     result.trails = TrailsService.rank(result.trails + extra) if extra.any?
     extra
   end

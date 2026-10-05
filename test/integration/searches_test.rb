@@ -127,7 +127,9 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   end
 
   # Elevation tiles with heights by latitude, by default flat land 50 m up.
-  def elevation(height = ->(_latitude) { 50 })
+  # Elevation tiles, with each place's height by its latitude: by default,
+  # rising 100 m for every kilometer north, so routes climb enough to be shown.
+  def elevation(height = ->(latitude) { [50 + (latitude - 47.0) * 11_000, 0].max })
     path = URI(ElevationService::TILE_URL).path
     @stubs.get(/\A#{Regexp.escape(path)}/) do |env|
       @requests[path] << env
@@ -276,7 +278,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
 
     # Coming back the same way takes as long as going until the card's trips are planned. The route is hiked out and
     # back, 2.76 miles in 1½ hours at least, and the last trip back leaves half an hour after.
-    card = cards.at_css("[data-trail][data-osm-id='123'][data-travel='10800'][data-length='2.76'][data-scenic='0.0']" \
+    card = cards.at_css("[data-trail][data-osm-id='123'][data-travel='10800'][data-length='2.76'][data-scenic='2.2']" \
       "[data-hike='5400'][data-required='7200'][data-plan='out_and_back']")
     assert card
     # Arriving at 9:30 AM, the last of the trips back at 3, 4, and 5 PM, before dark at 7:29 PM, leaves 7½ hours there.
@@ -286,8 +288,8 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     # Photos are looked for at the route's middle and a sixth of the way from each end.
     assert card.at_css("a[data-photos-url='#{photos_path(points: '47.32,-122.0|47.3,-122.0')}'][hidden]")
     assert card.at_css("[data-gallery][hidden]")
-    # The climb shows once the search has looked up the route's terrain.
-    assert card.at_css("[data-climb-stat][hidden]")
+    # The route's terrain is looked up while its trips are, so its climb shows at once.
+    assert_equal "⛰️ Climb ≈ 700 ft", card.at_css("[data-climb-stat]:not([hidden])").text.squish
     assert_nil card.at_css("[data-distance]")
     assert_match(/Round trip\s+≈ 3 h\s+≈ 1 h 30 min each way · 1 transfer/, card.at_css(".trail-stats").text.squish)
     assert_match(/Hike ≈ 2.8 mi out and back/, card.at_css(".trail-stats").text.squish)
@@ -309,8 +311,8 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_includes card.to_html, "&lt;script&gt;"
 
     update = data_for("update").sole["trails"].sole
-    # Flat land has no views, and nothing to climb.
-    assert_equal [123, 0.0, "≈ 0 ft"], update.values_at("id", "scenic", "climb")
+    # It climbs about 220 m, for 2.2 points of views.
+    assert_equal [123, 2.2, "≈ 700 ft"], update.values_at("id", "scenic", "climb")
     assert_nil update["popularity"]
     assert_kind_of Numeric, update["score"]
     assert_equal({ "count" => 1, "notices" => [] }, data_for("done").sole)
@@ -435,7 +437,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
       data_for("place").sole["departure"]
   end
 
-  test "in the US, quiet hikes say so and rank higher, and hikes mostly beside loud traffic aren't shown" do
+  test "in the US, only hikes under 45 dB along most of the way are shown, and quiet ones say so and rank higher" do
     geocode
     area
     rail([[47.3, -122.0, 50], [47.36, -122.0, 55]])
@@ -443,15 +445,15 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     transit([[{ duration: 5400, transfers: 1 }], [{ duration: 5400, transfers: 1 }]])
     timetables
     elevation
-    # Traffic is loud north of 47.35, along the highway, and quiet south of it.
-    noise_map { |latitude| latitude > 47.35 ? 70 : nil }
+    # Traffic is 45 to 50 dB north of 47.35, along the highway, and quieter south of it.
+    noise_map { |latitude| latitude > 47.35 ? 45 : nil }
     search_all(origin: "Seattle")
 
     assert_equal ["Forest Loop"], cards.css("h2").map { |title| title.text.strip }
     forest = cards.at_css("[data-trail][data-osm-id='1']")
-    # Quiet all along, it counts two points more, as a good view would.
-    assert_equal "2.0", forest["data-scenic"]
-    assert_equal "🌲 Quiet", forest.at_css(".trail-chip").text.squish.sub(/ \(.*\)\z/, "")
+    # Quiet all along, it counts two points more than its 2.2 for views, as a good view would.
+    assert_equal "4.2", forest["data-scenic"]
+    assert_equal ["🌄 Views", "🌲 Quiet"], forest.css(".trail-chip").map { |chip| chip.text.squish.sub(/ \(.*\)\z/, "") }
     assert_select_in(forest, ".trail-chip[title*='under 45 dB']")
     # It says how loud it is, and it's no louder in places.
     assert_equal "🔈 Noise < 45 dB", forest.at_css("[data-noise]").ancestors("div").first.text.squish

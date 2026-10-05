@@ -132,8 +132,8 @@ test Overpass connectivity from your deployment before launching.
   who started it leaves. Kept searches show at once, and once 12 hours old (10
   minutes when some routes couldn't be checked), the station is searched again
   in the background for later visitors, keeping routes an earlier search found
-  that the new one couldn't check, unless found mostly beside loud traffic
-  since. Where a station hasn't been searched for the day yet, its search for
+  that the new one couldn't check, unless found too loud since; kept searches
+  show without hikes that aren't shown now. Where a station hasn't been searched for the day yet, its search for
   the same weekday and time from up to two weeks before shows at once, moved to
   the day, while the day is searched in the background: timetables rarely change
   from one week to the next, and each card plans its trips for the day. Searches
@@ -239,7 +239,8 @@ test Overpass connectivity from your deployment before launching.
   viewpoint with a Wikipedia article. Each waterfall scores 1.5, plus half a point
   for a name, one for a Wikipedia article, and one for every 20 m of mapped height,
   up to 1.5. Cards show "Big views" when the higher of the climb and the relief is
-  at least 300 m (about 1,000 ft), and "Views" from 150 m. In the 48 contiguous
+  at least 300 m (about 1,000 ft), and "Views" from 150 m. Scenery only ranks
+  hikes: flat ones are shown too, after the more scenic. In the 48 contiguous
   states, quiet surroundings score up to two points more, about as much as a good
   view: a point's quietness is 1 under 45 dB, two thirds from 45, a third from 50,
   and none from 55 dB, averaged over up to 64 points along the route. Cards show
@@ -251,9 +252,9 @@ test Overpass connectivity from your deployment before launching.
   road, rail, and aviation noise, modeled for 2022 as the average sound level over
   a day, in public map tiles with no key. Zoom-12 tiles, about 7 km across with a
   level about every 30 m, are fetched as palette PNG images and decoded in Ruby,
-  each color standing for the band of decibels the map's legend gives it. Hikes
-  with more than half their points at 60 dB or more, beside busy roads, highways,
-  or railways, or under flight paths, aren't shown. Cards and hike pages show the
+  each color standing for the band of decibels the map's legend gives it. Only
+  hikes under 45 dB along most of the way are shown, away from busy
+  roads, highways, railways, and flight paths. Cards and hike pages show the
   level along at least half of a route as the legend's band, such as "< 45 dB",
   and a louder one in places when at least a twentieth of it reaches one, so
   crossing a road doesn't count. Each batch's noise is looked up while its
@@ -283,9 +284,11 @@ test Overpass connectivity from your deployment before launching.
   points along it, and its relief is how far that high point stands above the
   lowest of 16 points 1 and 2 km around it. Heights below sea level count as sea
   level, since the tiles hold river and sea beds and a few gaps in the data there.
-  Terrain is looked up for up to 100 of the most promising hikes, a few near each
-  other at a time, and cached for 30 days per route; each server process keeps up
-  to 200 decoded tiles (128 KB each). The footer credits the data's sources, linking
+  Terrain is looked up for each batch's routes while their transit is checked,
+  waiting at most 8 seconds, and again at the end for up to 100 of the most
+  promising hikes still without it, a few near each other at a time, and cached
+  for 30 days per route; each server process keeps up to 200 decoded tiles (128
+  KB each). The footer credits the data's sources, linking
   to their [attribution](https://github.com/tilezen/joerd/blob/master/docs/attribution.md).
 - **Photos** are only of nature. Each card shows up to eight in a gallery of
   thumbnails, taken within 2 km of three points along the route (its middle and
@@ -320,11 +323,12 @@ test Overpass connectivity from your deployment before launching.
   origin's area, the tiles after the first four, highlights, terrain, and photos
   only refine a search, which goes ahead without them; when any tile's routes
   don't load, the page says some hikes couldn't be checked, and guide builds try
-  that city again. Highlights not found within
-  5 seconds of the last batch, and terrain not found within 8 seconds after that,
-  are left out, and the lookups finish in the background so later searches have
-  them. When the way back can't be looked up, hikes are shown with a notice saying
-  so.
+  that city again. Each batch's terrain is looked up while its transit is
+  checked, so cards show their climb and rank by their views as they come.
+  Highlights not found within 5 seconds of the last batch, and terrain not found
+  within 8 seconds after that, are left out, and the lookups finish in the
+  background so later searches have them. When the way back can't be looked up,
+  hikes are shown with a notice saying so.
 
 Route data is © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright),
 available under the ODbL. The public Overpass server is shared infrastructure:
@@ -414,8 +418,9 @@ planning, linked from the home page, the navigation, and an index of cities.
   keeping a complete build, or else the one with more hikes), plans every hike's
   trips there and back with `TripPlans`, finds their photos and where they are,
   and writes `db/guides/<city>.json`. A city's guide is only
-  replaced when the new one has at least 12 hikes and at least 60% as many as
-  the last, so a provider's bad day doesn't empty its pages, and hikes keep their
+  replaced when the new one has at least 3 hikes and at least 60% as many as
+  the last one still shows under the current rules, so a provider's bad day
+  doesn't empty its pages, and hikes keep their
   pages' addresses from week to week. Plain or shared names such as "White Trail"
   get the natural area nearby, or the station trains go to, in their title.
   Guides keep each hike's sunset, and a city's page leads with its sunset among

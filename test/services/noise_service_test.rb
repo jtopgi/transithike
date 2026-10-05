@@ -39,14 +39,14 @@ class NoiseServiceTest < ActiveSupport::TestCase
     NoiseService.noise(trails, connection: connection, cache: cache, tiles: TileCache.new(4))
   end
 
-  test "a route's noise is how quiet its points are on average, the share of them at 60 dB or more, and its levels" do
+  test "a route's noise is how quiet its points are on average, and its levels" do
     assert_equal TILE, ElevationService.pixel(*point(0, 0), NoiseService::ZOOM).first(2)
     requests = []
     connection = tiles_returning(requests) { noise_png { |column, _row| [nil, 45, 50, 60][column / 64] } }
     across = trail(1, (2..254).step(4))
     cache = ActiveSupport::Cache::MemoryStore.new
     # A quarter of its points are quiet, a quarter two thirds so, a quarter one third so, and a quarter loud.
-    banded = { quiet: 0.5, loud: 0.25, typical: 50, loudest: 60 }
+    banded = { quiet: 0.5, typical: 50, loudest: 60 }
     assert_equal({ 1 => banded }, noise([across], connection: connection, cache: cache))
     assert_equal ["/noise/12/#{TILE[1]}/#{TILE[0]}"], requests
     # Each route's noise is kept, and routes without a path have none.
@@ -64,10 +64,11 @@ class NoiseServiceTest < ActiveSupport::TestCase
     assert_equal [0, 60], NoiseService.summary([0, 0, 60]).values_at(:typical, :loudest)
   end
 
-  test "routes with more than half their points at 60 dB or more are loud" do
-    assert NoiseService.loud?(noise([trail(1, (192..255))], connection: banded)[1])
-    refute NoiseService.loud?(noise([trail(2, (128..255))], connection: banded)[2])
-    refute NoiseService.loud?(nil)
+  test "routes 45 dB or louder along at least half of them are too loud, and those quieter, or unknown, aren't" do
+    # Half its points are clear, and half 45 dB.
+    assert NoiseService.too_loud?(noise([trail(1, (32..95).step(2))], connection: banded)[1])
+    refute NoiseService.too_loud?(noise([trail(2, (30..93).step(2))], connection: banded)[2])
+    refute NoiseService.too_loud?(nil)
   end
 
   test "tiles are decoded through each of PNG's row filters, colors off the legend count as the nearest on it" do
