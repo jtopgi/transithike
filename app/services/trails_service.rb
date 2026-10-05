@@ -65,7 +65,7 @@ module TrailsService
   # still going when nothing has changed for KEEP_ALIVE_SECONDS.
   FOLLOW_SECONDS = 0.25
   KEEP_ALIVE_SECONDS = 15
-  # A search gives up on the hikes whose trips aren't planned yet when no
+  # A search gives up on all the hikes whose trips aren't planned yet when no
   # hike's trips anywhere have been planned for this long, as when the pool is
   # stuck, which code reloading in development can do.
   TRIP_QUIET_SECONDS = 60
@@ -241,6 +241,8 @@ module TrailsService
     def initialize(station, place, access, result, transit, hiking, on_found)
       @station, @place, @access, @result, @transit, @hiking, @on_found = station, place, access, result, transit, hiking, on_found
       @checked, @lookups, @budget = Set.new, [], { planned: MAX_PLANNED_ROUTES }
+      # Once planning trips is stuck, the search plans no more.
+      @stuck = Concurrent::AtomicBoolean.new
     end
 
     def check(ids)
@@ -259,7 +261,7 @@ module TrailsService
       return if found.empty?
 
       # Each hike shows as soon as its trips are planned.
-      kept = TrailsService.frequent(found, @place, @result, @transit, failed: method(:fail_with)) do |trail|
+      kept = TrailsService.frequent(found, @place, @result, @transit, failed: method(:fail_with), stuck: @stuck) do |trail|
         trail.station = @station
         trail.score = TrailsService.score(trail).round(2)
         @result.trails << trail
@@ -304,48 +306,52 @@ module TrailsService
   # yielded as soon as its trips are planned, with when the first trip there
   # arrives and the last trip back leaves. Trails whose trips can't be planned
   # are left out, the result says some hikes couldn't be checked, and failed is
-  # called with the error.
-  def self.frequent(trails, place, result, transit, failed: nil)
+  # called with the error. When no hike's trips anywhere have been planned for
+  # TRIP_QUIET_SECONDS, planning is stuck: the hikes planned by then are kept,
+  # the rest are given up on at once, and stuck says so for later batches.
+  def self.frequent(trails, place, result, transit, failed: nil, stuck: Concurrent::AtomicBoolean.new)
     plans = trails.map do |trail|
       start(trip_pool) do
+        # Hikes given up on before their turn aren't planned.
+        next if stuck.true?
+
         TripPlans.frequent(trail, origin: place, leave: result.departure_time, back_by: result.return_by, transit: transit)
       ensure
         Rails.configuration.x.trips_planned.increment
       end
     end
-    trails.zip(plans).filter_map do |trail, plan|
-      unless planned?(plan) && plan.fulfilled?
-        reason = plan.resolved? ? plan.reason : SearchErrors::ProviderBusy.new(SearchHttp::BUSY_MESSAGE)
+    counter = Rails.configuration.x.trips_planned
+    count, quiet_since = counter.value, Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    kept = trails.zip(plans).filter_map do |trail, plan|
+      until plan.resolved? || stuck.true?
+        settle([plan], timeout: 1)
+        now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        if counter.value != count
+          count, quiet_since = counter.value, now
+        elsif now - quiet_since >= TRIP_QUIET_SECONDS
+          stuck.make_true
+        end
+      end
+      # A resolved plan stays as it is, so it's looked at once.
+      done = plan if plan.resolved?
+      unless done&.fulfilled?
+        reason = done ? done.reason : SearchErrors::ProviderBusy.new(SearchHttp::BUSY_MESSAGE)
         raise reason unless reason.is_a?(SearchErrors::UpstreamError)
 
         result.complete = false
         failed&.call(reason)
         next
       end
-      next unless (trips = plan.value)
+      next unless (trips = done.value)
 
       trail.arrival = Time.iso8601(trips[:there][:arrival])
       trail.last_return = Time.iso8601(trips[:ways][:last][:departure])
       yield trail if block_given?
       trail
     end
-  end
-
-  # Waits for a hike's trips to be planned, unless no hike's trips anywhere
-  # have been planned for TRIP_QUIET_SECONDS, and says whether they were.
-  def self.planned?(plan)
-    counter = Rails.configuration.x.trips_planned
-    count, quiet_since = counter.value, Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    until plan.resolved?
-      settle([plan], timeout: 1)
-      now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      if counter.value != count
-        count, quiet_since = counter.value, now
-      elsif now - quiet_since >= TRIP_QUIET_SECONDS
-        return false
-      end
-    end
-    true
+    # Hikes skipped once planning was stuck weren't checked either.
+    result.complete = false if stuck.true?
+    kept
   end
 
   def self.trip_pool

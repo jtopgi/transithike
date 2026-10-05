@@ -474,6 +474,27 @@ class TrailsServiceTest < ActiveSupport::TestCase
     stuck&.set
   end
 
+  test "once planning is stuck, the hikes still waiting are given up on together, and those not started aren't planned" do
+    stuck = Concurrent::Event.new
+    trails = %w[a b c d].map { |name| trail(name) }
+    # Three hikes hold the pool's three threads, and the fourth waits its turn.
+    transit = FakeTransit.new(trips: trails.to_h { |trail| [trail.name, minutes(30)] },
+      plans: trails.to_h { |trail| [trail.name, -> { stuck.wait(10) }] })
+    planned = Rails.configuration.x.trips_planned.value
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    assert_raises(SearchErrors::ProviderBusy) do
+      stub_const(TrailsService, :TRIP_QUIET_SECONDS, 0.5) { search(transit: transit, hiking: FakeHiking.new(trails)) }
+    end
+    # One quiet spell, rather than one for each hike.
+    assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 1.5
+    stuck.set
+    100.times { Rails.configuration.x.trips_planned.value >= planned + 4 ? break : sleep(0.05) }
+    # The fourth hike's turn came after the search gave up, so its trips weren't planned.
+    assert_equal 3, transit.timetables.size
+  ensure
+    stuck&.set
+  end
+
   test "routes whose trips can't be planned are left out, and a search that can't plan any fails" do
     busy = SearchErrors::UpstreamError.new("Transit is busy")
     transit = FakeTransit.new(trips: { "a" => minutes(30), "b" => minutes(30) }, plans: { "b" => busy })
