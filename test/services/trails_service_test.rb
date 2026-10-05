@@ -138,7 +138,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
   class FakeHiking
     FIRST_TILE = [47.5, -122.5].freeze
 
-    attr_reader :access, :batches, :checked_before, :reliefs, :stations, :tile_relief, :tile_requests, :threads
+    attr_reader :access, :batches, :checked_before, :paths_given, :reliefs, :stations, :tile_relief, :tile_requests, :threads
 
     # stuck names the lookups that wait for release: :first_tiles, :other_tiles, :trails_for, or :highlights.
     # A lookup of routes including a failing one fails, and unstored routes are left out of a lookup that finds
@@ -148,7 +148,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
       stuck: [:highlights], tiles_failing: [], crowded: false)
       @trails, @far, @highlights, @failing, @release, @stuck = trails, far, highlights, failing, release, stuck
       @unstored, @busy, @tiles_failing, @crowded = unstored, busy, tiles_failing, crowded
-      @batches, @threads, @tile_requests, @reliefs, @checked_before = [], [], Concurrent::Array.new, [], []
+      @batches, @threads, @tile_requests, @reliefs, @checked_before, @paths_given = [], [], Concurrent::Array.new, [], [], []
     end
 
     # One tile, or five when there are routes in the others; crowded ones are picked knowing their relief.
@@ -168,7 +168,11 @@ class TrailsServiceTest < ActiveSupport::TestCase
 
       failures&.push(SearchErrors::UpstreamError.new("busy")) if @tiles_failing.include?(first ? :first_tiles : :other_tiles)
 
-      (first ? @trails : @far).map { |trail| { id: trail.osm_id, latitude: trail.latitude, longitude: trail.longitude } }
+      # Named paths, with negative ids, list their ways.
+      (first ? @trails : @far).map do |trail|
+        { id: trail.osm_id, latitude: trail.latitude, longitude: trail.longitude, ways: ([-trail.osm_id] if trail.osm_id.negative?) }
+          .compact
+      end
     end
 
     def pick(routes, access:, relief:, checked: Set.new)
@@ -178,10 +182,11 @@ class TrailsServiceTest < ActiveSupport::TestCase
       routes.pluck(:id)
     end
 
-    def trails_for(ids, lat:, lon:, access:, failures: nil)
+    def trails_for(ids, lat:, lon:, access:, failures: nil, paths: {})
       @release&.wait(5) if @stuck.include?(:trails_for)
       @threads << Thread.current
       @batches << ids
+      @paths_given << paths
       raise SearchErrors::UpstreamError, "busy" if ids.intersect?(@failing)
 
       found = @batches.count { |batch| batch.intersect?(@unstored) } > @busy ? ids : ids - @unstored
@@ -261,7 +266,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
     @trails_made = @trails_made.to_i + 1
     latitude = at || 47.0 + @trails_made * 0.1
     OverpassService::Trail.new(name: name, latitude: latitude, longitude: -122.1, length: length, distance: distance,
-      osm_id: name.hash, path: [[[latitude, -122.1], [latitude + 0.01, -122.1]]], loop: loop, paved: 0, **attributes)
+      osm_id: name.hash.abs, path: [[[latitude, -122.1], [latitude + 0.01, -122.1]]], loop: loop, paved: 0, **attributes)
   end
 
   def search(origin: "Seattle", day: nil, near: nil, places: FakePlaces.new, transit: FakeTransit.new,
@@ -316,6 +321,14 @@ class TrailsServiceTest < ActiveSupport::TestCase
     failing = FakeElevation.new(relief: { near.osm_id => SearchErrors::UpstreamError.new("down") })
     assert_equal %w[near], search(transit: transit, hiking: hiking, elevation: failing).trails.map(&:name)
     assert_equal [{}, {}], hiking.reliefs
+  end
+
+  test "named paths' details are looked up from the ways their tiles list" do
+    route, path = trail("route"), trail("path", osm_id: -77)
+    hiking = FakeHiking.new([route, path])
+    result = search(transit: FakeTransit.new(trips: { "route" => minutes(30), "path" => minutes(30) }), hiking: hiking)
+    assert_equal %w[path route], result.trails.map(&:name).sort
+    assert_equal [{ -77 => [77] }], hiking.paths_given
   end
 
   test "tiles in bands of travel time with more than their share are picked knowing how far the land rises across them" do

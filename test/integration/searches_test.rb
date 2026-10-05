@@ -679,6 +679,24 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_select ".trail-location", count: 0
   end
 
+  test "a named path's page has its highlights from along its ways, and links to its first way on OpenStreetMap" do
+    HikingRoute.create!(osm_id: -5, collected_at: Time.current, details: { osm_id: -5, name: "Mount Si Trail",
+      summary: OverpassService::PATH_SUMMARY, latitude: 47.3, longitude: -122.0, length: 1.38, path: [[[47.3, -122.0], [47.32, -122.0]]],
+      loop: false, paved: 0.0, notable: false, ways: [5] })
+    hiking([], highlights: [highlight_node("waterfall", 47.31, -122.0, name: "Twin Falls")])
+    elevation
+    stub_get(WikipediaService::API_URL, {})
+    stub_get(PhotonService::REVERSE_URL, { features: [] })
+    planner(window: [train_there("15:19", "17:31")], back: [train_back("20:00", "21:30")])
+    get hike_path(hike_params(route: -5))
+
+    assert_response :success
+    assert_select "h1", text: "Mount Si Trail"
+    assert_select ".trail-chip", text: /Twin Falls/
+    assert_select "a[href='https://www.openstreetmap.org/way/5']", text: /OpenStreetMap/
+    assert(@requests["overpass"].any? { |query| query.include?("way(id:5)->.named;") })
+  end
+
   test "a hike's page shows its route, the trips there from its station that leave time to hike all of it, and the trips back" do
     hiking([route_element(latitude: 47.3, name: "Ridge Trail")], highlights: [highlight_node("waterfall", 47.31, -122.0, name: "Twin Falls")])
     elevation
@@ -749,7 +767,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   end
 
   test "a hike's page needs a route, points, a plan, times on one day, and a time zone, and says when it can't plan" do
-    [{ route: "abc" }, { plan: "wander" }, { plan: "through" }, { from: "91,0" }, { to: nil }, { tz: "Mars/Olympus" },
+    [{ route: "abc" }, { route: "0" }, { plan: "wander" }, { plan: "through" }, { from: "91,0" }, { to: nil }, { tz: "Mars/Olympus" },
       { leave: "soon" }, { back_by: "2026-09-26T06:00:00Z" }, { station: "north" }].each do |change|
       get hike_path(hike_params(**change).compact)
       assert_response :bad_request

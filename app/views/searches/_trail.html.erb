@@ -78,7 +78,7 @@
         <%# Shorter on phones, so the buttons fit on a line. %>
         <%= link_to hike_details_path(trail, result), class: "btn btn-outline-success btn-sm",
               aria: { label: "Details and timetables for #{trail.name}" } do %>Details<span class="d-none d-sm-inline"> &amp; timetables</span><% end %>
-        <%= link_to "https://www.openstreetmap.org/relation/#{trail.osm_id}", class: "btn btn-outline-secondary btn-sm",
+        <%= link_to trail.osm_url, class: "btn btn-outline-secondary btn-sm",
               target: "_blank", rel: "noopener", aria: { label: "#{trail.name} on OpenStreetMap" } do %><span class="d-none d-sm-inline">View on </span>OpenStreetMap<% end %>
       </div>
     </div>

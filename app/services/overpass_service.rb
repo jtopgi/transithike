@@ -11,7 +11,7 @@ module OverpassService
   # a walk of the stops transit reaches. Each tile's routes are shared by every search.
   TILE_DEGREES = 0.5
   # Where tiles' routes, routes' details, and their highlights are cached, by tile or route id.
-  TILE_KEY = "overpass:tile:v2:".freeze
+  TILE_KEY = "overpass:tile:v3:".freeze
   ROUTE_KEY = "overpass:route:v2:".freeze
   HIGHLIGHTS_KEY = "overpass:highlights:v3:".freeze
   # At most this many tiles are searched in each band of travel time, the
@@ -33,7 +33,18 @@ module OverpassService
   TILE_KEEP = 90.days
   TILE_REFRESH_AFTER = 30.days
   # Regions' routes and routes' geometry take a while to find, especially on the mirror.
-  LONG_QUERY_SECONDS = 45
+  LONG_QUERY_SECONDS = 60
+  # Where trails are mapped as named paths alone rather than as hiking routes,
+  # as across the American West, the named footpaths, bridleways, and paths
+  # that aren't sidewalks, crossings, or private are trails too: each the
+  # connected ways of one name that aren't part of a hiking route, with the
+  # negative of its first way's id, which no route has.
+  PATH_FILTER = (%(["highway"~"^(path|footway|bridleway)$"]["name"]["footway"!~"^(sidewalk|crossing)$"]) +
+    %(["access"!~"^(private|no)$"]["foot"!~"^(private|no)$"])).freeze
+  PATH_SUMMARY = "A trail mapped by OpenStreetMap contributors.".freeze
+  # A hiking route someone mapped is likelier to be a hike worth the trip than
+  # a named path, so paths are this much less promising.
+  PATH_PROMISE = 0.5
   # Trips are checked for at most this many routes per search, in batches; Transitous
   # plans at most 128 destinations in one request.
   MAX_TRANSIT_ROUTES = 120
@@ -103,6 +114,11 @@ module OverpassService
   Trail = Struct.new(:name, :summary, :latitude, :longitude, :length, :osm_id, :path, :highlights, :notable,
     :paved, :loop, :distance, :duration, :transfers, :arrival, :last_return, :origin, :terrain, :score, :plan, :finish,
     :location, :station, :sunset, :noise, keyword_init: true) do
+    # The route's page on OpenStreetMap: its hiking route's, or a named path's first way's.
+    def osm_url
+      osm_id.negative? ? "https://www.openstreetmap.org/way/#{-osm_id}" : "https://www.openstreetmap.org/relation/#{osm_id}"
+    end
+
     # A point halfway along the route, in its area even where transit reaches it from town.
     def midpoint
       points = Array(path).flatten(1)
@@ -214,10 +230,12 @@ module OverpassService
     "#{TILE_KEY}#{tile.join(':')}"
   end
 
-  # The tiles' routes, in one query, kept as { tile key => { routes:, at: } },
-  # when they were looked up.
+  # The tiles' routes and named paths, in one query, kept as
+  # { tile key => { routes:, at: } }, when they were looked up.
   def self.fetch_tiles(tiles, connections, cache)
-    routes = elements(tiles_query(tiles), connections, cache, timeout: LONG_QUERY_SECONDS).filter_map { |element| candidate(element) }
+    ways, relations = elements(tiles_query(tiles), connections, cache, timeout: LONG_QUERY_SECONDS)
+      .partition { |element| element.is_a?(Hash) && element["type"] == "way" }
+    routes = relations.filter_map { |element| candidate(element) } + path_candidates(ways)
     at = Time.current
     tiles.to_h do |south, west|
       within = routes.select do |route|
@@ -282,18 +300,60 @@ module OverpassService
 
   def self.tiles_query(tiles)
     region = [tiles.map(&:first).min, tiles.map(&:last).min,
-      tiles.map(&:first).max + TILE_DEGREES, tiles.map(&:last).max + TILE_DEGREES]
-    clauses = tiles.map { |south, west| "relation.region(#{south},#{west},#{south + TILE_DEGREES},#{west + TILE_DEGREES});" }
-    %([out:json][timeout:40];relation["type"="route"]["route"="hiking"](#{region.join(',')})->.region;) +
-      "(#{clauses.join});out tags bb;"
+      tiles.map(&:first).max + TILE_DEGREES, tiles.map(&:last).max + TILE_DEGREES].join(",")
+    boxes = tiles.map { |south, west| "(#{south},#{west},#{south + TILE_DEGREES},#{west + TILE_DEGREES})" }
+    # Named paths come with the nodes they're joined by, but not the ways of the routes, which are routes already.
+    %([out:json][timeout:60];relation["type"="route"]["route"="hiking"](#{region})->.region;) +
+      "(#{boxes.map { |box| "relation.region#{box};" }.join});out tags bb;" \
+      "way(r.region)->.routed;way#{PATH_FILTER}(#{region})->.paths;" \
+      "((#{boxes.map { |box| "way.paths#{box};" }.join}); - .routed;);out body bb;"
+  end
+
+  # Candidates like #candidate's for the named paths among the ways, with the
+  # ids of their ways: those of one name joined at a node are one trail.
+  def self.path_candidates(ways)
+    ways = ways.select do |way|
+      way["id"].is_a?(Integer) && way["id"].positive? && way["tags"].is_a?(Hash) && name(way["tags"]) &&
+        way["nodes"].is_a?(Array) && way["bounds"].is_a?(Hash)
+    end
+    ways.group_by { |way| name(way["tags"]).downcase }.values.flat_map do |named|
+      leader = named.to_h { |way| [way["id"], way["id"]] }
+      find = lambda do |id|
+        id = leader[id] while leader[id] != id
+        id
+      end
+      first_way = {}
+      named.each do |way|
+        way["nodes"].each do |node|
+          other = first_way[node] ||= way["id"]
+          joined = [find.(way["id"]), find.(other)]
+          leader[joined.max] = joined.min
+        end
+      end
+      named.group_by { |way| find.(way["id"]) }.values.filter_map { |trail| path_candidate(trail) }
+    end
+  end
+
+  def self.path_candidate(ways)
+    boxes = ways.map { |way| way["bounds"].values_at("minlat", "minlon", "maxlat", "maxlon") }
+    return unless boxes.all? { |box| SearchHttp.coordinates?(*box.first(2)) && SearchHttp.coordinates?(*box.last(2)) }
+
+    corners = [boxes.map(&:first).min, boxes.map { |box| box[1] }.min, boxes.map { |box| box[2] }.max, boxes.map(&:last).max]
+    span = distance(*corners)
+    return unless span.between?(MIN_SPAN_METERS, MAX_LENGTH_MILES * METERS_PER_MILE)
+
+    ids = ways.map { |way| way["id"] }.sort
+    { id: -ids.first, name: name(ways.first["tags"]), latitude: (corners[0] + corners[2]) / 2.0,
+      longitude: (corners[1] + corners[3]) / 2.0, bounds: corners, span: span.round,
+      notable: ways.any? { |way| notable?(way["tags"]) }, ways: ids }
   end
 
   # The routes with these ids, measured, leaving out those too short, too long,
   # or mostly paved for a day hike, and joined where transit reaches them
   # soonest when access is known; distance is in miles from the origin. Routes
-  # are left out as #routes leaves them out.
-  def self.trails_for(ids, lat:, lon:, access: nil, connections: nil, cache: Rails.cache, failures: nil)
-    routes(ids, connections, cache, failures: failures).filter_map do |trail|
+  # are left out as #routes leaves them out, and paths are named paths' ways by id.
+  def self.trails_for(ids, lat:, lon:, access: nil, connections: nil, cache: Rails.cache, failures: nil, paths: {})
+    routes(ids, connections, cache, failures: failures, paths: paths).filter_map do |trail|
       next unless trail.length.between?(MIN_LENGTH_MILES, MAX_LENGTH_MILES) && trail.paved.to_f < MOSTLY_PAVED
 
       if access
@@ -355,7 +415,8 @@ module OverpassService
   # these, an area with many notable routes would fill every check, however far.
   def self.promise(route, relief = nil)
     hours = route[:minutes].to_f * 2 / 60
-    (route[:notable] ? 1 : 0) + (route[:span] >= 800 ? 0.5 : 0) - (generic_name?(route[:name]) ? 1 : 0) +
+    (route[:notable] ? 1 : 0) + (route[:span] >= 800 ? 0.5 : 0) - (generic_name?(route[:name]) ? 1 : 0) -
+      (route[:id].negative? ? PATH_PROMISE : 0) +
       [relief.to_i / 100.0, 4].min * TrailsService::SCENIC_WEIGHT - TrailsService.travel_penalty(hours)
   end
 
@@ -366,20 +427,21 @@ module OverpassService
   # Trails for the route ids, in order. Each route's details are cached, and
   # only uncached routes are queried, once for searches that need them at
   # once. Routes that can't be looked up are left out, unless none are found,
-  # and their failure is added to failures when given.
-  def self.routes(ids, connections, cache, failures: nil)
+  # and their failure is added to failures when given. Named paths are
+  # measured from their ways, by id in paths, and left out without them.
+  def self.routes(ids, connections, cache, failures: nil, paths: {})
     return [] if ids.empty?
 
     keys = ids.to_h { |id| [id, "#{ROUTE_KEY}#{id}"] }
     found = cache.read_multi(*keys.values)
     RouteStore.details(ids.reject { |id| found.key?(keys[id]) }).each { |id, details| found[keys[id]] = details }
-    missing = ids.reject { |id| found.key?(keys[id]) }
+    missing = ids.reject { |id| found.key?(keys[id]) || (id.negative? && !paths.key?(id)) }
     if missing.any?
       id_of = keys.invert
       error = nil
       found.merge!(shared(missing.map { |id| keys[id] }, cache) do |own|
         own_ids = own.map { |key| id_of[key] }
-        fetched = fetch_routes(own_ids, connections, cache)
+        fetched = fetch_routes(own_ids, connections, cache, paths.slice(*own_ids))
         own_ids.to_h do |id|
           # Routes that cannot be measured are remembered too, so they are not queried again.
           cache.write(keys[id], fetched.fetch(id, false), expires_in: ROUTE_CACHE_TTL)
@@ -400,26 +462,49 @@ module OverpassService
     ids.filter_map { |id| Trail.new(**found[keys[id]].slice(*Trail.members)) if found[keys[id]] }
   end
 
-  # Plain route attributes by id, never transit results, using the ids of each route's paved ways.
-  def self.fetch_routes(ids, connections, cache)
-    paved = PAVED_WAYS.map { |filter| "way.ways#{filter};" }
-    query = "[out:json][timeout:40];relation(id:#{ids.join(',')})->.routes;.routes out geom;" \
-      "way(r.routes)->.ways;(#{paved.join});out ids;"
-    elements = elements(query, connections, cache, timeout: LONG_QUERY_SECONDS)
-      .group_by { |element| element["type"] if element.is_a?(Hash) }
-    paved = elements.fetch("way", []).pluck("id").to_set
-    elements.except("way").values.flatten(1).each_with_object({}) do |element, routes|
-      route = route_attributes(element, paved)
-      routes[route[:osm_id]] = route if route
+  # Plain route attributes by id, never transit results, using the ids of each
+  # route's paved ways: routes' from their relations, and named paths' from
+  # their ways, by id in paths.
+  def self.fetch_routes(ids, connections, cache, paths = {})
+    relations, named = ids.partition(&:positive?)
+    path_ways = named.flat_map { |id| paths.fetch(id) }.uniq
+    sets = []
+    query = +"[out:json][timeout:60];"
+    if relations.any?
+      query << "relation(id:#{relations.join(',')})->.routes;.routes out geom;way(r.routes)->.ways;"
+      sets << ".ways;"
     end
+    if path_ways.any?
+      query << "way(id:#{path_ways.join(',')})->.named;.named out tags geom;"
+      sets << ".named;"
+    end
+    return {} if sets.empty?
+
+    query << "(#{sets.join})->.measured;(#{PAVED_WAYS.map { |filter| "way.measured#{filter};" }.join});out ids;"
+    elements = elements(query, connections, cache, timeout: LONG_QUERY_SECONDS)
+    ways, others = elements.partition { |element| element.is_a?(Hash) && element["type"] == "way" }
+    # Paved ways are listed by id alone, after the named paths' ways and their geometry.
+    with_geometry, paved = ways.partition { |way| way.key?("geometry") }
+    paved = paved.pluck("id").to_set
+    routes = others.each_with_object({}) do |element, found|
+      route = route_attributes(element, paved)
+      found[route[:osm_id]] = route if route
+    end
+    by_id = with_geometry.index_by { |way| way["id"] }
+    named.each do |id|
+      path = path_attributes(id, paths.fetch(id).filter_map { |way| by_id[way] }, paved)
+      routes[id] = path if path
+    end
+    routes
   end
 
   # Highlights near each trail, as { osm_id => [{ kind:, name:, notable:, height: }] }
   # without the attributes they don't have: waterfalls first, then famous and
   # named ones before the others. notable is true for highlights with a Wikipedia
   # article, and height is a waterfall's in meters. Each route's list is cached,
-  # and only uncached routes are queried. Routes whose highlights can't be
-  # looked up are left out, unless none are found.
+  # and only uncached routes are queried, named paths along the ways their
+  # details list. Routes whose highlights can't be looked up are left out,
+  # unless none are found.
   def self.highlights(trails, connections: nil, cache: Rails.cache)
     return {} if trails.empty?
 
@@ -427,9 +512,16 @@ module OverpassService
     found = cache.read_multi(*keys.values)
     RouteStore.highlights(trails.map(&:osm_id).reject { |id| found.key?(keys[id]) }).each { |id, list| found[keys[id]] = list }
     missing = trails.reject { |trail| found.key?(keys[trail.osm_id]) }
+    path_ways = self.path_ways(missing.map(&:osm_id).select(&:negative?), cache)
+    missing.select! { |trail| trail.osm_id.positive? || path_ways.key?(trail.osm_id) }
     if missing.any?
       filters = HIGHLIGHT_TAGS.values.map { |key, value| %(node(around.ways:#{HIGHLIGHT_METERS})["#{key}"="#{value}"];) }
-      query = "[out:json][timeout:20];relation(id:#{missing.map(&:osm_id).join(',')});way(r)->.ways;(#{filters.join});out;"
+      relations = missing.map(&:osm_id).select(&:positive?)
+      sets = {}
+      sets[".routed"] = "relation(id:#{relations.join(',')});way(r)->.routed;" if relations.any?
+      sets[".named"] = "way(id:#{path_ways.values.flatten.uniq.join(',')})->.named;" if path_ways.any?
+      query = "[out:json][timeout:20];#{sets.values.join}(#{sets.keys.map { |set| "#{set};" }.join})->.ways;" \
+        "(#{filters.join});out;"
       connections ||= [SearchHttp.connection(urls(cache).first, timeout: HIGHLIGHT_TIMEOUT_SECONDS)]
       wait = ProviderSlots.priority == ProviderSlots::BACKGROUND ? SLOT_WAIT_SECONDS : 0
       begin
@@ -443,6 +535,16 @@ module OverpassService
       end
     end
     keys.transform_values { |key| found[key] }.compact
+  end
+
+  # The ways of the named paths with these ids, as their details list them, by id.
+  def self.path_ways(ids, cache)
+    return {} if ids.empty?
+
+    keys = ids.to_h { |id| [id, "#{ROUTE_KEY}#{id}"] }
+    found = cache.read_multi(*keys.values)
+    stored = RouteStore.details(ids.reject { |id| found[keys[id]] })
+    ids.to_h { |id| [id, Array((found[keys[id]] || stored[id] || {})[:ways])] }.reject { |_, ways| ways.empty? }
   end
 
   def self.route_attributes(element, paved)
@@ -459,16 +561,13 @@ module OverpassService
     ways = ways.uniq { |way| way["ref"] }
     return unless ways.all? { |way| valid_geometry?(way["geometry"]) }
 
-    lengths = ways.map do |way|
-      way["geometry"].each_cons(2).sum { |first, last| distance(first["lat"], first["lon"], last["lat"], last["lon"]) }
-    end
+    lengths = ways.map { |way| way_length(way) }
     meters = lengths.sum
     return unless meters.positive?
 
     first_way = ways.first
     start = first_way["role"] == "backward" ? first_way["geometry"].last : first_way["geometry"].first
-    # Every way end meets another in a loop, while a line has two loose ends.
-    ends = ways.flat_map { |way| way["geometry"].values_at(0, -1) }.map { |point| [point["lat"], point["lon"]] }.tally
+    ends = way_ends(ways)
     {
       name: name(tags) || UNNAMED,
       summary: tags["description"].is_a?(String) ? tags["description"] : "A hiking route mapped by OpenStreetMap contributors.",
@@ -476,6 +575,38 @@ module OverpassService
       path: preview_path(ways), notable: notable?(tags), loop: ends.values.all?(&:even?),
       paved: (ways.zip(lengths).sum { |way, length| paved.include?(way["ref"]) ? length : 0 } / meters).round(2)
     }
+  end
+
+  # A named path's attributes for a Trail, like #route_attributes', from its
+  # ways with their geometry and tags, with the ids of its ways, which its
+  # highlights are found along. A line starts at one of its loose ends.
+  def self.path_attributes(id, ways, paved)
+    ways = ways.select { |way| way["id"].is_a?(Integer) && way["tags"].is_a?(Hash) && valid_geometry?(way["geometry"]) }
+    lengths = ways.map { |way| way_length(way) }
+    meters = lengths.sum
+    return unless meters.positive?
+
+    ends = way_ends(ways)
+    start = ends.find { |_, count| count.odd? }&.first || ends.keys.first
+    tags = ways.map { |way| way["tags"] }
+    description = tags.map { |each| each["description"] }.find { |text| text.is_a?(String) && text.strip.present? }
+    {
+      name: tags.filter_map { |each| name(each) }.first || UNNAMED, summary: description || PATH_SUMMARY,
+      latitude: start[0], longitude: start[1], length: meters / METERS_PER_MILE, osm_id: id,
+      path: preview_path(ways), notable: tags.any? { |each| notable?(each) }, loop: ends.values.all?(&:even?),
+      paved: (ways.zip(lengths).sum { |way, length| paved.include?(way["id"]) ? length : 0 } / meters).round(2),
+      ways: ways.map { |way| way["id"] }
+    }
+  end
+
+  def self.way_length(way)
+    way["geometry"].each_cons(2).sum { |first, last| distance(first["lat"], first["lon"], last["lat"], last["lon"]) }
+  end
+
+  # How many of the ways end at each point: every way end meets another in a
+  # loop, while a line has two loose ends.
+  def self.way_ends(ways)
+    ways.flat_map { |way| way["geometry"].values_at(0, -1) }.map { |point| [point["lat"], point["lon"]] }.tally
   end
 
   # A hiking route relation's tags, or nil for other relations.

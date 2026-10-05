@@ -71,7 +71,7 @@ local socket. Use a separate database for tests. The tables are the cache's
 ## External services and changed behavior
 
 The previous implementation depended on the legacy Hiking Project API. This
-version instead queries hiking-route relations from
+version instead queries hiking-route relations and named trail paths from
 [OpenStreetMap via Overpass](https://wiki.openstreetmap.org/wiki/Overpass_API).
 It does not scrape Hiking Project or require its old API key.
 Current Hiking Project availability could not be confirmed. Live probes of both
@@ -116,12 +116,24 @@ test Overpass connectivity from your deployment before launching.
   the coarse terrain routes' promise uses, then the quickest: with buses as well
   as trains, flat suburbs are often as quick as the hills beyond them, and from
   New York they took the places of the Catskills, Poconos, and Lehigh Valley.
-  The four quickest are queried first, the rest four neighbors at a time, each
-  query finding the routes of the region around its tiles once, then keeping
-  those in the tiles (a tile's routes are left out when its query fails).
-  Routes spanning less than 300 m, under **1 mile** or over **30 miles** long,
-  at least half on paved paths or roads, and repeated sections of one named trail (the same
-  name within 5 km) are left out: they are walks or multi-day trails rather than
+- **Named paths.** Where trails are mapped as named paths alone rather than as
+  hiking routes, as across the American West (around the Columbia River Gorge,
+  30 routes against 218 named trails; in LA's San Gabriels, 8 against 135), the
+  tiles' named footpaths, bridleways, and paths that aren't sidewalks,
+  crossings, private, or part of a hiking route are routes too
+  (`OverpassService::PATH_FILTER`): each the ways of one name joined at a node,
+  listed with their nodes but not their geometry (about 3 MB for four tiles
+  around the Issaquah Alps or Marin). A named path's id is the negative of its
+  first way's, its details are measured from its ways once a search picks it,
+  and its highlights found along them, and its OpenStreetMap link is to that
+  way. A mapped hiking route is likelier to be a hike worth the trip, so a
+  named path is half a point less promising.
+- The four quickest tiles are queried first, the rest four neighbors at a
+  time, each query finding the routes of the region around its tiles once, then
+  keeping those in the tiles (a tile's routes are left out when its query
+  fails). Routes spanning less than 300 m, under **1 mile** or over **30
+  miles** long, at least half on paved paths or roads, and repeated sections of
+  one named trail (the same name within 5 km) are left out: they are walks or multi-day trails rather than
   day hikes. Routes within a 30-minute walk of a stop (the most the planner
   walks) are checked, most promising first, up to **120** per search, keeping
   the section of a trail that transit reaches soonest. Promise counts much as the
@@ -135,7 +147,8 @@ test Overpass connectivity from your deployment before launching.
   and back. Without the land, an area where most routes
   have Wikidata entries, such as Franconia's, took most checks from Munich, and
   the Alps few. Results are not an exhaustive trail inventory; where few hiking
-  routes are mapped in OpenStreetMap near stations, there are few results.
+  routes or named paths are mapped in OpenStreetMap near stops, there are few
+  results.
 - Routes are checked in batches of 40, starting with the first tiles' while the
   others are found, and each batch's hikes show as soon as their trips there and
   back are known. Routes that can't be looked up at once, as when Overpass is

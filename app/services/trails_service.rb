@@ -227,12 +227,14 @@ module TrailsService
     noise = noise_at(station, noise)
     search = Search.new(station, place, access, result, transit, hiking, elevation, noise, on_found)
     routes = finished(nearby).value!
+    search.known(routes)
     relief = reliefs(routes, elevation)
     search.check(hiking.pick(routes, access: access, relief: relief).first(BATCH_SIZE))
     if farther
       more = optional { finished(farther).value! }
       result.complete = false unless more
       more = Array(more).reject { |route| relief.key?(route[:id]) }
+      search.known(more)
       relief = relief.merge(reliefs(more, elevation))
       routes = (routes + more).uniq { |route| route[:id] }
     end
@@ -255,8 +257,15 @@ module TrailsService
       @station, @place, @access, @result, @transit, @hiking, @on_found = station, place, access, result, transit, hiking, on_found
       @elevation, @noise = elevation, noise
       @checked, @lookups, @budget = Set.new, [], { planned: MAX_PLANNED_ROUTES }
+      # The ways of the named paths among the routes, which their details are measured from.
+      @paths = {}
       # Once planning trips is stuck, the search plans no more.
       @stuck = Concurrent::AtomicBoolean.new
+    end
+
+    # Notes the ways of the named paths among the routes the search may check.
+    def known(routes)
+      routes.each { |route| @paths[route[:id]] = route[:ways] if route[:ways] }
     end
 
     def check(ids)
@@ -301,7 +310,8 @@ module TrailsService
     # without asking Overpass. Routes that still can't be are left out.
     def routes(ids)
       failures = []
-      found = @hiking.trails_for(ids, lat: @place.latitude, lon: @place.longitude, access: @access, failures: failures)
+      found = @hiking.trails_for(ids, lat: @place.latitude, lon: @place.longitude, access: @access, failures: failures,
+        paths: @paths.slice(*ids))
       return found if failures.empty?
 
       sleep Rails.configuration.x.overpass_retry_pause_seconds
@@ -317,7 +327,8 @@ module TrailsService
     # leaving the search incomplete without the rest.
     def again(ids)
       failures = []
-      found = @hiking.trails_for(ids, lat: @place.latitude, lon: @place.longitude, access: @access, failures: failures)
+      found = @hiking.trails_for(ids, lat: @place.latitude, lon: @place.longitude, access: @access, failures: failures,
+        paths: @paths.slice(*ids))
       fail_with(failures.first) if failures.any?
       found
     rescue SearchErrors::UpstreamError => failure
