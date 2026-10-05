@@ -50,7 +50,8 @@ class SearchHttpTest < ActiveSupport::TestCase
 
     assert_equal "{}", connection.get("/plan").body
     assert_equal 3, slots.available_permits
-    slots.acquire(3)
+    # Visitors' requests may take every slot.
+    ProviderSlots.with_priority(ProviderSlots::VISITOR) { slots.acquire(3) }
     begin
       error = assert_raises(SearchErrors::ProviderBusy) do
         stub_const(SearchHttp, :SLOT_WAIT_SECONDS, 0.05) { connection.get("/plan") }

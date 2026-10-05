@@ -24,5 +24,6 @@ Rails.application.config.x.station_pool = Concurrent::FixedThreadPool.new(3)
 Rails.application.config.x.background_pool = Concurrent::FixedThreadPool.new(1)
 Rails.application.config.x.background_trip_pool = Concurrent::FixedThreadPool.new(3)
 # Transitous answers at most three requests at once from a client, and turns
-# away more, so requests to it wait for one of three slots, the most urgent first.
-Rails.application.config.x.provider_slots = { "api.transitous.org" => ProviderSlots.new(3) }
+# away more, so requests to it wait for one of three slots, the most urgent
+# first, and while visitors are around, background work leaves one for them.
+Rails.application.config.x.provider_slots = { "api.transitous.org" => ProviderSlots.new(3, reserve: 1) }

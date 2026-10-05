@@ -9,6 +9,10 @@ class ProviderSlots
   SEARCH = 1
   BACKGROUND = 2
   KEY = :provider_priority
+  # While visitors are around, background work leaves the reserve free for
+  # them, so their requests don't wait behind its slow ones: for this long
+  # after a more urgent request last took a slot.
+  RESERVE_SECONDS = 5 * 60
 
   # How urgent the current thread's requests are, BACKGROUND unless it says.
   def self.priority
@@ -56,8 +60,9 @@ class ProviderSlots
   # A request waiting for slots, with what its urgency comes from.
   Waiter = Struct.new(:urgency)
 
-  def initialize(count)
-    @free, @waiters, @lock, @turn = count, Set.new.compare_by_identity, Mutex.new, ConditionVariable.new
+  def initialize(count, reserve: 0)
+    @free, @reserve, @waiters, @lock, @turn = count, reserve, Set.new.compare_by_identity, Mutex.new, ConditionVariable.new
+    @urgent_at = nil
   end
 
   # Takes permits slots, once no more urgent request is waiting, waiting at
@@ -99,13 +104,17 @@ class ProviderSlots
     @lock.synchronize do
       @waiters << waiter
       begin
-        until @free >= permits && first?(waiter)
-          left = deadline && deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        until @free >= permits && first?(waiter) && room?(waiter, permits)
+          now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          left = deadline && deadline - now
           return false if left && !left.positive?
 
-          @turn.wait(@lock, left)
+          # Kept out by the reserve, it looks again once the reserve lapses.
+          lapse = reserving? ? @urgent_at + RESERVE_SECONDS - now : nil
+          @turn.wait(@lock, [left, lapse].compact.min)
         end
         @free -= permits
+        @urgent_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) if self.class.priority_of(waiter.urgency) < BACKGROUND
         true
       ensure
         @waiters.delete(waiter)
@@ -113,6 +122,16 @@ class ProviderSlots
         @turn.broadcast
       end
     end
+  end
+
+  # Whether the waiter may take permits slots: background work leaves the
+  # reserve free while more urgent requests have taken slots lately.
+  def room?(waiter, permits)
+    self.class.priority_of(waiter.urgency) < BACKGROUND || !reserving? || @free - permits >= @reserve
+  end
+
+  def reserving?
+    @reserve.positive? && @urgent_at && Process.clock_gettime(Process::CLOCK_MONOTONIC) - @urgent_at < RESERVE_SECONDS
   end
 
   # Whether no request waiting is more urgent than the waiter.

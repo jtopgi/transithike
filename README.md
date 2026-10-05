@@ -140,17 +140,19 @@ test Overpass connectivity from your deployment before launching.
   no visitor waits on, searching again and keeping searches ready, run one at a
   time on threads of their own, so a visitor's search isn't queued behind them,
   and their requests to Overpass and Transitous wait behind those of visitors
-  and of searches visitors wait on, until a visitor waits on them too. Background searches wait while two others are
-  queued, and a station isn't searched again within 10 minutes of the last try. A hike that
-  several stations reach shows from the one that gets there soonest, counting
+  and of searches visitors wait on, until a visitor waits on them too.
+  Background searches wait while two others are queued, and a station isn't
+  searched again within 10 minutes of the last try. A hike that several
+  stations reach shows from the one that gets there soonest, counting
   the trip across the city to each station at about 15 km/h, and a card is
   replaced when a station that gets there sooner finds it. While nothing new is
   found, the stream sends a comment every 15 seconds to keep the connection open.
-- **Ready ahead.** With `WARM_SEARCHES=1`, the web server searches each guide
-  city's major stations for the next Saturday and Sunday every 6 hours, one at a
-  time and starting 2 minutes after it boots, unless their kept searches are
-  recent and complete, so the first visitor near them doesn't wait. These run
-  in the background, behind searches visitors wait on.
+- **Ready ahead.** With `WARM_SEARCHES=1`, the web server searches the major
+  stations of each guide city in the US that has a guide, where most visitors
+  are, for the next Saturday and Sunday once a day, one at a time and starting 2
+  minutes after it boots, unless their kept searches are recent and complete,
+  so the first visitor near them doesn't wait. These run in the background,
+  behind searches visitors wait on.
 - **Weekend trips.** Searches are for Saturday or Sunday: the one chosen, or
   whichever comes first. Trips leave at **8 AM** that day in the time zone
   Transitous reports for the origin (UTC when unknown), or now (rounded to the
@@ -377,7 +379,10 @@ and turns away more, so each server process sends it at most three at once, and
 others wait up to 30 seconds for a turn, the most urgent first: those a
 visitor's own request makes, such as a card's trips or a hike's page, then those
 of searches visitors wait on, and last those of searches in the background (see
-`ProviderSlots`). It also supplies each
+`ProviderSlots`). For 5 minutes after a visitor's or a waited-on search's last
+request, background searches leave one of the three free, as Transitous takes
+several seconds to answer a busy client, and a visitor's request shouldn't wait
+behind theirs. It also supplies each
 origin's time zone and area name, cached for 30 days. Transit coverage depends on
 the feeds Transitous has for a region.
 
@@ -408,11 +413,13 @@ facts, and timetables there and back, built from the same search and trip
 planning, linked from the home page, the navigation, and an index of cities.
 
 - **Cities** are listed in `config/guides.yml`, each with the point trips start
-  from. Trips are for the coming Saturday, from 8 AM, back by 11 PM.
+  from: New York City, Boston, and Chicago in the US, and London, Zurich, Berlin,
+  Paris, Munich, and Vienna in Europe. Trips are for the coming Saturday, from 8 AM, back by 11 PM.
 - **Weekly builds.** The [Guides workflow](.github/workflows/guides.yml) runs on
-  Wednesdays (and from the Actions tab, for some cities if you like). It runs
-  `bin/rails guides:build`, which searches from each city with the live
-  providers a minute apart, since Overpass limits how much each address asks
+  Wednesdays (and from the Actions tab, for some cities if you like). It builds
+  each city in a job of its own, two at a time so the free providers aren't
+  asked too much at once, with `CITIES=<city> bin/rails guides:build`, which
+  searches from the city with the live providers
   (trying a city again after two minutes when a provider is busy or some of its
   hikes couldn't be checked, as when the farther tiles' routes don't load, and
   keeping a complete build, or else the one with more hikes), plans every hike's
@@ -427,7 +434,9 @@ planning, linked from the home page, the navigation, and an index of cities.
   its facts. Guides built before these rules are held to them as they're read:
   their sunsets are worked out, trips back after dark are left out, and so are
   hikes without the daylight, or without three trips there and three back.
-- **Publishing.** The workflow uploads the guides with `bin/publish-guides` as a
+- **Publishing.** Once every city's job is done, the workflow adds the guides
+  they built to the published ones, keeping a city's published guide when its
+  job fails, and uploads them with `bin/publish-guides` as a
   new `guides-<time>.tar.gz` file of the `guides-data` prerelease (not to the
   repository, so its history doesn't grow every week), removing older files only
   once it's up, then runs CI on `master`, whose deploy job downloads the newest
