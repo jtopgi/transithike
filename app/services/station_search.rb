@@ -156,12 +156,16 @@ class StationSearch
 
   # When the search couldn't check some routes, it keeps those the day's last
   # search found that it didn't, ranking them all again, and returns them.
+  # Those found mostly beside loud traffic since, as when this search found
+  # them so, stay hidden.
   def with_earlier(result)
     return [] if self.class.complete?(result)
 
     earlier = @cache.read(@keys[:day])&.dig(:result)
     found = result.trails.to_set(&:osm_id)
     extra = Array(earlier&.trails).reject { |trail| found.include?(trail.osm_id) }
+    noise = TrailsService.noise_at(@station, @providers[:noise])
+    extra = TrailsService.away_from_traffic(extra, TrailsService.noise_lookups(extra, noise)) if noise && extra.any?
     result.trails = TrailsService.rank(result.trails + extra) if extra.any?
     extra
   end

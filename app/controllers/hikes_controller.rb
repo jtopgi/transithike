@@ -46,8 +46,10 @@ class HikesController < ApplicationController
       [optional { OverpassService.highlights([trail])[trail.osm_id] }, optional { ElevationService.terrain([trail])[trail.osm_id] },
         optional { WikipediaService.photos_near(trail.photo_points) }]
     end
-    # The traffic noise along it, where the noise map covers, on its own too.
-    noise = TrailsService.start { NoiseService.noise([trail])[trail.osm_id] } if NoiseService.covers?(@zone.tzinfo.name)
+    # The traffic noise along it, where the noise map covers where it is, on its own too.
+    noise = TrailsService.start do
+      NoiseService.noise([trail])[trail.osm_id] if NoiseService.covers_place?(trail.latitude, trail.longitude)
+    end
     where = TrailsService.start { TrailsService.location(trail, origin) }
     @from, @leave, @back_by = from, leave.in_time_zone(@zone), back_by.in_time_zone(@zone)
     @from_name = station ? @station_name || "the station" : @origin_name
@@ -55,9 +57,9 @@ class HikesController < ApplicationController
       lon: origin.longitude, day: @leave.saturday? ? "saturday" : "sunday", tz: @zone.tzinfo.name })
     trips = TripPlans.plan(@trail, origin: from, leave: leave, back_by: back_by)
     @there, @ways, @departures, @trail.sunset = trips.values_at(:there, :ways, :departures, :sunset)
-    TrailsService.settle([extras, where, noise].compact, timeout: EXTRAS_WAIT_SECONDS)
+    TrailsService.settle([extras, where, noise], timeout: EXTRAS_WAIT_SECONDS)
     highlights, @trail.terrain, @photos = extras.value(0) || []
-    @trail.noise = noise&.value(0)
+    @trail.noise = noise.value(0)
     @trail.highlights = highlights || []
     @trail.location = where.value(0)
     expires_in TransitousService::TRIP_CACHE_TTL

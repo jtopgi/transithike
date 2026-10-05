@@ -1,0 +1,14 @@
+<%# How loud traffic is along the route, where the noise map covers it: the level along most of it, and a louder one
+    it reaches in places, along at least NoiseService::LOUDEST_SHARE of it. %>
+<% noise = trail.noise %>
+<% if noise && noise[:typical] %>
+  <div title="Road, rail, and air traffic noise along the route, averaged over a day, from the U.S. DOT's noise map">
+    <dt><span aria-hidden="true">🔈</span> Noise</dt>
+    <dd>
+      <span class="text-nowrap" data-noise><%= noise_band(noise[:typical]) %></span>
+      <% if noise[:loudest].to_i > noise[:typical] %>
+        <small class="trail-transfers"><span class="text-nowrap"><%= noise_band(noise[:loudest]) %></span> in places</small>
+      <% end %>
+    </dd>
+  </div>
+<% end %>

@@ -39,6 +39,7 @@
             <dd><%= climb_label(trail) %></dd>
           </div>
         <% end %>
+        <%= render "searches/noise_stat", trail: trail %>
       </dl>
       <% if last %>
         <p class="trail-return mb-0">

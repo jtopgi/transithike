@@ -235,9 +235,9 @@ class TrailsServiceTest < ActiveSupport::TestCase
   teardown { travel_back }
 
   SATURDAY = Time.utc(2026, 9, 26, 15)
-  STATION = Station.new(name: "King Street", latitude: 47.0, longitude: -122.0, id: "king-street")
+  STATION = Station.new(name: "King Street", latitude: 47.0, longitude: -122.0, id: "king-street", time_zone: "America/Los_Angeles")
   # 10 km east of King Street, so getting there across the city takes 40 minutes longer.
-  EASTSIDE = Station.new(name: "Eastside", latitude: 47.0, longitude: -121.869, id: "eastside")
+  EASTSIDE = Station.new(name: "Eastside", latitude: 47.0, longitude: -121.869, id: "eastside", time_zone: "America/Los_Angeles")
 
   # A 3-mile loop, about 1.5 hours to hike, in an area of its own about 11 km
   # from each other trail's, unless placed at a latitude.
@@ -485,12 +485,18 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_not_includes transit.timetables, "highway"
   end
 
-  test "outside the noise map, noise isn't looked up, and when its lookup fails, routes are kept without it" do
+  test "noise is looked up from stations on the noise map, whoever searches, and when it fails, routes are kept without it" do
     noise = FakeNoise.new({ "a" => { quiet: 0.0, loud: 1.0 } })
-    # Vancouver, across the border, keeps Seattle's time.
-    canada = FakeTransit.new(trips: { "a" => minutes(30) }, area: { time_zone: "America/Vancouver", area: "Vancouver" })
+    # A station across the border, in Vancouver, isn't on it, even for searches from Seattle.
+    vancouver = Station.new(name: "Pacific Central", latitude: 49.27, longitude: -123.1, id: "pacific-central",
+      time_zone: "America/Vancouver")
+    canada = FakeTransit.new(trips: { "a" => minutes(30) }, major: [vancouver])
     assert_equal ["a"], search(transit: canada, hiking: FakeHiking.new([trail("a")]), noise: noise).trails.map(&:name)
     assert_empty noise.asked
+    # King Street is, even for searches from Vancouver's time zone.
+    across = FakeTransit.new(trips: { "a" => minutes(30) }, area: { time_zone: "America/Vancouver", area: "Vancouver" })
+    assert_empty search(transit: across, hiking: FakeHiking.new([trail("a")]), noise: noise).trails
+    assert_equal ["a"], noise.asked
 
     failing = FakeNoise.new(failure: SearchErrors::UpstreamError.new("The noise map is down"))
     found = search(transit: FakeTransit.new(trips: { "b" => minutes(30) }), hiking: FakeHiking.new([trail("b")]), noise: failing)
@@ -932,11 +938,11 @@ class TrailsServiceTest < ActiveSupport::TestCase
 
   # Starts the station's search for Saturday, running it at once rather than in the background.
   def station_search(hiking, transit: FakeTransit.new(trips: %w[a b c].to_h { |name| [name, minutes(30)] }), departure: SATURDAY,
-    **options)
+    noise: quiet_unknown, **options)
     @station_cache ||= ActiveSupport::Cache::MemoryStore.new
     @station_pool ||= Class.new(Concurrent::ImmediateExecutor) { attr_accessor :queue_length }.new.tap { |pool| pool.queue_length = 0 }
     StationSearch.start(STATION, departure.in_time_zone("America/Los_Angeles"), transit: transit, hiking: hiking,
-      elevation: FakeElevation.new, noise: quiet_unknown, cache: @station_cache, pool: @station_pool, **options)
+      elevation: FakeElevation.new, noise: noise, cache: @station_cache, pool: @station_pool, **options)
   end
 
   # The routes a search shows, by name, and whether it ran rather than being kept.
@@ -971,6 +977,25 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal [%w[a b], false], shown(station_search(again))
     assert_equal 3, again.batches.size
     assert_equal [%w[a b c], false], shown(station_search(again))
+  end
+
+  test "a search that couldn't check every route doesn't bring back routes it found beside loud traffic" do
+    a, b, c = trail("a"), trail("b"), trail("c")
+    down = FakeNoise.new(failure: SearchErrors::UpstreamError.new("The noise map is down"))
+    assert_equal [%w[a b], true], shown(station_search(FakeHiking.new([a, b, c], failing: [c.osm_id]), noise: down))
+    travel 11.minutes
+    # Searched again, b is beside a highway, and c still can't be checked.
+    loud = FakeNoise.new({ "a" => { quiet: 0.9, loud: 0.0 }, "b" => { quiet: 0.0, loud: 0.9 } })
+    hiking = FakeHiking.new([a, b, c], failing: [c.osm_id])
+    assert_equal [%w[a b], false], shown(station_search(hiking, noise: loud))
+    assert_equal [%w[a], false], shown(station_search(hiking, noise: loud))
+    # Nor does a search that couldn't check it, once it's known to be.
+    travel 11.minutes
+    unchecked = FakeHiking.new([a, b, c], failing: [b.osm_id, c.osm_id])
+    shown(station_search(unchecked, noise: loud))
+    assert_equal [%w[a], false], shown(station_search(unchecked, noise: loud))
+    kept = station_search(unchecked, noise: loud).events_since(0).first.find { |event, _| event == :trails }.last
+    assert_equal [{ quiet: 0.9, loud: 0.0 }], kept.map(&:noise)
   end
 
   test "with fresh, as for guides, kept searches are only used while they're recent and complete" do

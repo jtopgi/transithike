@@ -52,9 +52,9 @@ class TransitousServiceTest < ActiveSupport::TestCase
   end
 
   # A stop as the map lists it.
-  def map_stop(name, latitude, longitude, importance, modes: ["REGIONAL_RAIL"])
+  def map_stop(name, latitude, longitude, importance, modes: ["REGIONAL_RAIL"], tz: "America/Los_Angeles")
     { "name" => name, "stopId" => name.parameterize, "lat" => latitude, "lon" => longitude, "importance" => importance,
-      "modes" => modes }
+      "modes" => modes, "tz" => tz }
   end
 
   # A train on line that leaves at 8 AM and stops at each [latitude, longitude,
@@ -103,7 +103,8 @@ class TransitousServiceTest < ActiveSupport::TestCase
   def seattle_stops
     [
       map_stop("KING STREET", 47.598, -122.33, 1.0), map_stop("King Street Hall 2", 47.5985, -122.3305, 0.95),
-      map_stop("Northgate", 47.65, -122.32, 0.8), map_stop("Eastside", 47.61, -122.2, 0.5),
+      # Eastside's time zone isn't one.
+      map_stop("Northgate", 47.65, -122.32, 0.8), map_stop("Eastside", 47.61, -122.2, 0.5, tz: "Pacific Time!"),
       map_stop("Waterfront", 47.605, -122.34, 0.4), map_stop("Small Halt", 47.62, -122.31, 0.1),
       map_stop("Bus Depot", 47.6, -122.31, 0.9, modes: ["BUS"]),
       # In the map's square, but over 10 km away.
@@ -115,8 +116,9 @@ class TransitousServiceTest < ActiveSupport::TestCase
     requests = []
     stations = major_stations(seattle_stops, seattle_boards, requests)
 
-    assert_equal [Station.new(name: "King Street", latitude: 47.598, longitude: -122.33, id: "king-street"),
-      Station.new(name: "Eastside", latitude: 47.61, longitude: -122.2, id: "eastside")], stations
+    assert_equal [Station.new(name: "King Street", latitude: 47.598, longitude: -122.33, id: "king-street",
+      time_zone: "America/Los_Angeles"), Station.new(name: "Eastside", latitude: 47.61, longitude: -122.2, id: "eastside")],
+      stations
     # Northgate's trains are King Street's, ten minutes on, and Waterfront's only go across the city.
     assert_equal [[:board, "king-street"], [:board, "northgate"], [:board, "waterfront"], [:board, "eastside"]],
       requests.select { |kind, _| kind == :board }

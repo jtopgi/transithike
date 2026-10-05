@@ -21,6 +21,12 @@ module NoiseService
   # mostly beside busy roads, highways, or railways, or under flight paths.
   LOUD_DB = 60
   LOUD_SHARE = 0.5
+  # A route's loudest level is the one at least this share of its points
+  # reach, so that crossing a road doesn't count.
+  LOUDEST_SHARE = 0.05r
+  # The contiguous states lie within these latitudes and longitudes.
+  LATITUDES = (24.0..50.0)
+  LONGITUDES = (-125.0..-66.0)
   CACHE_TTL = 90.days
   # Decoded tiles, 64 KB each, are shared by the lookups in this process.
   MAX_TILES = 200
@@ -35,24 +41,40 @@ module NoiseService
     false
   end
 
-  # The noise along each trail, as { osm_id => { quiet:, loud: } } from 0 to 1:
-  # quiet is how quiet its points are, on average, and loud the share of them
-  # at LOUD_DB or louder. Each route's noise is cached, and only uncached
-  # routes are looked up. Raises when a tile can't be loaded.
+  # Whether the map covers a place: within the contiguous states' bounds and
+  # in one of their time zones, from transit's area. Raises when the area
+  # can't be looked up.
+  def self.covers_place?(latitude, longitude, transit: TransitousService)
+    LATITUDES.cover?(latitude) && LONGITUDES.cover?(longitude) && covers?(transit.area(latitude, longitude)[:time_zone])
+  end
+
+  # The noise along each trail, as { osm_id => { quiet:, loud:, typical:, loudest: } }:
+  # quiet is how quiet its points are on average, from 0 to 1, loud the share
+  # of them at LOUD_DB or louder, typical the level along at least half of it,
+  # in decibels from LEVELS or 0 under 45 dB, and loudest the level at least
+  # LOUDEST_SHARE of it reaches. Each route's noise is cached, and only
+  # uncached routes are looked up. Raises when a tile can't be loaded.
   def self.noise(trails, connection: nil, cache: Rails.cache, tiles: TILES)
-    keys = trails.to_h { |trail| [trail.osm_id, "noise:v1:#{trail.osm_id}"] }
+    keys = trails.to_h { |trail| [trail.osm_id, "noise:v2:#{trail.osm_id}"] }
     found = keys.empty? ? {} : cache.read_multi(*keys.values)
     missing = trails.reject { |trail| found.key?(keys[trail.osm_id]) || ElevationService.profile(trail.path).empty? }
     if missing.any?
       connection ||= SearchHttp.connection(TILE_URL, timeout: 10)
       missing.each do |trail|
         levels = ElevationService.profile(trail.path).map { |point| level(*point, connection, tiles) }
-        found[keys[trail.osm_id]] = { quiet: (levels.sum { |level| QUIETNESS.fetch(level, 0.0) } / levels.size).round(2),
-          loud: levels.count { |level| level >= LOUD_DB }.fdiv(levels.size).round(2) }
+        found[keys[trail.osm_id]] = summary(levels)
         cache.write(keys[trail.osm_id], found[keys[trail.osm_id]], expires_in: CACHE_TTL)
       end
     end
     keys.transform_values { |key| found[key] }
+  end
+
+  # A route's noise, as #noise gives it, from the levels at its points.
+  def self.summary(levels)
+    sorted = levels.sort
+    { quiet: (levels.sum { |level| QUIETNESS.fetch(level, 0.0) } / levels.size).round(2),
+      loud: levels.count { |level| level >= LOUD_DB }.fdiv(levels.size).round(2),
+      typical: sorted[levels.size / 2], loudest: sorted[-(levels.size * LOUDEST_SHARE).ceil] }
   end
 
   # Whether a route's noise, as #noise gives it, says it's mostly beside loud traffic.

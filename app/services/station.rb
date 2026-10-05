@@ -1,6 +1,6 @@
-# A train station searches start from, and its stop id in Transitous, which
-# plans trips from it, or nil.
-Station = Struct.new(:name, :latitude, :longitude, :id, keyword_init: true) do
+# A train station searches start from, its stop id in Transitous, which plans
+# trips from it, and the stop's time zone, where Transitous gives them, or nil.
+Station = Struct.new(:name, :latitude, :longitude, :id, :time_zone, keyword_init: true) do
   # Searches from the station are shared by its id, or else where it is.
   def key
     id || format("%.5f,%.5f", latitude, longitude)

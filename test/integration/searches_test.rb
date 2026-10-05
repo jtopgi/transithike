@@ -56,7 +56,8 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   # major station near it, with trains far out.
   def major_station
     stub_get(TransitousService::STOPS_URL,
-      [{ name: "KING STREET", stopId: "king-street", lat: 47.01, lon: -122.0, importance: 0.5, modes: ["REGIONAL_RAIL"] }])
+      [{ name: "KING STREET", stopId: "king-street", lat: 47.01, lon: -122.0, importance: 0.5, modes: ["REGIONAL_RAIL"],
+        tz: "America/Los_Angeles" }])
     stub_get(TransitousService::STOP_TIMES_URL, { stopTimes: [{ place: { departure: "2026-09-26T15:05:00Z" }, routeId: "north",
       nextStops: [{ lat: 48.0, lon: -122.0, arrival: "2026-09-26T16:30:00Z" }], tripTo: { lat: 48.0, lon: -122.0 } }] })
   end
@@ -451,6 +452,8 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_equal "2.0", forest["data-scenic"]
     assert_equal "🌲 Quiet", forest.at_css(".trail-chip").text.squish.sub(/ \(.*\)\z/, "")
     assert_select_in(forest, ".trail-chip[title*='under 45 dB']")
+    # It says how loud it is, and it's no louder in places.
+    assert_equal "🔈 Noise < 45 dB", forest.at_css("[data-noise]").ancestors("div").first.text.squish
     assert_not_empty @requests[URI(NoiseService::TILE_URL).path]
   end
 
@@ -664,6 +667,8 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     back.each { |trip| trip[:legs].first[:from][:name] = "Mount Vernon" }
     planner(window: [train_there("15:19", "17:31"), train_there("16:19", "18:31"), train_there("23:19", "01:31")], back: back)
     localities
+    # It's in Washington, on the noise map, and away from traffic.
+    area
     noise_map { nil }
     get hike_path(hike_params(station: "47.598,-122.33", station_name: "King Street"))
 
@@ -682,6 +687,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_select ".trail-chip", text: /Quiet/
     facts = css_select(".hike-facts").sole.text.squish
     assert_match(/Hike ≈ 2.8 mi out and back, about 1 h 30 min/, facts)
+    assert_includes facts, "🔈 Noise < 45 dB"
     # It's dark at 7:35 PM, so the last trip back is at 7:30 PM, rather than 8:30 PM.
     assert_match(/Sunset 7:04 PM hike done by then ↩️ Last trip back 7:30 PM before dark, from Mount Vernon\z/, facts)
     assert_equal "Taking the first trip there, you arrive at 10:31 AM and have up to 8 h 59 min until the last trip back, " \

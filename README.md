@@ -131,7 +131,7 @@ test Overpass connectivity from your deployment before launching.
   who started it leaves. Kept searches show at once, and once 12 hours old (10
   minutes when some routes couldn't be checked), the station is searched again
   in the background for later visitors, keeping routes an earlier search found
-  that the new one couldn't check. Where a station hasn't been searched for the
+  that the new one couldn't check, unless found mostly beside loud traffic since. Where a station hasn't been searched for the
   day yet, its search for the same weekday and time from up to two weeks before
   shows at once, moved to the day, while the day is searched in the background:
   timetables rarely change from one week to the next, and each card plans its
@@ -247,11 +247,16 @@ test Overpass connectivity from your deployment before launching.
   level about every 30 m, are fetched as palette PNG images and decoded in Ruby,
   each color standing for the band of decibels the map's legend gives it. Hikes
   with more than half their points at 60 dB or more, beside busy roads, highways,
-  or railways, or under flight paths, aren't shown. Each batch's noise is looked
-  up while its transit is checked, near routes together, waiting at most 8
-  seconds, and cached for 90 days per route; each server process keeps up to 200
-  decoded tiles (64 KB each). Searches use it when their time zone is one of the
-  contiguous states'. The map shows nothing beyond the border, so a route across
+  or railways, or under flight paths, aren't shown. Cards and hike pages show the
+  level along at least half of a route as the legend's band, such as "< 45 dB",
+  and a louder one in places when at least a twentieth of it reaches one, so
+  crossing a road doesn't count. Each batch's noise is looked up while its
+  transit is checked, near routes together, waiting at most 8 seconds, and
+  cached for 90 days per route; each server process keeps up to 200 decoded
+  tiles (64 KB each). Searches use it from stations in the contiguous states'
+  time zones, as Transitous gives each stop's, so a station's search is the same
+  whoever starts it, and hike pages for routes in them, from Transitous's
+  reverse geocoding. The map shows nothing beyond the border, so a route across
   it, rarely a day trip by train from the US, would count as quiet.
 - **Recommended** adds 1.5 points for hikes of 3 to 12 miles (1 for 2 to 3 or 12
   to 16 miles, a quarter for shorter ones), counting out and back twice, 0.6 per

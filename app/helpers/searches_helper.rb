@@ -52,6 +52,14 @@ module SearchesHelper
     "#{highlight[:name] || 'unnamed'} (#{notes.join(', ')})"
   end
 
+  # A sound level from NoiseService as its band on the noise map's legend, such as "< 45 dB" or "60–70 dB".
+  def noise_band(level)
+    return "< 45 dB" if level.zero?
+
+    upper = NoiseService::LEVELS.values.find { |start| start > level }
+    upper ? "#{level}–#{upper} dB" : "#{level}+ dB"
+  end
+
   # For example "≈ 1,150 ft", how far a route climbs, or nil before its terrain is known.
   def climb_label(trail)
     "≈ #{feet(trail.terrain[:climb])}" if trail.terrain

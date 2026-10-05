@@ -220,8 +220,7 @@ module TrailsService
     nearby = start(overpass_pool) { hiking.routes_in(tiles.first(FIRST_TILES), failures: failures) }
     # Routes in the other tiles only add to the search, so it goes ahead without them.
     farther = start(overpass_pool) { hiking.routes_in(tiles.drop(FIRST_TILES), failures: failures) } if tiles.size > FIRST_TILES
-    # Traffic noise is looked up where the noise map covers.
-    noise = nil unless NoiseService.covers?(departure_time.time_zone.tzinfo.name)
+    noise = noise_at(station, noise)
     search = Search.new(station, place, access, result, transit, hiking, noise, on_found)
     routes = finished(nearby).value!
     relief = reliefs(routes, elevation)
@@ -518,6 +517,13 @@ module TrailsService
       .select(&:fulfilled?).map(&:value).reduce({}, :merge)
   end
 
+  # The noise provider for searches from the station, where the noise map
+  # covers the station's time zone, so that it's the same whoever searches, or
+  # else nil.
+  def self.noise_at(station, noise)
+    noise if NoiseService.covers?(station.time_zone)
+  end
+
   # Lookups of the noise along the routes, near ones together so they share
   # tiles, as [routes, future] pairs.
   def self.noise_lookups(trails, noise)
@@ -527,12 +533,12 @@ module TrailsService
 
   # The trails that aren't mostly beside loud traffic, with the noise along
   # them, waiting at most NOISE_WAIT_SECONDS for it. Trails whose noise isn't
-  # found in time are kept without it, and the lookups finish in the background
-  # for later searches.
+  # found in time are kept with what was known of it, and the lookups finish
+  # in the background for later searches.
   def self.away_from_traffic(trails, lookups)
     settle(lookups.map(&:last), timeout: NOISE_WAIT_SECONDS)
     found = lookups.select { |_, lookup| lookup.fulfilled? }.map { |_, lookup| lookup.value }.reduce({}, :merge)
-    trails.each { |trail| trail.noise = found[trail.osm_id] }
+    trails.each { |trail| trail.noise = found.fetch(trail.osm_id, trail.noise) }
     trails.reject { |trail| NoiseService.loud?(trail.noise) }
   end
 

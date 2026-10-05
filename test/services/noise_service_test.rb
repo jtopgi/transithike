@@ -39,19 +39,29 @@ class NoiseServiceTest < ActiveSupport::TestCase
     NoiseService.noise(trails, connection: connection, cache: cache, tiles: TileCache.new(4))
   end
 
-  test "a route's noise is how quiet its points are on average, and the share of them at 60 dB or more" do
+  test "a route's noise is how quiet its points are on average, the share of them at 60 dB or more, and its levels" do
     assert_equal TILE, ElevationService.pixel(*point(0, 0), NoiseService::ZOOM).first(2)
     requests = []
     connection = tiles_returning(requests) { noise_png { |column, _row| [nil, 45, 50, 60][column / 64] } }
     across = trail(1, (2..254).step(4))
     cache = ActiveSupport::Cache::MemoryStore.new
     # A quarter of its points are quiet, a quarter two thirds so, a quarter one third so, and a quarter loud.
-    assert_equal({ 1 => { quiet: 0.5, loud: 0.25 } }, noise([across], connection: connection, cache: cache))
+    banded = { quiet: 0.5, loud: 0.25, typical: 50, loudest: 60 }
+    assert_equal({ 1 => banded }, noise([across], connection: connection, cache: cache))
     assert_equal ["/noise/12/#{TILE[1]}/#{TILE[0]}"], requests
     # Each route's noise is kept, and routes without a path have none.
-    assert_equal({ 1 => { quiet: 0.5, loud: 0.25 }, 2 => nil },
+    assert_equal({ 1 => banded, 2 => nil },
       noise([across, OverpassService::Trail.new(osm_id: 2, path: [])], connection: connection, cache: cache))
     assert_equal 1, requests.size
+  end
+
+  test "a route's typical level is the one along half of it, and its loudest the one a twentieth of it reaches" do
+    # Crossing a road doesn't make a quiet route loud in places, but a stretch beside it does.
+    assert_equal [0, 0], NoiseService.summary([0] * 61 + [70] * 3).values_at(:typical, :loudest)
+    assert_equal [0, 70], NoiseService.summary([0] * 60 + [70] * 4).values_at(:typical, :loudest)
+    assert_equal [50, 60], NoiseService.summary([0] * 20 + [50] * 30 + [60] * 14).values_at(:typical, :loudest)
+    # On a short route, each point is more of it.
+    assert_equal [0, 60], NoiseService.summary([0, 0, 60]).values_at(:typical, :loudest)
   end
 
   test "routes with more than half their points at 60 dB or more are loud" do
@@ -83,7 +93,7 @@ class NoiseServiceTest < ActiveSupport::TestCase
     assert_raises(SearchErrors::UpstreamError) do
       noise([trail(1, [0])], connection: tiles_returning(status: 404) { "Not found" }, cache: cache)
     end
-    assert_nil cache.read("noise:v1:1")
+    assert_nil cache.read("noise:v2:1")
   end
 
   test "the noise map covers searches in the 48 contiguous states' time zones" do
@@ -94,5 +104,16 @@ class NoiseServiceTest < ActiveSupport::TestCase
       refute NoiseService.covers?(zone), zone
     end
     refute NoiseService.covers?(nil)
+  end
+
+  test "the map covers places in the contiguous states, from the time zone of the area they're in" do
+    zones = { [41.3, -74.1] => "America/New_York", [42.3, -83.0] => "America/Toronto", [48.9, -123.1] => "America/Vancouver" }
+    transit = Struct.new(:zones) { def area(latitude, longitude) = { time_zone: zones.fetch([latitude, longitude]) } }.new(zones)
+    assert NoiseService.covers_place?(41.3, -74.1, transit: transit)
+    # Windsor, Ontario, across the river from Detroit, and Delta, British Columbia, south of the 49th parallel.
+    refute NoiseService.covers_place?(42.3, -83.0, transit: transit)
+    refute NoiseService.covers_place?(48.9, -123.1, transit: transit)
+    # Farther away, the area isn't looked up.
+    refute NoiseService.covers_place?(52.5, 13.4, transit: transit)
   end
 end
