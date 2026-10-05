@@ -180,6 +180,11 @@ if [ -z "$(az webapp config appsettings list --resource-group "$group" --name "$
     --query "[?name=='WARM_SEARCHES'].value" --output tsv)" ]; then
   az webapp config appsettings set --resource-group "$group" --name "$app" --output none --settings WARM_SEARCHES=1
 fi
+# The web server imports the hiking routes the guide builds collect (see RouteData).
+if [ -z "$(az webapp config appsettings list --resource-group "$group" --name "$app" \
+    --query "[?name=='IMPORT_ROUTES'].value" --output tsv)" ]; then
+  az webapp config appsettings set --resource-group "$group" --name "$app" --output none --settings IMPORT_ROUTES=1
+fi
 
 step "GitHub environment 'production' in $repository (deploys only from $branch)"
 gh api --method PUT "repos/$repository/environments/production" --silent --input - \

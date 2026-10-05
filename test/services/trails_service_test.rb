@@ -141,9 +141,13 @@ class TrailsServiceTest < ActiveSupport::TestCase
     attr_reader :access, :batches, :reliefs, :stations, :tile_requests, :threads
 
     # stuck names the lookups that wait for release: :first_tiles, :other_tiles, :trails_for, or :highlights.
-    def initialize(trails, far: [], highlights: {}, failing: [], release: nil, stuck: [:highlights], tiles_failing: [])
+    # A lookup of routes including a failing one fails, and unstored routes are left out of a lookup that finds
+    # others, as those stored are where Overpass can't be reached, saying so in its failures, until it's been
+    # looked up busy times.
+    def initialize(trails, far: [], highlights: {}, failing: [], unstored: [], busy: Float::INFINITY, release: nil,
+      stuck: [:highlights], tiles_failing: [])
       @trails, @far, @highlights, @failing, @release, @stuck = trails, far, highlights, failing, release, stuck
-      @tiles_failing = tiles_failing
+      @unstored, @busy, @tiles_failing = unstored, busy, tiles_failing
       @batches, @threads, @tile_requests, @reliefs = [], [], Concurrent::Array.new, []
     end
 
@@ -171,14 +175,20 @@ class TrailsServiceTest < ActiveSupport::TestCase
       routes.pluck(:id)
     end
 
-    def trails_for(ids, lat:, lon:, access:)
+    def trails_for(ids, lat:, lon:, access:, failures: nil)
       @release&.wait(5) if @stuck.include?(:trails_for)
       @threads << Thread.current
       @batches << ids
       raise SearchErrors::UpstreamError, "busy" if ids.intersect?(@failing)
 
+      found = @batches.count { |batch| batch.intersect?(@unstored) } > @busy ? ids : ids - @unstored
+      if found.size < ids.size
+        raise SearchErrors::UpstreamError, "busy" if found.empty?
+
+        failures&.push(SearchErrors::UpstreamError.new("busy"))
+      end
       all = (@trails + @far).index_by(&:osm_id)
-      ids.map { |id| all.fetch(id).dup }
+      found.map { |id| all.fetch(id).dup }
     end
 
     def highlights(trails)
@@ -748,13 +758,22 @@ class TrailsServiceTest < ActiveSupport::TestCase
     release.set
   end
 
-  test "a slow highlights lookup does not hold up the search" do
+  test "a slow highlights lookup does not hold up a search a visitor waits on, but one in the background waits for it" do
     release = Concurrent::Event.new
     route = trail("loop")
     transit = FakeTransit.new(trips: { "loop" => minutes(10) })
-    hiking = FakeHiking.new([route], highlights: { route.osm_id => [{ kind: "peak", name: "Knob" }] }, release: release)
-    result = stub_const(TrailsService, :HIGHLIGHT_WAIT_SECONDS, 0.05) { search(transit: transit, hiking: hiking) }
+    knob = [{ kind: "peak", name: "Knob" }]
+    hiking = FakeHiking.new([route], highlights: { route.osm_id => knob }, release: release)
+    result = stub_const(TrailsService, :HIGHLIGHT_WAIT_SECONDS, 0.05) do
+      ProviderSlots.with_priority(ProviderSlots::VISITOR) { search(transit: transit, hiking: hiking) }
+    end
     assert_equal [[]], result.trails.map(&:highlights)
+
+    # As guide builds' searches are.
+    later = FakeHiking.new([trail("loop", at: route.latitude).tap { |each| each.osm_id = route.osm_id }],
+      highlights: { route.osm_id => knob }, release: Concurrent::Event.new.tap { |event| Thread.new { sleep 0.2; event.set } })
+    result = stub_const(TrailsService, :HIGHLIGHT_WAIT_SECONDS, 0.05) { search(transit: transit, hiking: later) }
+    assert_equal [knob], result.trails.map(&:highlights)
   ensure
     release.set
   end
@@ -872,6 +891,24 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal [ids, ids.first(2), ids.last(2)], hiking.batches
     assert_equal ["good 1", "good 2"], result.trails.map(&:name).sort
     refute result.complete
+  end
+
+  test "a batch keeps the routes that are stored when others can't be looked up, and looks again once" do
+    stored = (1..3).map { |index| trail("stored #{index}") }
+    unstored = trail("unstored")
+    transit = FakeTransit.new(trips: (stored + [unstored]).to_h { |trail| [trail.name, minutes(30)] })
+    ids = (stored + [unstored]).map(&:osm_id)
+    hiking = FakeHiking.new(stored + [unstored], unstored: [unstored.osm_id])
+    result = stub_const(TrailsService, :BATCH_SIZE, 4) { search(transit: transit, hiking: hiking) }
+    assert_equal [ids, ids], hiking.batches
+    assert_equal stored.map(&:name), result.trails.map(&:name).sort
+    refute result.complete
+
+    hiking = FakeHiking.new(stored + [unstored], unstored: [unstored.osm_id], busy: 1)
+    result = stub_const(TrailsService, :BATCH_SIZE, 4) { search(transit: transit, hiking: hiking) }
+    assert_equal [ids, ids], hiking.batches
+    assert_equal (stored + [unstored]).map(&:name).sort, result.trails.map(&:name).sort
+    assert result.complete
   end
 
   test "a station's search is shared by searches that start there at once, and kept for a while once done" do

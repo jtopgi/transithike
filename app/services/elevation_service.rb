@@ -18,6 +18,8 @@ module ElevationService
   RING_METERS = [1_000, 2_000].freeze
   DIRECTIONS = 8
   CACHE_TTL = 30.days
+  # Where each route's terrain is cached, by its id.
+  TERRAIN_KEY = "elevation:terrain:v2:".freeze
   # Decoded tiles, 128 KB each, are shared by the lookups in this process.
   MAX_TILES = 200
   # Web Mercator tiles reach this far north and south.
@@ -30,8 +32,9 @@ module ElevationService
   # makes for views. Each route's terrain is cached, and only uncached routes
   # are looked up.
   def self.terrain(trails, connection: nil, cache: Rails.cache, tiles: TILES)
-    keys = trails.to_h { |trail| [trail.osm_id, "elevation:terrain:v2:#{trail.osm_id}"] }
+    keys = trails.to_h { |trail| [trail.osm_id, "#{TERRAIN_KEY}#{trail.osm_id}"] }
     found = keys.empty? ? {} : cache.read_multi(*keys.values)
+    RouteStore.terrain(trails.map(&:osm_id).reject { |id| found.key?(keys[id]) }).each { |id, terrain| found[keys[id]] = terrain }
     missing = trails.reject { |trail| found.key?(keys[trail.osm_id]) || profile(trail.path).empty? }
     if missing.any?
       connection ||= SearchHttp.connection(TILE_URL, timeout: 10)

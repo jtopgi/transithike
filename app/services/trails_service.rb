@@ -53,10 +53,12 @@ module TrailsService
   # Searches wait at most this long for the noise along a batch's routes, which
   # are kept without it otherwise.
   NOISE_WAIT_SECONDS = 8
-  # Highlights only refine the ranking, so searches wait at most this long for
-  # them once every batch is checked. Slower lookups finish in the background
-  # and are cached for later searches.
+  # Highlights only refine the ranking, so searches visitors wait on wait at
+  # most HIGHLIGHT_WAIT_SECONDS for them once every batch is checked, and those
+  # in the background, as guide builds' are, longer, so they have them. Slower
+  # lookups finish in the background and are cached for later searches.
   HIGHLIGHT_WAIT_SECONDS = 5
+  BACKGROUND_HIGHLIGHT_WAIT_SECONDS = 60
   # Searches give up on the first tiles' routes after this long, waiting for a query slot included.
   OVERPASS_WAIT_SECONDS = 90
   # Routes are picked with how far the land rises around them, looked up for
@@ -290,21 +292,34 @@ module TrailsService
       end
     end
 
-    # The routes with the ids, or, when they can't be looked up at once, as
-    # when Overpass is busy, each half of them after a pause, leaving out a
-    # half that still can't be.
+    # The routes with the ids. Those that can't be looked up at once, as when
+    # Overpass is busy, are looked up again after a pause: each half of them
+    # when none could be, or else the batch, whose routes found are found again
+    # without asking Overpass. Routes that still can't be are left out.
     def routes(ids)
-      @hiking.trails_for(ids, lat: @place.latitude, lon: @place.longitude, access: @access)
+      failures = []
+      found = @hiking.trails_for(ids, lat: @place.latitude, lon: @place.longitude, access: @access, failures: failures)
+      return found if failures.empty?
+
+      sleep Rails.configuration.x.overpass_retry_pause_seconds
+      again(ids) || found
     rescue SearchErrors::UpstreamError => error
       raise error if ids.size < 2
 
       sleep Rails.configuration.x.overpass_retry_pause_seconds
-      ids.each_slice((ids.size / 2.0).ceil).flat_map do |half|
-        @hiking.trails_for(half, lat: @place.latitude, lon: @place.longitude, access: @access)
-      rescue SearchErrors::UpstreamError => failure
-        fail_with(failure)
-        []
-      end
+      ids.each_slice((ids.size / 2.0).ceil).flat_map { |half| again(half) || [] }
+    end
+
+    # The routes with the ids that can be looked up, or nil when none can,
+    # leaving the search incomplete without the rest.
+    def again(ids)
+      failures = []
+      found = @hiking.trails_for(ids, lat: @place.latitude, lon: @place.longitude, access: @access, failures: failures)
+      fail_with(failures.first) if failures.any?
+      found
+    rescue SearchErrors::UpstreamError => failure
+      fail_with(failure)
+      nil
     end
 
     def fail_with(error)
@@ -505,7 +520,8 @@ module TrailsService
   # Adds the highlights found in time and the terrain of the most promising
   # routes still without it, then scores and orders every route.
   def self.enrich(result, lookups, elevation)
-    settle(lookups.map(&:last), timeout: HIGHLIGHT_WAIT_SECONDS)
+    background = ProviderSlots.priority == ProviderSlots::BACKGROUND
+    settle(lookups.map(&:last), timeout: background ? BACKGROUND_HIGHLIGHT_WAIT_SECONDS : HIGHLIGHT_WAIT_SECONDS)
     lookups.each do |trails, lookup|
       # Routes are shown without highlights when they cannot be looked up in time.
       found = (lookup.value if lookup.fulfilled?) || {}

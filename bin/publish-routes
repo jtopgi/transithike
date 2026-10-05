@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Publishes the hiking route data the guide builds recorded, the gzipped files
+# in the directory given, as one routes-<time>.ndjson.gz file of the
+# routes-data release, creating the release the first time, then removes older
+# files. The web server imports the newest (see RouteData).
+set -euo pipefail
+
+shopt -s nullglob
+parts=("${1:?Usage: bin/publish-routes DIRECTORY}"/*.ndjson.gz)
+if [ ${#parts[@]} -eq 0 ]; then
+  echo "No route data to publish."
+  exit 0
+fi
+
+mkdir -p tmp
+file="routes-$(date -u +%Y%m%d%H%M%S).ndjson.gz"
+# One gzip stream, as the server reads only the first of several.
+gzip --decompress --stdout "${parts[@]}" | gzip > "tmp/$file"
+release="repos/{owner}/{repo}/releases/tags/routes-data"
+if gh api "$release" --silent 2> tmp/routes-error.txt; then
+  gh release upload routes-data "tmp/$file"
+elif grep --quiet "HTTP 404" tmp/routes-error.txt; then
+  gh release create routes-data "tmp/$file" --prerelease --title "Hiking route data" \
+    --notes "The hiking routes the weekly guide builds collect, which the site imports into its database."
+else
+  cat tmp/routes-error.txt >&2
+  exit 1
+fi
+echo "Published $file."
+
+gh api "$release" --jq ".assets[] | select(.name != \"$file\" and (.name | startswith(\"routes-\"))) | .id" |
+  while read -r asset; do
+    gh api --method DELETE "repos/{owner}/{repo}/releases/assets/$asset" --silent
+  done
