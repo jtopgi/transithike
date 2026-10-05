@@ -16,6 +16,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     end
     Faraday.default_adapter_options = {}
     @requests = Hash.new { |requests, path| requests[path] = [] }
+    @plan_priorities = Concurrent::Array.new
     ElevationService::TILES.clear
     NoiseService::TILES.clear
   end
@@ -633,6 +634,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
   # or King Street.
   def planner(window: [], back: [])
     stub_get(TransitousService::PLAN_URL) do |env|
+      @plan_priorities << ProviderSlots.priority
       home = ["47.6000000,-122.3000000", "47.5980000,-122.3300000"].include?(env.params["toPlace"])
       [200, {}, JSON.generate(itineraries: home ? back : window, direct: [])]
     end
@@ -685,6 +687,8 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_select ".trail-chip", text: /Twin Falls/
     # Away from traffic all along.
     assert_select ".trail-chip", text: /Quiet/
+    # The visitor waits on its trips, which go ahead of background work.
+    assert_equal [ProviderSlots::VISITOR], @plan_priorities.uniq
     facts = css_select(".hike-facts").sole.text.squish
     assert_match(/Hike ≈ 2.8 mi out and back, about 1 h 30 min/, facts)
     assert_includes facts, "🔈 Noise < 45 dB"

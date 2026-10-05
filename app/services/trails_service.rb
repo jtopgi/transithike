@@ -366,8 +366,10 @@ module TrailsService
     kept
   end
 
+  # Searches no visitor waits on plan trips on a pool of their own.
   def self.trip_pool
-    Rails.configuration.x.trip_pool
+    config = Rails.configuration.x
+    ProviderSlots.priority == ProviderSlots::BACKGROUND ? config.background_trip_pool : config.trip_pool
   end
 
   # The trails a train reaches, and the subway doesn't, with a way back to the
@@ -649,8 +651,10 @@ module TrailsService
   end
 
   # A future for the block, run on the shared provider pool unless another is given.
+  # Runs the block on the pool, its requests to providers as urgent as the caller's.
   def self.start(pool = Rails.configuration.x.provider_pool, &block)
-    Concurrent::Promises.future_on(pool) { Rails.application.executor.wrap(&block) }
+    urgency = ProviderSlots.urgency
+    Concurrent::Promises.future_on(pool) { ProviderSlots.with_priority(urgency) { Rails.application.executor.wrap(&block) } }
   end
 
   def self.overpass_pool

@@ -8,6 +8,9 @@
 # weekday and time, from up to two weeks before, is served at once, moved to
 # the day, while the day is searched in the background: timetables rarely
 # change from one week to the next, and each card plans its trips for the day.
+# Searches visitors wait on run on the stations' pool, ahead of background ones
+# for providers, and searching again in the background runs on a pool of its
+# own (see config/initializers/provider_pool.rb).
 class StationSearch
   KEEP = 8.days
   REFRESH_AFTER = 12.hours
@@ -24,27 +27,28 @@ class StationSearch
   RUNNING = Concurrent::Map.new
 
   # The station's search for hikes leaving at departure_time: a kept one, or
-  # an earlier week's, served at once, or the one running, or else a new one,
-  # started on the pool. With fresh, as for guides and keeping searches ready,
-  # kept searches are only served while they're complete and less than
-  # REFRESH_AFTER old, and earlier weeks' never.
+  # an earlier week's, served at once and searched again on background_pool,
+  # or the one running, or else a new one, started on the pool. With fresh, as
+  # for guides and keeping searches ready, kept searches are only served while
+  # they're complete and less than REFRESH_AFTER old, and earlier weeks' never.
   def self.start(station, departure_time, fresh: false, transit: TransitousService, hiking: OverpassService,
-    elevation: ElevationService, noise: NoiseService, cache: Rails.cache, pool: Rails.configuration.x.station_pool)
+    elevation: ElevationService, noise: NoiseService, cache: Rails.cache, pool: Rails.configuration.x.station_pool,
+    background_pool: Rails.configuration.x.background_pool)
     search = { station: station, departure_time: departure_time, keys: keys(station, departure_time), cache: cache,
-      providers: { transit: transit, hiking: hiking, elevation: elevation, noise: noise }, pool: pool }
+      providers: { transit: transit, hiking: hiking, elevation: elevation, noise: noise } }
     kept = cache.read(search[:keys][:day])
     if kept && !(fresh && (stale?(kept) || !complete?(kept[:result])))
-      refresh(**search) if stale?(kept)
+      refresh(**search, pool: background_pool) if stale?(kept)
       return finished(kept[:result])
     end
     unless fresh || kept
       earlier = cache.read(search[:keys][:weekday])
       if earlier && earlier[:result].departure_time < departure_time
-        refresh(**search)
+        refresh(**search, pool: background_pool)
         return finished(moved(earlier[:result], departure_time))
       end
     end
-    running(**search)
+    running(**search, pool: pool)
   end
 
   # The cache keys of the station's search for the day, and of its latest
@@ -64,12 +68,17 @@ class StationSearch
     kept[:found_at] < (complete?(kept[:result]) ? REFRESH_AFTER : REFRESH_INCOMPLETE_AFTER).ago
   end
 
-  # The station's search running in this process, or a new one, started on the pool.
-  def self.running(station:, departure_time:, keys:, cache:, providers:, pool:)
+  # The station's search running in this process, or a new one, started on the
+  # pool. When urgent, as when a visitor waits on it, its requests go ahead of
+  # background work's, and one still waiting for the background pool starts
+  # on the pool at once.
+  def self.running(station:, departure_time:, keys:, cache:, providers:, pool:,
+    urgent: ProviderSlots.priority == ProviderSlots::VISITOR)
     started = nil
     search = RUNNING.compute_if_absent([keys[:day], *providers.values]) do
       started = new(station, departure_time, keys, providers, cache)
     end
+    search.urgent! if urgent
     # Only once it's listed does it run, so it can't finish before it's listed,
     # and a search that can't start isn't left listed, for others to wait on.
     if started
@@ -80,6 +89,8 @@ class StationSearch
         raise
       end
       cache.write(keys[:tried], true, expires_in: REFRESH_INCOMPLETE_AFTER)
+    elsif urgent && !search.started?
+      search.run(pool)
     end
     search
   end
@@ -89,7 +100,7 @@ class StationSearch
   def self.refresh(pool:, cache:, keys:, **search)
     return if cache.exist?(keys[:tried]) || (pool.respond_to?(:queue_length) && pool.queue_length >= MAX_WAITING)
 
-    running(pool: pool, cache: cache, keys: keys, **search)
+    running(pool: pool, cache: cache, keys: keys, urgent: false, **search)
   end
 
   # An earlier week's search as if for departure_time, its times moved by whole
@@ -118,6 +129,21 @@ class StationSearch
   def initialize(station, departure_time, keys, providers, cache, events: [], done: false)
     @station, @departure_time, @keys, @providers, @cache = station, departure_time, keys, providers, cache
     @events, @done, @lock = events, done, Mutex.new
+    @urgent, @started = Concurrent::AtomicBoolean.new, Concurrent::AtomicBoolean.new
+  end
+
+  # A visitor waits on the search, so its requests go ahead of background work's.
+  def urgent!
+    @urgent.make_true
+  end
+
+  # How urgent the search's requests to providers are (see ProviderSlots).
+  def provider_priority
+    @urgent.true? ? ProviderSlots::SEARCH : ProviderSlots::BACKGROUND
+  end
+
+  def started?
+    @started.true?
   end
 
   # What the search found from the index-th event on, as [[event, payload], ...]
@@ -127,11 +153,16 @@ class StationSearch
     @lock.synchronize { [@events.drop(index), @done] }
   end
 
+  # Searches on the pool, unless it already started on another.
   def run(pool)
     Concurrent::Promises.future_on(pool) do
-      Rails.application.executor.wrap { search }
-    ensure
-      RUNNING.delete_pair([@keys[:day], *@providers.values], self)
+      next unless @started.make_true
+
+      begin
+        ProviderSlots.with_priority(self) { Rails.application.executor.wrap { search } }
+      ensure
+        RUNNING.delete_pair([@keys[:day], *@providers.values], self)
+      end
     end
   end
 

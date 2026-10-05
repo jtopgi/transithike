@@ -125,18 +125,23 @@ test Overpass connectivity from your deployment before launching.
   Overpass is busy, is tried again in halves after a pause, and a half that still
   can't be is skipped; a search fails only when nothing is found.
 - **Shared searches.** Each major station's search runs in the background, at
-  most three at once per server process, and is shared by every search that
+  most three at once per server process for searches visitors wait on and one
+  more searching again in the background, and is shared by every search that
   starts there at the same time, so everyone near Grand Central waits on the same
   one. It finishes, and is kept in the database for 8 days, even when the visitor
   who started it leaves. Kept searches show at once, and once 12 hours old (10
   minutes when some routes couldn't be checked), the station is searched again
   in the background for later visitors, keeping routes an earlier search found
-  that the new one couldn't check, unless found mostly beside loud traffic since. Where a station hasn't been searched for the
-  day yet, its search for the same weekday and time from up to two weeks before
-  shows at once, moved to the day, while the day is searched in the background:
-  timetables rarely change from one week to the next, and each card plans its
-  trips for the day. Background searches wait while two others are queued, and a
-  station isn't searched again within 10 minutes of the last try. A hike that
+  that the new one couldn't check, unless found mostly beside loud traffic
+  since. Where a station hasn't been searched for the day yet, its search for
+  the same weekday and time from up to two weeks before shows at once, moved to
+  the day, while the day is searched in the background: timetables rarely change
+  from one week to the next, and each card plans its trips for the day. Searches
+  no visitor waits on, searching again and keeping searches ready, run one at a
+  time on threads of their own, so a visitor's search isn't queued behind them,
+  and their requests to Overpass and Transitous wait behind those of visitors
+  and of searches visitors wait on, until a visitor waits on them too. Background searches wait while two others are
+  queued, and a station isn't searched again within 10 minutes of the last try. A hike that
   several stations reach shows from the one that gets there soonest, counting
   the trip across the city to each station at about 15 km/h, and a card is
   replaced when a station that gets there sooner finds it. While nothing new is
@@ -144,7 +149,8 @@ test Overpass connectivity from your deployment before launching.
 - **Ready ahead.** With `WARM_SEARCHES=1`, the web server searches each guide
   city's major stations for the next Saturday and Sunday every 6 hours, one at a
   time and starting 2 minutes after it boots, unless their kept searches are
-  recent and complete, so the first visitor near them doesn't wait.
+  recent and complete, so the first visitor near them doesn't wait. These run
+  in the background, behind searches visitors wait on.
 - **Weekend trips.** Searches are for Saturday or Sunday: the one chosen, or
   whichever comes first. Trips leave at **8 AM** that day in the time zone
   Transitous reports for the origin (UTC when unknown), or now (rounded to the
@@ -326,7 +332,8 @@ follow its [usage guidance](https://dev.overpass-api.de/overpass-doc/en/preface/
 For significant traffic, arrange dedicated capacity and suitable caching rather
 than relying on this public instance. Each server process sends it at most two
 queries at a time, the number of slots it gives each client: other queries wait up
-to 30 seconds for a slot, and highlights are skipped when none is free. When it is busy, searches use the public
+to 30 seconds for a slot, the most urgent first, as for Transitous below, and
+highlights are skipped when none is free. When it is busy, searches use the public
 [VK Maps mirror](https://wiki.openstreetmap.org/wiki/Overpass_API#Public_Overpass_API_instances)
 instead, and prefer it for five minutes. When both turn a query away within 15
 seconds, as they do when briefly overloaded, the preferred one is asked once more
@@ -354,14 +361,19 @@ major station it asks for the stations its trains reach with the one-to-all API
 batch, for every route's trip there, the trip there by city transit, and the
 latest trip back in three requests to the experimental one-to-many API. Trips
 follow timetables that hardly change until the day, so trips more than 12 hours
-ahead are cached for six hours, and the day's for 15 minutes. If that API fails,
+ahead are cached until 12 hours before they leave, for at most a day, longer
+than a kept search goes before the station is searched again, so cards show the
+trips their search planned at once, and the day's for 15 minutes. If that API fails,
 it plans up to 15 of the nearest routes one at a time. Once a search is
 done, each card the visitor scrolls to plans its trip there, then its trips back
 the same way from the end of the hike until the last one in one timetable
 request (and any way back in another, when the same way has none), cached the
 same way. Transitous answers at most three requests at once from one client
 and turns away more, so each server process sends it at most three at once, and
-others wait up to 30 seconds for a turn. It also supplies each
+others wait up to 30 seconds for a turn, the most urgent first: those a
+visitor's own request makes, such as a card's trips or a hike's page, then those
+of searches visitors wait on, and last those of searches in the background (see
+`ProviderSlots`). It also supplies each
 origin's time zone and area name, cached for 30 days. Transit coverage depends on
 the feeds Transitous has for a region.
 

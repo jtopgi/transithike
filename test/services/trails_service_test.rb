@@ -940,9 +940,14 @@ class TrailsServiceTest < ActiveSupport::TestCase
   def station_search(hiking, transit: FakeTransit.new(trips: %w[a b c].to_h { |name| [name, minutes(30)] }), departure: SATURDAY,
     noise: quiet_unknown, **options)
     @station_cache ||= ActiveSupport::Cache::MemoryStore.new
-    @station_pool ||= Class.new(Concurrent::ImmediateExecutor) { attr_accessor :queue_length }.new.tap { |pool| pool.queue_length = 0 }
     StationSearch.start(STATION, departure.in_time_zone("America/Los_Angeles"), transit: transit, hiking: hiking,
-      elevation: FakeElevation.new, noise: noise, cache: @station_cache, pool: @station_pool, **options)
+      elevation: FakeElevation.new, noise: noise, cache: @station_cache,
+      **{ pool: station_pool, background_pool: station_pool }.merge(options))
+  end
+
+  # Runs searches at once, saying how many wait for it.
+  def station_pool
+    @station_pool ||= Class.new(Concurrent::ImmediateExecutor) { attr_accessor :queue_length }.new.tap { |pool| pool.queue_length = 0 }
   end
 
   # The routes a search shows, by name, and whether it ran rather than being kept.
@@ -996,6 +1001,59 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal [%w[a], false], shown(station_search(unchecked, noise: loud))
     kept = station_search(unchecked, noise: loud).events_since(0).first.find { |event, _| event == :trails }.last
     assert_equal [{ quiet: 0.9, loud: 0.0 }], kept.map(&:noise)
+  end
+
+  # A pool that holds what's posted to it until it's run.
+  class HeldPool
+    include Concurrent::ExecutorService
+
+    def post(*args, &task)
+      (@tasks ||= []) << -> { task.call(*args) }
+      true
+    end
+
+    def run
+      @tasks.shift.call while @tasks.present?
+    end
+  end
+
+  test "a station's search a visitor waits on goes ahead of background work, and searching again runs in the background" do
+    priorities = Concurrent::Array.new
+    transit = FakeTransit.new(trips: { "a" => minutes(30) })
+    transit.define_singleton_method(:rail_stations) { |**options| priorities << ProviderSlots.priority && super(**options) }
+    background = HeldPool.new
+    visit = -> { ProviderSlots.with_priority(ProviderSlots::VISITOR) { station_search(FakeHiking.new([trail("a")]), transit: transit, background_pool: background) } }
+    assert_equal [["a"], true], shown(visit.call)
+    assert_equal [ProviderSlots::SEARCH], priorities
+
+    # Half a day on, the kept search shows at once, and the station is searched again behind searches visitors wait on.
+    travel 12.hours + 1.minute
+    assert_equal [["a"], false], shown(visit.call)
+    assert_equal [ProviderSlots::SEARCH], priorities
+    background.run
+    assert_equal [ProviderSlots::SEARCH, ProviderSlots::BACKGROUND], priorities
+  end
+
+  test "a search still waiting for the background pool starts at once when a visitor waits on it, and runs once" do
+    providers = { transit: FakeTransit.new(trips: { "a" => minutes(30) }), hiking: FakeHiking.new([trail("a")]),
+      elevation: FakeElevation.new, noise: quiet_unknown }
+    cache = ActiveSupport::Cache::MemoryStore.new
+    background = HeldPool.new
+    start = lambda do |pool|
+      StationSearch.start(STATION, SATURDAY.in_time_zone("America/Los_Angeles"), fresh: true, cache: cache, pool: pool,
+        background_pool: background, **providers)
+    end
+    # As when keeping the guide cities' searches ready.
+    ready = start.(background)
+    refute ready.started?
+    assert_equal ProviderSlots::BACKGROUND, ready.provider_priority
+
+    waited_on = ProviderSlots.with_priority(ProviderSlots::VISITOR) { start.(Concurrent::ImmediateExecutor.new) }
+    assert_same ready, waited_on
+    assert_equal ProviderSlots::SEARCH, waited_on.provider_priority
+    assert_equal [["a"], true], shown(waited_on)
+    background.run
+    assert_equal 1, providers[:hiking].batches.size
   end
 
   test "with fresh, as for guides, kept searches are only used while they're recent and complete" do
@@ -1088,8 +1146,8 @@ class TrailsServiceTest < ActiveSupport::TestCase
     end.new
     started = []
     searches = Class.new do
-      define_method(:start) do |station, departure, fresh:, transit:|
-        started << [station.name, departure.strftime("%a %-l %p"), fresh]
+      define_method(:start) do |station, departure, fresh:, transit:, pool:|
+        started << [station.name, departure.strftime("%a %-l %p"), fresh, pool]
         StationSearch.finished(TrailsService::Result.new(trails: []))
       end
     end.new
@@ -1097,8 +1155,10 @@ class TrailsServiceTest < ActiveSupport::TestCase
     count = SearchWarmer.warm(guides: guides, transit: transit, searches: searches, log: Logger.new(log), wait: 1)
 
     assert_equal 4, count
-    assert_equal [["King Street", "Sat 8 AM", true], ["Eastside", "Sat 8 AM", true], ["King Street", "Sun 8 AM", true],
-      ["Eastside", "Sun 8 AM", true]], started
+    # They run in the background, behind searches visitors wait on.
+    background = Rails.configuration.x.background_pool
+    assert_equal [["King Street", "Sat 8 AM", true, background], ["Eastside", "Sat 8 AM", true, background],
+      ["King Street", "Sun 8 AM", true, background], ["Eastside", "Sun 8 AM", true, background]], started
     assert_equal 2, log.string.scan("Searches from Down for").size
   end
 

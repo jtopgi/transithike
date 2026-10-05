@@ -280,9 +280,13 @@ class TransitousServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "trips more than half a day ahead are shared for hours, and the day's for minutes" do
+  test "trips more than half a day ahead are shared until then, for longer than kept searches go unrefreshed, and the day's for minutes" do
     travel_to Time.utc(2026, 9, 22, 12) do
-      assert_equal 6.hours, TransitousService.trip_cache_ttl(Time.utc(2026, 9, 23, 0, 1))
+      assert_equal 1.day, TransitousService.trip_cache_ttl(Time.utc(2026, 9, 25, 8))
+      assert_operator TransitousService::TRIP_AHEAD_CACHE_TTL, :>, StationSearch::REFRESH_AFTER
+      # Planned the evening before, they're planned again once the day comes.
+      assert_equal 1.hour, TransitousService.trip_cache_ttl(Time.utc(2026, 9, 23, 1))
+      assert_equal 15.minutes, TransitousService.trip_cache_ttl(Time.utc(2026, 9, 23, 0, 1))
       assert_equal 15.minutes, TransitousService.trip_cache_ttl(Time.utc(2026, 9, 22, 23, 59))
     end
   end
