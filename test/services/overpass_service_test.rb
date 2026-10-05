@@ -338,19 +338,21 @@ class OverpassServiceTest < ActiveSupport::TestCase
     assert_equal OverpassService::URLS, OverpassService.urls(cache)
   end
 
-  test "a lookup another search waits on is at least as urgent as that search" do
+  test "a lookup another search waits on is at least as urgent as that search, even while it looks up its own" do
     other = [Concurrent::Promises.resolvable_future, ProviderSlots::Shared.new(ProviderSlots::BACKGROUND)]
     OverpassService::LOOKING_UP.put_if_absent("tile:shared", other)
+    while_own = Queue.new
     waiting = Thread.new do
       ProviderSlots.with_priority(ProviderSlots::SEARCH) do
-        OverpassService.shared(["tile:shared"], ActiveSupport::Cache::MemoryStore.new) { {} }
+        OverpassService.shared(["tile:shared", "tile:own"], ActiveSupport::Cache::MemoryStore.new) do |own|
+          while_own << other.last.provider_priority
+          own.to_h { |key| [key, [2]] }
+        end
       end
     end
-    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
-    sleep 0.01 until other.last.provider_priority == ProviderSlots::SEARCH || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
-    assert_equal ProviderSlots::SEARCH, other.last.provider_priority
+    assert_equal ProviderSlots::SEARCH, while_own.pop
     other.first.fulfill("tile:shared" => [1])
-    assert_equal({ "tile:shared" => [1] }, waiting.value)
+    assert_equal({ "tile:own" => [2], "tile:shared" => [1] }, waiting.value)
   ensure
     OverpassService::LOOKING_UP.delete("tile:shared")
   end

@@ -231,6 +231,8 @@ module OverpassService
     keys = keys.uniq
     mine = [Concurrent::Promises.resolvable_future, ProviderSlots::Shared.new(ProviderSlots.urgency)]
     others = keys.filter_map { |key| (other = LOOKING_UP.put_if_absent(key, mine)) && [key, other] }.to_h
+    # Before looking up its own, so they don't wait behind less urgent work meanwhile.
+    others.each_value { |(_, urgency)| urgency.raise_to(ProviderSlots.priority) }
     own = keys - others.keys
     found = {}
     begin
@@ -241,7 +243,6 @@ module OverpassService
     end
     return found if others.empty?
 
-    others.each_value { |(_, urgency)| urgency.raise_to(ProviderSlots.priority) }
     TrailsService.settle(others.values.map(&:first).uniq, timeout: SHARED_WAIT_SECONDS)
     others.each do |key, (other, _)|
       value = other.value(0) if other.fulfilled?
