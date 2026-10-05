@@ -69,17 +69,10 @@ module SearchesHelper
     time.in_time_zone(result.departure_time.time_zone).strftime("%-I:%M %p")
   end
 
-  # How long there is between arriving and the hike's deadline, sunset or the
-  # last trip back, such as "up to 2 h 30 min there", "up to 9 h there", or "up
-  # to 6 h of daylight there", or nil when neither is known.
+  # How long there is between arriving and the last trip back, such as "2 h 30 min", "45 min", or "9 h".
   def stay_label(trail)
-    dark = TripPlans.sunset_first?(trail.sunset, trail.last_return)
-    deadline = dark ? trail.sunset : trail.last_return
-    return unless deadline
-
-    seconds = [(deadline - trail.arrival).floor, 0].max
-    length = seconds >= 4.hours ? "#{seconds / 1.hour} h" : duration_label(seconds)
-    "up to #{length}#{' of daylight' if dark} there"
+    seconds = [(trail.last_return - trail.arrival).floor, 0].max
+    seconds >= 4.hours ? "#{seconds / 1.hour} h" : duration_label(seconds)
   end
 
   # Where the page looks up the trains there from the hike's station and back,

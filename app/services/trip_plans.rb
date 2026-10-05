@@ -1,57 +1,80 @@
-# The trips there and back for a hike: the first trip there, the trips back
-# after hiking all of it from that arrival (from the far end, for hikes that
-# finish there) until the first after sunset, and the trips there that leave
-# time to hike all of it by sunset and before the last trip back.
+# The trips there and back for a hike, from when trips set out: the trips there
+# that arrive in time to hike all of it by sunset and before the last trip back,
+# and the trips back after hiking all of it from the soonest arrival (from the
+# far end, for hikes that finish there) that leave before dark, so no one waits
+# for one in the dark.
 module TripPlans
-  # { there:, ways:, departures:, sunset: }, with the trips like
-  # TransitousService's: ways is TransitousService.ways_back's, with its trips
-  # only until the first that leaves at sunset or later, which is after_sunset;
-  # departures are in order, and sunset is Daylight.sunset's at the route that day.
+  # Hikes need at least this many trips there that arrive in time, and as many
+  # back before dark, so missing one isn't a worry.
+  MIN_TRIPS = 3
+
+  # TripPlans.trips' for a trail, as it's hiked.
   def self.plan(trail, origin:, leave:, back_by:, transit: TransitousService)
-    start = Place.new(latitude: trail.latitude, longitude: trail.longitude)
-    finish = Place.new(latitude: trail.finish[0], longitude: trail.finish[1]) if trail.finish
-    # In whole minutes, as the results page looks trips up, so its lookups are shared.
-    hike = (TrailsService.required_hours(trail) * 60).round.minutes
-    walk = (TrailsService.hike_hours(trail) * 60).round.minutes
-    sunset = Daylight.sunset(leave, trail.latitude, trail.longitude)
-    there = transit.journey(origin: origin, destination: start, time: leave)
+    trips(**hike(trail), origin: origin, leave: leave, back_by: back_by, transit: transit)
+  end
+
+  # TripPlans.plan's when the trail has at least MIN_TRIPS trips there and as
+  # many back, or nil. Without enough trips there, the trips back aren't looked up.
+  def self.frequent(trail, origin:, leave:, back_by:, transit: TransitousService)
+    plans = trips(**hike(trail), origin: origin, leave: leave, back_by: back_by, transit: transit, enough: true)
+    plans if plans && frequent?(plans)
+  end
+
+  def self.frequent?(plans)
+    plans[:departures].size >= MIN_TRIPS && Array(plans.dig(:ways, :trips)).size >= MIN_TRIPS
+  end
+
+  # { there:, ways:, departures:, sunset:, dusk: } for a hike from start
+  # ([latitude, longitude]), back from finish when it's hiked there, that takes
+  # hike minutes with the margin before the last trip back, with trips like
+  # TransitousService's. departures are the trips there that arrive in time, in
+  # order, and there is the one that arrives soonest, or #journey's when none
+  # does. ways is TransitousService.ways_back's, with trips that leave by dusk.
+  # sunset and dusk are Daylight's at start. With enough, nil when there are
+  # fewer than MIN_TRIPS trips there.
+  def self.trips(start:, finish:, hike:, origin:, leave:, back_by:, transit: TransitousService, enough: false)
+    hike = hike.minutes
+    walk = [hike - TrailsService::RETURN_MARGIN, 0.minutes].max
+    start_place = Place.new(latitude: start[0], longitude: start[1])
+    finish_place = Place.new(latitude: finish[0], longitude: finish[1]) if finish
+    sunset, dusk = Daylight.sunset(leave, *start), Daylight.dusk(leave, *start)
+    # Trips there that arrive in time to hike all of it by sunset and be back by the deadline.
+    latest = [(sunset - walk if sunset), back_by - hike].compact.min
+    departures = arriving(transit, origin, start_place, leave, latest)
+    return if enough && departures.size < MIN_TRIPS
+
+    # The soonest, and of those, the one that leaves latest.
+    there = departures.min_by { |trip| [TransitousService.costed_arrival(trip), -Time.iso8601(trip[:departure]).to_i] } ||
+      transit.journey(origin: origin, destination: start_place, time: leave)
     arrival = there ? Time.iso8601(there[:arrival]) : leave
-    ways = transit.ways_back(origin: finish || start, destination: origin, like: there, earliest: arrival + hike,
-      deadline: back_by, follow: finish.nil?)
+    ways = transit.ways_back(origin: finish_place || start_place, destination: origin, like: there, earliest: arrival + hike,
+      deadline: back_by, leave_by: dusk, follow: finish.nil?)
     last = Time.iso8601(ways[:last][:departure]) if ways[:last]
-    # Trips there that arrive in time to hike by sunset and before the last trip back.
-    latest = [(last - hike if last), (sunset - walk if sunset)].compact.min
-    in_time = ->(trip) { latest.nil? || Time.iso8601(trip[:arrival]) <= latest }
-    departures = if last && there
-      # No trip there that leaves later than this arrives in time. The timetable
-      # goes by train only when the first trip there does, so it lists that trip.
-      transit.departures(origin: origin, destination: start, time: leave, latest: latest, arrive_by: latest,
-        by_train: TransitousService.by_train?(there)).select(&in_time)
-    end
-    { there: there, ways: until_sunset(ways, sunset), departures: departures.presence || [there].compact.select(&in_time),
-      sunset: sunset }
+    # Only trips there that leave time to hike before the last trip back count.
+    departures = departures.select { |trip| last && Time.iso8601(trip[:arrival]) + hike <= last }
+    { there: there, ways: ways, departures: departures, sunset: sunset, dusk: dusk }
   end
 
-  # The ways back with their trips only until the first that leaves at sunset
-  # or later, as after_sunset, where sunset is the hike's deadline: the hike is
-  # done by then, so later trips are only for staying after dark.
-  def self.until_sunset(ways, sunset)
-    last = Time.iso8601(ways[:last][:departure]) if ways[:last]
-    trips = Array(ways[:trips])
-    dusk = after_sunset(trips, sunset) if sunset_first?(sunset, last)
-    ways.merge(trips: dusk ? trips[..trips.index(dusk)] : trips, after_sunset: dusk)
+  # Ways back like TransitousService.ways_back's with only the trips whose first
+  # ride leaves by dusk, as for guides planned before trips back had to.
+  def self.before_dark(ways, dusk)
+    return ways unless dusk
+
+    in_time = ->(trip) { trip && TransitousService.boarding(trip) <= dusk.utc.iso8601 }
+    trips = Array(ways[:trips]).select(&in_time)
+    ways.merge(back: (ways[:back] if in_time.(ways[:back])), last: (in_time.(ways[:last]) ? ways[:last] : trips.last), trips: trips)
   end
 
-  # The first trip back that leaves at sunset or later, which someone hiking
-  # until sunset takes, or nil without a sunset or one.
-  def self.after_sunset(trips, sunset)
-    sunset && trips.find { |trip| Time.iso8601(trip[:departure]) >= sunset }
+  # The trips there that arrive by latest, none when that's before leaving.
+  def self.arriving(transit, origin, start, leave, latest)
+    return [] unless latest > leave
+
+    transit.departures(origin: origin, destination: start, time: leave, latest: latest, arrive_by: latest)
+      .select { |trip| Time.iso8601(trip[:arrival]) <= latest }
   end
 
-  # Whether sunset is the hike's deadline rather than the last trip back,
-  # which has to leave RETURN_MARGIN after the hike: so the last trip back
-  # leaves later than that after sunset, or isn't known.
-  def self.sunset_first?(sunset, last_return)
-    !sunset.nil? && (last_return.nil? || sunset <= last_return - TrailsService::RETURN_MARGIN)
+  # The trail's start, finish, and the minutes it takes to hike, the margin included.
+  def self.hike(trail)
+    { start: [trail.latitude, trail.longitude], finish: trail.finish, hike: (TrailsService.required_hours(trail) * 60).round }
   end
 end

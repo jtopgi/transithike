@@ -10,7 +10,7 @@ class ActiveSupport::TestCase
   # before each test process exits: Ruby can otherwise hang for minutes
   # killing them on the way out.
   shut_down_pools = lambda do |*|
-    pools = Rails.configuration.x.then { |config| [config.station_pool, config.provider_pool, config.overpass_pool] }
+    pools = Rails.configuration.x.then { |config| [config.station_pool, config.provider_pool, config.overpass_pool, config.trip_pool] }
     pools.each(&:shutdown)
     pools.each { |pool| pool.wait_for_termination(10) }
   end

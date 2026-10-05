@@ -27,25 +27,28 @@ class GuideServiceTest < ActiveSupport::TestCase
 
   # Trips there by train, and trips back after the hike, for TripPlans, which
   # remembers where trips there leave from.
+  # Three trips there an hour apart, by the Hudson Line and a bus, and trips back an hour apart from the end of the
+  # hike until dark.
   class FakeTransit
     def origins
       @origins ||= []
     end
 
-    def journey(origin:, destination:, time:)
+    def departures(origin:, destination:, time:, latest:, arrive_by: nil, by_train: true)
       origins << [origin.name, origin.latitude, origin.longitude]
+      (0..2).map { |hour| journey(origin: origin, destination: destination, time: time + hour.hours) }
+    end
+
+    def journey(origin:, destination:, time:)
       { departure: (time + 10.minutes).utc.iso8601, arrival: (time + 90.minutes).utc.iso8601,
         legs: [{ mode: "SUBURBAN", name: "Hudson Line", to_name: "Cold Spring" }, { mode: "BUS", name: "5", to_name: "Main St" }] }
     end
 
-    def ways_back(origin:, destination:, like:, earliest:, deadline:, follow:)
-      trip = { departure: earliest.utc.iso8601, arrival: (earliest + 90.minutes).utc.iso8601, legs: [] }
-      last = { departure: (deadline - 2.hours).utc.iso8601, arrival: (deadline - 30.minutes).utc.iso8601, legs: [] }
-      { back: trip, last: last, same_way: follow ? true : nil, trips: [trip, last] }
-    end
-
-    def departures(origin:, destination:, time:, latest:, arrive_by: nil, by_train: true)
-      [journey(origin: origin, destination: destination, time: time)]
+    def ways_back(origin:, destination:, like:, earliest:, deadline:, leave_by:, follow:)
+      last = [deadline - 2.hours, leave_by].compact.min
+      trips = (0..2).map { |hour| last - hour.hours }.select { |time| time >= earliest }.reverse
+        .map { |time| { departure: time.utc.iso8601, arrival: (time + 90.minutes).utc.iso8601, legs: [] } }
+      { back: trips.first, last: trips.last, same_way: follow ? true : nil, trips: trips }
     end
   end
 
@@ -153,7 +156,7 @@ class GuideServiceTest < ActiveSupport::TestCase
     hike = data[:hikes].first
     # Each hike says where it is, without the country it shares with the city.
     assert_equal ["Cold Spring, New York"], data[:hikes].map { |each| each.dig(:trail, :location) }.uniq
-    assert_equal ["Hudson Highlands State Park", "Hudson Line", true, 2, 1, 1],
+    assert_equal ["Hudson Highlands State Park", "Hudson Line", true, 3, 3, 1],
       [hike[:area], hike.dig(:there, :legs, 0, :name), hike.dig(:ways, :same_way), hike.dig(:ways, :trips).size,
         hike[:departures].size, hike[:photos].size]
     # A hike to its far end comes back from there any way.
@@ -224,11 +227,12 @@ class GuideServiceTest < ActiveSupport::TestCase
     assert_equal ["New York City", "Midtown Manhattan"], [page.guide.name, page.guide.origin]
     assert_equal "Saturday, October 10, 8:00 AM EDT", page.departure_time.strftime("%A, %B %-d, %-l:%M %p %Z")
     hike = page.hike("breakneck-ridge-trail")
-    assert_equal [:out_and_back, 2.5, 5, Time.utc(2026, 10, 11, 0, 50), Time.utc(2026, 10, 10, 22, 23)],
+    # The last trip back, at 8:50 PM, leaves after dark, so the one at 6:05 PM is the last.
+    assert_equal [:out_and_back, 2.5, 5, Time.utc(2026, 10, 10, 22, 5), Time.utc(2026, 10, 10, 22, 23)],
       [hike.trail.plan, hike.trail.length, TrailsService.hike_miles(hike.trail), hike.trail.last_return, hike.trail.sunset]
     assert_equal "Midtown Manhattan", hike.trail.origin
     assert_equal [{ kind: "viewpoint", name: "Breakneck Ridge" }, { kind: "peak", name: "Sugarloaf Mountain" }], hike.trail.highlights
-    assert_equal ["Hudson Line", 2], [hike.there[:legs].sole[:name], hike.ways[:trips].size]
+    assert_equal ["Hudson Line", 4, 3], [hike.there[:legs].sole[:name], hike.ways[:trips].size, hike.departures.size]
     assert_nil page.hike("missing")
     assert_same page, GuideService.page("new-york-city")
     assert_nil GuideService.page("atlantis")
@@ -241,6 +245,14 @@ class GuideServiceTest < ActiveSupport::TestCase
     data[:hikes].last[:trail][:arrival] = "2026-10-10T21:30:00Z"
     write_guide(data)
     assert_equal ["breakneck-ridge-trail"], GuideService.page("new-york-city").hikes.map(&:slug)
+
+    # Without three trips there, or three back before dark, a hike is left out.
+    few_there = guide_data.tap { |few| few[:hikes].first[:departures].pop }
+    few_back = guide_data.tap { |few| few[:hikes].first[:ways][:trips].shift(2) }
+    [few_there, few_back].each do |few|
+      write_guide(few)
+      assert_equal ["white-trail-tarrytown-lakes"], GuideService.page("new-york-city").hikes.map(&:slug)
+    end
 
     write_guide
     white = GuideService.page("new-york-city").hike("white-trail-tarrytown-lakes")

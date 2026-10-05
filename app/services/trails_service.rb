@@ -65,6 +65,10 @@ module TrailsService
   # still going when nothing has changed for KEEP_ALIVE_SECONDS.
   FOLLOW_SECONDS = 0.25
   KEEP_ALIVE_SECONDS = 15
+  # A search gives up on all the hikes whose trips aren't planned yet when no
+  # hike's trips anywhere have been planned for this long, as when the pool is
+  # stuck, which code reloading in development can do.
+  TRIP_QUIET_SECONDS = 60
 
   # origin is text to look up, near a rough [latitude, longitude] if given, or
   # a Place chosen from suggestions or the device's location; day is a
@@ -237,6 +241,8 @@ module TrailsService
     def initialize(station, place, access, result, transit, hiking, on_found)
       @station, @place, @access, @result, @transit, @hiking, @on_found = station, place, access, result, transit, hiking, on_found
       @checked, @lookups, @budget = Set.new, [], { planned: MAX_PLANNED_ROUTES }
+      # Once planning trips is stuck, the search plans no more.
+      @stuck = Concurrent::AtomicBoolean.new
     end
 
     def check(ids)
@@ -254,13 +260,14 @@ module TrailsService
       found = TrailsService.round_trips(@place, trails, @result, @transit, @budget)
       return if found.empty?
 
-      found.each do |trail|
+      # Each hike shows as soon as its trips are planned.
+      kept = TrailsService.frequent(found, @place, @result, @transit, failed: method(:fail_with), stuck: @stuck) do |trail|
         trail.station = @station
         trail.score = TrailsService.score(trail).round(2)
+        @result.trails << trail
+        @on_found&.call(:trails, [trail.dup])
       end
-      @lookups << [found, TrailsService.start(TrailsService.overpass_pool) { @hiking.highlights(found) }]
-      @result.trails.concat(found)
-      @on_found&.call(:trails, found.map(&:dup))
+      @lookups << [kept, TrailsService.start(TrailsService.overpass_pool) { @hiking.highlights(kept) }] if kept.any?
     rescue SearchErrors::UpstreamError => error
       fail_with(error)
     end
@@ -292,6 +299,63 @@ module TrailsService
     yield
   rescue StandardError
     nil
+  end
+
+  # The trails with at least TripPlans::MIN_TRIPS trips there that arrive in
+  # time to hike them and as many back before dark, most promising first, each
+  # yielded as soon as its trips are planned, with when the first trip there
+  # arrives and the last trip back leaves. Trails whose trips can't be planned
+  # are left out, the result says some hikes couldn't be checked, and failed is
+  # called with the error. When no hike's trips anywhere have been planned for
+  # TRIP_QUIET_SECONDS, planning is stuck: the hikes planned by then are kept,
+  # the rest are given up on at once, and stuck says so for later batches.
+  def self.frequent(trails, place, result, transit, failed: nil, stuck: Concurrent::AtomicBoolean.new)
+    plans = trails.map do |trail|
+      start(trip_pool) do
+        # Hikes given up on before their turn aren't planned.
+        next if stuck.true?
+
+        TripPlans.frequent(trail, origin: place, leave: result.departure_time, back_by: result.return_by, transit: transit)
+      ensure
+        Rails.configuration.x.trips_planned.increment
+      end
+    end
+    counter = Rails.configuration.x.trips_planned
+    count, quiet_since = counter.value, Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    kept = trails.zip(plans).filter_map do |trail, plan|
+      until plan.resolved? || stuck.true?
+        settle([plan], timeout: 1)
+        now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        if counter.value != count
+          count, quiet_since = counter.value, now
+        elsif now - quiet_since >= TRIP_QUIET_SECONDS
+          stuck.make_true
+        end
+      end
+      # A resolved plan stays as it is, so it's looked at once.
+      done = plan if plan.resolved?
+      unless done&.fulfilled?
+        reason = done ? done.reason : SearchErrors::ProviderBusy.new(SearchHttp::BUSY_MESSAGE)
+        raise reason unless reason.is_a?(SearchErrors::UpstreamError)
+
+        result.complete = false
+        failed&.call(reason)
+        next
+      end
+      next unless (trips = done.value)
+
+      trail.arrival = Time.iso8601(trips[:there][:arrival])
+      trail.last_return = Time.iso8601(trips[:ways][:last][:departure])
+      yield trail if block_given?
+      trail
+    end
+    # Hikes skipped once planning was stuck weren't checked either.
+    result.complete = false if stuck.true?
+    kept
+  end
+
+  def self.trip_pool
+    Rails.configuration.x.trip_pool
   end
 
   # The trails a train reaches, and the subway doesn't, with a way back to the

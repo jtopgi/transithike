@@ -39,11 +39,8 @@ class GuidesTest < ActionDispatch::IntegrationTest
     assert breakneck.at_css("a[href='/day-hikes-by-train/new-york-city/breakneck-ridge-trail']")
     assert_match(/Each way 1 h 28 min Hudson Line train to Breakneck Ridge/, breakneck.text.squish)
     assert_match(/Hike ≈ 5.0 mi out and back/, breakneck.text.squish)
-    # Sunset is the deadline rather than the last trip back at 8:50 PM.
-    assert_match(/🌇 Sunset 6:23 PM\z/, breakneck.text.squish)
-    assert_no_match(/Last trip back/, breakneck.text)
-    # Guides built before sunsets were kept work them out.
-    assert_match(/🌇 Sunset 6:23 PM\z/, cards.last.text.squish)
+    # The last trip back leaves before dark, at 6:05 PM, rather than at 8:50 PM.
+    assert_match(/↩️ Last trip back 6:05 PM\z/, breakneck.text.squish)
     # Without a photo, a card previews its route once it scrolls into view.
     assert cards.last.at_css(".trail-map[data-lazy-map][data-path]")
     list = structured_data.fetch("ItemList")
@@ -90,17 +87,21 @@ class GuidesTest < ActionDispatch::IntegrationTest
     assert_select "h1", "Breakneck Ridge Trail"
     summary = "Breakneck Ridge Trail is a 5.0-mile hike near Cold Spring, New York (out and back) that climbs about 1,250 ft. " \
       "From Midtown Manhattan, " \
-      "it's about 1 h 28 min each way, taking the Hudson Line train to Breakneck Ridge. On Saturdays, the last trip back leaves at 8:50 PM."
+      "it's about 1 h 28 min each way, taking the Hudson Line train to Breakneck Ridge. On Saturdays, the last trip back " \
+      "before dark leaves at 6:05 PM."
     assert_select ".results-subtitle", summary
     assert_select "meta[name=description][content=?]", summary
     assert_select ".trail-location", "📍 Cold Spring, New York"
     assert_select "link[rel=canonical][href='http://www.example.com/day-hikes-by-train/new-york-city/breakneck-ridge-trail']"
     assert_select "[data-hike-map][data-path]"
-    assert_match(/Sunset 6:23 PM hike done by then/, css_select(".hike-facts").sole.text.squish)
-    assert_equal "Taking the first trip there, you arrive at 9:40 AM and have up to 8 h 43 min until sunset, for a hike of about " \
-      "2 h 30 min.", css_select(".hike-intro").sole.text.squish
+    assert_match(/Sunset 6:23 PM hike done by then ↩️ Last trip back 6:05 PM before dark, from Cold Spring\z/, css_select(".hike-facts").sole.text.squish)
+    assert_equal "Taking the first trip there, you arrive at 9:40 AM and have up to 8 h 25 min until the last trip back, " \
+      "before dark, for a hike of about 2 h 30 min.", css_select(".hike-intro").sole.text.squish
+    # Trips back until the last one before dark, at 6:51 PM.
+    assert_match(/until the last one before it gets dark, at 6:51 PM\./, css_select("#back-heading + p").sole.text.squish)
     there, back = css_select("table.timetable tbody").map { |table| table.css("tr").map { |row| row.css("td").first.text } }
-    assert_equal [["8:12 AM"], ["3:05 PM", "8:50 PM"]], [there, back]
+    assert_equal [["8:12 AM", "9:12 AM", "10:12 AM"], ["3:05 PM", "4:05 PM", "5:05 PM", "6:05 PM"]], [there, back]
+    assert_select "tr.timetable-last", text: /6:05 PM.*Last/m
     assert_select "td", text: /Hudson Line from Grand Central to Breakneck Ridge/
     assert_select ".hike-photo img[alt='Breakneck Ridge view']"
     assert_select "a[href='/day-hikes-by-train/new-york-city/white-trail-tarrytown-lakes']", text: "White Trail (Tarrytown Lakes)"

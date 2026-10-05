@@ -64,18 +64,19 @@ class SearchesTest < ApplicationSystemTestCase
         end
         [200, {}, JSON.generate(transit_durations: durations, street_durations: [])]
       end
-      # The train there and the buses back that each card shows once the search is done, riding five minutes
-      # less each way than the search's estimate for the route. Buses back leave six and three hours before 11 PM,
-      # or only nine hours before from @early_last_route.
+      # Each hike's trips, as the search plans them and cards show them: trains there half an hour apart from 8:10 AM,
+      # and buses back every hour from 2 to 5 PM, and at 8 PM, after dark, each riding five minutes less than the
+      # search's estimate for the route. From @sparse_route, only the 2 PM bus goes back.
       stub.get(URI(TransitousService::PLAN_URL).path) do |env|
-        back = env.params["arriveBy"] == "true"
+        back = env.params["toPlace"] == "47.6050000,-122.0000000"
         latitude = Float(env.params[back ? "fromPlace" : "toPlace"].split(",").first)
         route = ROUTES.min_by { |_, route_latitude| (route_latitude - latitude).abs }
         ride = route.last.sole[:duration] - 300
         time = Time.iso8601(env.params["time"])
-        starts = if !back then [time + 10.minutes]
-        elsif route.first == @early_last_route then [time - 9.hours]
-        else [time - 6.hours, time - 3.hours]
+        deadline = time.in_time_zone("America/Los_Angeles").change(hour: 23)
+        starts = if !back then [10, 40, 70].map { |minutes| time + minutes.minutes }
+        elsif route.first == @sparse_route then [deadline - 9.hours]
+        else [9, 8, 7, 6, 3].map { |hours| deadline - hours.hours }
         end
         leg = back ? { mode: "BUS", routeShortName: "11" } : { mode: "SUBURBAN", routeLongName: "Sounder N Line" }
         itineraries = starts.map do |start|
@@ -151,25 +152,26 @@ class SearchesTest < ApplicationSystemTestCase
     assert_selector "article.trail-card", count: 3
     assert_no_selector "[data-skeleton]"
     assert_selector ".trail-map.leaflet-container", minimum: 1
-    # Each card's deadline is sunset, well before the last trip back at 9 PM.
-    assert_selector "article.trail-card .trail-return", text: /\A🌇 Sunset 6:28 PM · up to [89] h of daylight there\z/, count: 3
+    # Each card's last trip back is the last before dark, at 5 PM rather than 8 PM.
+    assert_selector "article.trail-card .trail-return", text: /\A↩️ Last trip back( from the far end)? 5:00 PM · up to 7 h there\z/,
+      count: 3
     # Each card shows the trains and other transit there and back once the search is done, and the planned
     # trips replace the search's estimates: the rides there and back, and the last trip back and time there.
     assert_selector ".trail-trip", text: /There: 🚆 Sounder N Line · leave \d+:\d\d [AP]M, arrive/, minimum: 1
     within find("article.trail-card", text: "Short Loop") do
-      # The first bus back after the hike, and the first after sunset, which is also the last.
-      assert_selector ".trail-trip", text: "First back: 🚌 11 · leave 5:00 PM, home 6:15 PM"
-      assert_selector ".trail-trip", text: "Last back: 🚌 11 · leave 8:00 PM, home 9:15 PM"
+      # The train there, and the last bus back before dark.
+      assert_selector ".trail-trip", text: "There: 🚆 Sounder N Line · leave 8:10 AM, arrive 9:25 AM"
+      assert_selector ".trail-trip", text: "Last back: 🚌 11 · leave 5:00 PM, home 6:15 PM"
+      assert_no_selector ".trail-trip", text: /First back|After sunset|8:00 PM/
+      # The round trip rides the first bus back after the hike.
       assert_selector "[data-travel-time]", text: "2 h 30 min"
       assert_selector "[data-travel-detail]", text: "1 h 15 min there · 1 h 15 min back"
-      # Arriving at 9:25 AM, there's until sunset.
-      assert_selector ".trail-return", text: /\A🌇 Sunset 6:28 PM · up to 9 h of daylight there\z/
     end
   end
 
-  test "hikes the planned trips leave too little time for are taken off the page" do
-    # The last bus back from the Ridge Trail leaves at 2 PM, too soon to hike 10 miles out and back after arriving at 9:15 AM.
-    @early_last_route = "Ridge Trail"
+  test "hikes without three trips back before dark aren't shown" do
+    # The only bus back from the Ridge Trail leaves at 2 PM.
+    @sparse_route = "Ridge Trail"
     visit search_url(origin: "Seattle")
 
     assert_selector "[data-results-count]", text: "Showing 2 of 2 hikes"
@@ -203,10 +205,9 @@ class SearchesTest < ApplicationSystemTestCase
     # hiked 8 miles to its far end. Planned trips there and back keep these orders.
     within(find("article.trail-card", text: "Long Traverse")) do
       assert_text(/Hike\s+≈ 8.0 mi\s+one way, back from the far end/)
-      # Arriving at 9:45 AM, there's until sunset.
-      assert_selector ".trail-return", text: /\A🌇 Sunset 6:29 PM · up to 8 h of daylight there\z/
-      assert_selector ".trail-trip", text: "First back from the end: 🚌 11 · leave 5:00 PM, home 6:35 PM"
-      assert_selector ".trail-trip", text: "Last back from the end: 🚌 11 · leave 8:00 PM, home 9:35 PM"
+      # Arriving at 9:45 AM, there's until the last bus back before dark.
+      assert_selector ".trail-return", text: /\A↩️ Last trip back from the far end 5:00 PM · up to 7 h there\z/
+      assert_selector ".trail-trip", text: "Last back from the end: 🚌 11 · leave 5:00 PM, home 6:35 PM"
       assert_link "🧭 Directions back"
     end
     # The sliders narrow hikes down, so there's no other order to choose.

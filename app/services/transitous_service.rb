@@ -359,31 +359,41 @@ module TransitousService
   # after earliest, any way does, and same_way is false; it is nil when there is
   # no journey to follow, or follow is false, as for trips back from the far end
   # of a route. Only when nothing leaves after earliest is the way back the last
-  # trip before it.
-  def self.ways_back(origin:, destination:, like:, earliest:, deadline:, follow: true, connection: nil, cache: Rails.cache)
+  # trip before it. With leave_by, as when it gets dark, only trips whose first
+  # ride leaves by then count, the walk to it in the twilight before, and only
+  # trips that set out from earliest until then are asked for, which the planner
+  # finds in about half the time.
+  def self.ways_back(origin:, destination:, like:, earliest:, deadline:, leave_by: nil, follow: true, connection: nil,
+    cache: Rails.cache)
+    # Every trip that leaves from earliest until leave_by or the last one is listed.
+    window = if leave_by && leave_by > earliest
+      { time: earliest.utc.iso8601, arriveBy: false, searchWindow: (leave_by - earliest).clamp(1.hour, 14.hours).to_i }
+    else
+      { time: deadline.utc.iso8601, arriveBy: true, searchWindow: (deadline - earliest).clamp(1.hour, 14.hours).to_i }
+    end
     params = {
-      fromPlace: place(origin), toPlace: place(destination), time: deadline.utc.iso8601, arriveBy: true,
-      # Every trip that leaves from earliest until the last one is listed.
-      timetableView: true, searchWindow: (deadline - earliest).clamp(1.hour, 14.hours).to_i,
+      fromPlace: place(origin), toPlace: place(destination), **window, timetableView: true,
       detailedLegs: false, maxPreTransitTime: MAX_POST_TRANSIT_SECONDS, maxPostTransitTime: MAX_POST_TRANSIT_SECONDS
     }
-    # The planner looks to earlier days when nothing gets home that evening, so trips home over a day before the deadline are left out.
-    day = (deadline - 1.day).utc.iso8601
+    # The planner looks to other days when nothing gets home that evening, so trips home over a day before the deadline,
+    # or after it, are left out.
+    day, home_by = (deadline - 1.day).utc.iso8601, deadline.utc.iso8601
     trips_for = lambda do |query|
-      key = Digest::SHA256.hexdigest(query.merge(earliest: earliest.utc.iso8601).to_json)
-      cache.fetch("transitous:ways-back:v4:#{key}", expires_in: trip_cache_ttl(earliest)) do
+      key = Digest::SHA256.hexdigest(query.merge(earliest: earliest.utc.iso8601, deadline: home_by).to_json)
+      cache.fetch("transitous:ways-back:v5:#{key}", expires_in: trip_cache_ttl(earliest)) do
         connection ||= SearchHttp.connection(PLAN_URL, timeout: 15)
-        plan(connection, query, leave_after: earliest, arrive_by: deadline).select { |trip| trip[:arrival].between?(day, params[:time]) }
+        plan(connection, query, leave_after: earliest, arrive_by: deadline).select { |trip| trip[:arrival].between?(day, home_by) }
       end
     end
     longest = ride_seconds(like) * BACK_RIDE_FACTOR + BACK_RIDE_SLACK if like
     swift = ->(trips) { longest ? trips.select { |trip| ride_seconds(trip) <= longest } : trips }
+    in_time = ->(trips) { leave_by ? trips.select { |trip| boarding(trip) <= leave_by.utc.iso8601 } : trips }
 
     constrained = follow ? params.merge(same_way(like)) : params
     same = []
     unless constrained == params
       same = begin
-        swift.(trips_for.(constrained))
+        swift.(in_time.(trips_for.(constrained)))
       rescue SearchErrors::UpstreamError
         # The planner may not know a station, so any way back is looked up instead.
         []
@@ -391,9 +401,9 @@ module TransitousService
       back = first_home(same, earliest)
       return { back: back, last: last_trip(same), same_way: true, trips: timetable(same, back[:departure]) } if back
     end
-    trips = trips_for.(params.merge(by_train_params))
+    trips = in_time.(trips_for.(params.merge(by_train_params)))
     # Only where no train goes home after the hike is any transit taken.
-    trips = trips_for.(params) if trips.none? { |trip| trip[:departure] >= earliest.utc.iso8601 }
+    trips = in_time.(trips_for.(params)) if trips.none? { |trip| trip[:departure] >= earliest.utc.iso8601 }
     other_way = (false unless constrained == params)
     after = trips.select { |trip| trip[:departure] >= earliest.utc.iso8601 }
     # A slow trip after the hike still beats a quick one that leaves before it's over.
@@ -444,6 +454,12 @@ module TransitousService
   def self.first_home(trips, earliest)
     trips.select { |trip| trip[:departure] >= earliest.utc.iso8601 }
       .min_by { |trip| [costed_arrival(trip), -Time.iso8601(trip[:departure]).to_i] }
+  end
+
+  # When a trip's first ride leaves, ISO 8601 in UTC, or for one that walks the
+  # whole way, when it sets out.
+  def self.boarding(trip)
+    Array(trip[:legs]).first&.dig(:departure) || trip[:departure]
   end
 
   # The trip that leaves latest, and of those, the one home soonest by costed_arrival.

@@ -68,7 +68,6 @@ class SearchStreamsController < ApplicationController
     if result.stations.empty?
       notices << "We couldn't find a major train station within #{TransitousService::STATION_RADII.last / 1000} km of this place."
     end
-    notices << "We couldn't check the way back for some hikes. Check the last trip back before you go." unless result.returns_checked
     notices << "Some hikes couldn't be checked just now. Search again later for more." unless result.complete
     notices
   end

@@ -10,17 +10,16 @@ starting-point box that suggests places as you type (or uses the device's
 location) with a Saturday/Sunday choice, and a results page that shows at once
 and streams in hikes as they are found, most scenic first. Trips leave from the
 major train stations near the starting point, which the page names with
-directions to each: getting to the station is up to you. Only hikes you can
-finish by sunset and before the last trip back are shown. Each card has a map preview, where
+directions to each: getting to the station is up to you. Only hikes with at
+least three trips there that arrive in time to finish by sunset, and at least
+three trips back that leave before dark, are shown. Each card has a map preview, where
 the hike is (its town or city and state or region, with the country when it
 isn't the starting point's), photos taken nearby, highlights, how far the hike goes (a loop, out and back, or one way
 to where transit leaves from the far end) and climbs, the round trip's travel
-time, the hike's deadline (sunset, or the last trip back when it leaves before
-sunset or soon after) and how long that leaves there, and the trains and other
-transit there, the first trip back after the hike, and the first after sunset (or
-the last trip back, when that's the deadline). Each hike
+time, the last trip back and how long that leaves there, and the trains and
+other transit there and the last trip back. Each hike
 has a details page with timetables of every trip there that leaves time to hike
-it by then and every trip back until the first after sunset. Hikes are listed most scenic first, and filtered with
+it and every trip back until dark. Hikes are listed most scenic first, and filtered with
 sliders for the longest round trip (spanning the hikes found, from the quickest
 to any) and a range of lengths. On phones, the results page's search box opens
 from a "Change search" button (and on its own when a search finds nothing or
@@ -153,11 +152,16 @@ test Overpass connectivity from your deployment before launching.
   hours** of leaving the station, waiting included, are shown, and only with a way
   back to it that arrives by **11 PM** the same day and leaves time to hike **all** of the
   route at 2 mph with breaks (at least 1½ hours, to enjoy short ones) by sunset,
-  and still leave the last trip back half an hour to spare. Sunset is worked out
-  for the route and day (the sunrise equation, to within a minute or two); the
-  twilight after it leaves light for the walk to the station, and the trains back
-  can run after dark. Routes too long for that, such as 20-mile long-distance
-  trails, or short winter days, are left out. Journeys may include up to 30
+  and still leave the last trip back half an hour to spare. That last trip back
+  leaves before dark, so no one waits for it in the dark. Sunset and dark (the
+  end of civil twilight, with the sun 6° below the horizon) are worked out for
+  the route and day with the sunrise equation, to within a minute or two; the
+  twilight between them leaves light for the walk to the station. So missing a
+  train isn't a worry, a hike needs at least **three** trips there that arrive in
+  time and three back that leave before dark: once its quick checks pass, each
+  hike's trips are planned, three hikes at a time, and it shows as soon as they
+  are. Routes too long for that, such as 20-mile long-distance trails, short
+  winter days, and lines with few trains, are left out. Journeys may include up to 30
   minutes' walk from the last stop, and from the route to the first stop on the
   way back.
 - **Loops, out and back, or one way.** Routes whose ends meet, or come within
@@ -182,32 +186,29 @@ test Overpass connectivity from your deployment before launching.
   sooner, and a ride at either end that a walk of up to 20 minutes replaces,
   arriving at most 10 minutes later, is walked, as a short bus home from the
   station is. The planner also looks to other days when nothing goes, so trips
-  outside the day asked for are left out. The card shows the soonest trip there,
-  leaving as late as still arrives that soon (from the planner's trips over the
-  next three hours, since an earlier train often just waits at a transfer for
-  the one a later train makes), then the trips back that ride the same trains back between the same stations
+  outside the day asked for are left out. The soonest trip there leaves as late
+  as still arrives that soon (from the planner's trips until the last that
+  arrives in time, since an earlier train often just waits at a transfer for
+  the one a later train makes), and the trips back ride the same trains back between the same stations
   (via the station where the last train stopped and the one where the first
   started), with the same kinds of transit or the subway and light rail for the
   ride home. Buses often stop across the street on the way back, so a trip there
   without trains keeps only its kinds of transit. Trips back that ride more than
   a quarter longer than the trip there, plus 15 minutes, don't count, so an
-  evening bus or a slow detour isn't suggested. The card shows the first trip
-  home after hiking for the time the search requires, and the first after
-  sunset, which someone hiking until then takes, or where the last trip back
-  leaves before sunset or less than half an hour after, that one, which then
-  sets the time there; each with its transit. Hikes the planned trips leave too
-  little time for, by sunset or before the last trip back, are taken off the
-  page. Where the same way doesn't run after the hike, the
-  quickest other way is shown, and the card says so.
+  evening bus or a slow detour isn't suggested. The card shows the soonest trip
+  there and the last trip back before dark, each with its transit, and the time
+  there until it. A hike whose planned trips have since changed, and leave too
+  little time or too few trips, is taken off the page. Where the same way
+  doesn't run after the hike, before dark, the quickest other way is shown, and
+  the card says so.
 - **Details and timetables.** Each card links to a page for its hike (left out
   of search engines, since every starting point has its own) with a map to
   explore, the hike's facts, its photos, and two timetables from its station, and
   back to it: every trip there
   from 8 AM on that arrives in time to hike all of it by sunset and before the last trip back,
   leaving out any that ride much longer than the quickest, and every trip back
-  from the first after the hike, if you take the first trip there, to the first
-  after sunset (later ones are only for staying after dark), or to the last, when
-  that leaves first. When no trip there arrives in time, the page says so.
+  from the first after the hike, if you take the first trip there, to the last
+  one before dark. When no trip there arrives in time, the page says so.
   Each row has when it leaves and arrives, how long it rides, and its transit with
   the stops it rides between. The route's highlights, terrain, and photos are
   looked up while transit is planned, and the page shows without them after 10
@@ -380,8 +381,9 @@ planning, linked from the home page, the navigation, and an index of cities.
   pages' addresses from week to week. Plain or shared names such as "White Trail"
   get the natural area nearby, or the station trains go to, in their title.
   Guides keep each hike's sunset, and a city's page leads with its sunset among
-  its facts; guides built before sunsets were kept have them worked out as
-  they're read, leaving out hikes there isn't the daylight for.
+  its facts. Guides built before these rules are held to them as they're read:
+  their sunsets are worked out, trips back after dark are left out, and so are
+  hikes without the daylight, or without three trips there and three back.
 - **Publishing.** The workflow uploads the guides with `bin/publish-guides` as a
   new `guides-<time>.tar.gz` file of the `guides-data` prerelease (not to the
   repository, so its history doesn't grow every week), removing older files only
