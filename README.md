@@ -197,8 +197,8 @@ test Overpass connectivity from your deployment before launching.
 - **There and back the same way.** Each card shows the round trip: the rides
   there and back. Until a card's trips are planned, it is twice the trip there
   (waiting for the first train included), since coming back the same way takes
-  about as long, but at most 8 hours, as no hike shown rides longer; ranking and
-  the round-trip slider start from that.
+  about as long, but at most 8 hours, as no hike shown rides longer, with half
+  of it each way; ranking and the round-trip slider start from that.
   Once the card scrolls into view, its trips are planned by train, with the
   subway or light rail to reach the trains, and a walk of up to 30 minutes at
   either end; buses and coaches only where no such trip goes, such as back from
