@@ -41,6 +41,8 @@ class GuidesTest < ActionDispatch::IntegrationTest
     assert_match(/Hike ≈ 5.0 mi out and back/, breakneck.text.squish)
     # The last trip back leaves before dark, at 6:05 PM, rather than at 8:50 PM.
     assert_match(/↩️ Last trip back 6:05 PM\z/, breakneck.text.squish)
+    # Only the hike away from traffic is called quiet.
+    assert_equal [["Quiet"], []], cards.map { |card| card.css(".trail-chip-label").map(&:text).grep(/Quiet/) }
     # Without a photo, a card previews its route once it scrolls into view.
     assert cards.last.at_css(".trail-map[data-lazy-map][data-path]")
     list = structured_data.fetch("ItemList")

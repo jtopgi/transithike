@@ -60,16 +60,42 @@ module SearchTestSupport
   # A Terrarium elevation tile whose pixel at [column, row] is height.(column, row)
   # meters up, its rows filtered by each of PNG's five filters in turn.
   def terrarium_png(pixels: 256, header: nil, &height)
-    previous = Array.new(pixels * 3, 0)
-    rows = (0...pixels).map do |row|
-      line = (0...pixels).flat_map do |column|
+    lines = (0...pixels).map do |row|
+      (0...pixels).flat_map do |column|
         value = height.(column, row) + 32_768
         [value.floor / 256, value.floor % 256, ((value % 1) * 256).floor]
       end
+    end
+    "\x89PNG\r\n\x1A\n".b + png_chunk("IHDR", header || [pixels, pixels, 8, 2, 0, 0, 0].pack("NNC5")) +
+      png_chunk("IDAT", Zlib::Deflate.deflate(filtered_rows(lines, 3))) + png_chunk("IEND", "")
+  end
+
+  # The noise map's colors for its levels from 45 dB, and clear.
+  NOISE_COLORS = { 45 => [255, 193, 7], 50 => [255, 128, 0], 55 => [255, 0, 0], 60 => [255, 51, 153], 70 => [163, 0, 204],
+    80 => [82, 0, 204], 90 => [0, 0, 255] }.freeze
+
+  # A noise map tile whose pixel at [column, row] is drawn for level.(column, row)
+  # decibels from NOISE_COLORS, or clear for nil, in a palette with clear first,
+  # its rows filtered by each of PNG's five filters in turn. extra adds colors
+  # to the palette, as [red, green, blue] for level.(column, row) to give.
+  def noise_png(extra: [], header: nil, &level)
+    palette = [[253, 253, 253], *NOISE_COLORS.values, *extra]
+    index = { nil => 0, **NOISE_COLORS.keys.each_with_index.to_h { |decibels, position| [decibels, position + 1] },
+      **extra.each_with_index.to_h { |color, position| [color, NOISE_COLORS.size + 1 + position] } }
+    lines = (0...256).map { |row| (0...256).map { |column| index.fetch(level.(column, row)) } }
+    "\x89PNG\r\n\x1A\n".b + png_chunk("IHDR", header || [256, 256, 8, 3, 0, 0, 0].pack("NNC5")) +
+      png_chunk("PLTE", palette.flatten.pack("C*")) + png_chunk("tRNS", [0].pack("C")) +
+      png_chunk("IDAT", Zlib::Deflate.deflate(filtered_rows(lines, 1))) + png_chunk("IEND", "")
+  end
+
+  # Rows of bytes, bytes_per_pixel to a pixel, filtered by each of PNG's five filters in turn.
+  def filtered_rows(lines, bytes_per_pixel)
+    previous = Array.new(lines.first.size, 0)
+    lines.each_with_index.map do |line, row|
       filter = row % 5
       filtered = line.each_index.map do |index|
-        left, up = index >= 3 ? line[index - 3] : 0, previous[index]
-        corner = index >= 3 ? previous[index - 3] : 0
+        left = index >= bytes_per_pixel ? line[index - bytes_per_pixel] : 0
+        up, corner = previous[index], index >= bytes_per_pixel ? previous[index - bytes_per_pixel] : 0
         predictor = case filter
         when 0 then 0
         when 1 then left
@@ -81,9 +107,7 @@ module SearchTestSupport
       end
       previous = line
       [filter, *filtered].pack("C*")
-    end
-    "\x89PNG\r\n\x1A\n".b + png_chunk("IHDR", header || [pixels, pixels, 8, 2, 0, 0, 0].pack("NNC5")) +
-      png_chunk("IDAT", Zlib::Deflate.deflate(rows.join)) + png_chunk("IEND", "")
+    end.join
   end
 
   def png_chunk(type, data)
@@ -94,6 +118,16 @@ module SearchTestSupport
     guess = left + up - corner
     distances = [left, up, corner].map { |value| (guess - value).abs }
     [left, up, corner][distances.index(distances.min)]
+  end
+
+  # The noise map tile at a ".../zoom/y/x" path, with the level given by each
+  # pixel's latitude, in decibels from NOISE_COLORS, or nil for clear.
+  def noise_tile(path)
+    zoom, y = path.scan(/\d+/).last(3).first(2).map(&:to_i)
+    latitudes = (0...256).map do |row|
+      Math.atan(Math.sinh(Math::PI * (1 - 2 * (y + (row + 0.5) / 256) / 2**zoom))) * 180 / Math::PI
+    end
+    noise_png { |_column, row| yield latitudes[row] }
   end
 
   # The elevation tile at a ".../zoom/x/y.png" path, with heights given by each pixel's latitude.

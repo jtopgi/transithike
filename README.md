@@ -38,6 +38,8 @@ on pages that search engines and AI assistants can read.
   suggestions come from [Photon](https://photon.komoot.io), transit routing from
   [Transitous](https://transitous.org), routes and map tiles from OpenStreetMap,
   elevation from [Terrain Tiles on AWS](https://registry.opendata.aws/terrain-tiles/),
+  traffic noise in the US from the U.S. DOT's
+  [National Transportation Noise Map](https://www.bts.gov/geospatial/national-transportation-noise-map),
   and photos from Wikipedia and Wikimedia Commons.
 
 The application uses Rails 8.1, Puma 8, Propshaft, esbuild, and Bootstrap 5.
@@ -231,7 +233,26 @@ test Overpass connectivity from your deployment before launching.
   viewpoint with a Wikipedia article. Each waterfall scores 1.5, plus half a point
   for a name, one for a Wikipedia article, and one for every 20 m of mapped height,
   up to 1.5. Cards show "Big views" when the higher of the climb and the relief is
-  at least 300 m (about 1,000 ft), and "Views" from 150 m.
+  at least 300 m (about 1,000 ft), and "Views" from 150 m. In the 48 contiguous
+  states, quiet surroundings score up to two points more, about as much as a good
+  view: a point's quietness is 1 under 45 dB, two thirds from 45, a third from 50,
+  and none from 55 dB, averaged over up to 64 points along the route. Cards show
+  "Quiet" from 0.85. Elsewhere, and where the noise isn't found in time, it
+  adds nothing, so hikes outside the US keep their order.
+- **Traffic noise** in the 48 contiguous states comes from the U.S. DOT Bureau
+  of Transportation Statistics'
+  [National Transportation Noise Map](https://www.bts.gov/geospatial/national-transportation-noise-map):
+  road, rail, and aviation noise, modeled for 2022 as the average sound level over
+  a day, in public map tiles with no key. Zoom-12 tiles, about 7 km across with a
+  level about every 30 m, are fetched as palette PNG images and decoded in Ruby,
+  each color standing for the band of decibels the map's legend gives it. Hikes
+  with more than half their points at 60 dB or more, beside busy roads, highways,
+  or railways, or under flight paths, aren't shown. Each batch's noise is looked
+  up while its transit is checked, near routes together, waiting at most 8
+  seconds, and cached for 90 days per route; each server process keeps up to 200
+  decoded tiles (64 KB each). Searches use it when their time zone is one of the
+  contiguous states'. The map shows nothing beyond the border, so a route across
+  it, rarely a day trip by train from the US, would count as quiet.
 - **Recommended** adds 1.5 points for hikes of 3 to 12 miles (1 for 2 to 3 or 12
   to 16 miles, a quarter for shorter ones), counting out and back twice, 0.6 per
   point of scenery, and half a point for routes with Wikipedia or Wikidata
@@ -441,8 +462,8 @@ last trips back and a one-way hike's directions back, and browse a card's photos
 Request tests render a hike's details page and its timetables, the guides from
 a sample guide, and what search engines read: link previews, structured data,
 `robots.txt`, the sitemap, and `llms.txt`. Guide tests build a guide from fake
-providers. Elevation tests decode generated tiles that use each of PNG's row
-filters.
+providers. Elevation and noise tests decode generated tiles that use each of
+PNG's row filters.
 
 [GitHub Actions](.github/workflows/ci.yml) runs these checks against PostgreSQL
 on every push and pull request. It also builds the production container image

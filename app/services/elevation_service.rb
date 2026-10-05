@@ -1,5 +1,3 @@
-require "zlib"
-
 # The lay of the land along routes, from Terrain Tiles on AWS
 # (https://registry.opendata.aws/terrain-tiles/): open elevation data from USGS
 # 3DEP, SRTM, and other sources, served as map tiles with no key or rate limit.
@@ -24,7 +22,6 @@ module ElevationService
   MAX_TILES = 200
   # Web Mercator tiles reach this far north and south.
   MAX_LATITUDE = 85.0511
-  PNG_SIGNATURE = "\x89PNG\r\n\x1A\n".b
   INVALID = "The elevation provider returned an invalid tile.".freeze
 
   # The terrain of each trail, as { osm_id => { climb:, relief: } } in meters:
@@ -120,126 +117,18 @@ module ElevationService
   # Tiles hold riverbeds, seabeds, and a few gaps below sea level, where the
   # surface is water at about sea level, so heights stop at 0.
   def self.decode(png)
-    raise SearchErrors::UpstreamError, INVALID unless png.byteslice(0, 8) == PNG_SIGNATURE
-
-    header, data, offset = nil, String.new(encoding: Encoding::BINARY), 8
-    while offset + 8 <= png.bytesize
-      length, type = png.unpack("Na4", offset: offset)
-      break if type == "IEND"
-
-      chunk = png.byteslice(offset + 8, length)
-      raise SearchErrors::UpstreamError, INVALID unless chunk&.bytesize == length
-
-      header = chunk.unpack("NNC5") if type == "IHDR"
-      data << chunk if type == "IDAT"
-      offset += length + 12
-    end
-    # 8-bit RGB without interlacing, as every Terrarium tile is.
-    raise SearchErrors::UpstreamError, INVALID unless header == [TILE_PIXELS, TILE_PIXELS, 8, 2, 0, 0, 0]
-
-    heights(inflate(data, TILE_PIXELS * (TILE_PIXELS * 3 + 1))).pack("n*")
-  end
-
-  # Zlib data inflated to exactly size bytes.
-  def self.inflate(data, size)
-    inflated = String.new(encoding: Encoding::BINARY)
-    zlib = Zlib::Inflate.new
-    zlib.inflate(data) do |chunk|
-      inflated << chunk
-      raise SearchErrors::UpstreamError, INVALID if inflated.bytesize > size
-    end
-    raise SearchErrors::UpstreamError, INVALID unless zlib.finished? && inflated.bytesize == size
-
-    inflated
-  rescue Zlib::Error
-    raise SearchErrors::UpstreamError, INVALID
-  ensure
-    zlib&.close
-  end
-
-  # Each pixel's height from its red, green, and blue bytes, after undoing
-  # PNG's filtering of each row by the bytes before and above.
-  def self.heights(rows)
-    stride = TILE_PIXELS * 3
-    above = Array.new(stride, 0)
+    # 8-bit RGB, as every Terrarium tile is.
+    data = PngTile.chunks(png, size: TILE_PIXELS, color: 2, invalid: INVALID)["IDAT"]
     heights = Array.new(TILE_PIXELS * TILE_PIXELS)
-    TILE_PIXELS.times do |row|
-      start = row * (stride + 1)
-      line = rows.byteslice(start + 1, stride).bytes
-      unfilter(rows.getbyte(start), line, above)
+    PngTile.each_row(data, TILE_PIXELS, 3, INVALID) do |line, row|
       column, first = 0, row * TILE_PIXELS
       while column < TILE_PIXELS
         height = line[column * 3] * 256 + line[column * 3 + 1] + line[column * 3 + 2] / 256.0 - 32_768
         heights[first + column] = height.positive? ? height.round : 0
         column += 1
       end
-      above = line
     end
-    heights
-  end
-
-  def self.unfilter(filter, line, above)
-    stride = line.size
-    index = 0
-    case filter
-    when 0
-    when 1
-      index = 3
-      while index < stride
-        line[index] = (line[index] + line[index - 3]) & 255
-        index += 1
-      end
-    when 2
-      while index < stride
-        line[index] = (line[index] + above[index]) & 255
-        index += 1
-      end
-    when 3
-      while index < stride
-        left = index >= 3 ? line[index - 3] : 0
-        line[index] = (line[index] + (left + above[index]) / 2) & 255
-        index += 1
-      end
-    when 4
-      while index < stride
-        left, up = index >= 3 ? line[index - 3] : 0, above[index]
-        corner = index >= 3 ? above[index - 3] : 0
-        guess = left + up - corner
-        a, b, c = (guess - left).abs, (guess - up).abs, (guess - corner).abs
-        line[index] = (line[index] + (a <= b && a <= c ? left : b <= c ? up : corner)) & 255
-        index += 1
-      end
-    else
-      raise SearchErrors::UpstreamError, INVALID
-    end
-  end
-
-  # Tiles by key, dropping the least recently used beyond a limit.
-  class TileCache
-    def initialize(limit)
-      @limit, @tiles, @lock = limit, {}, Mutex.new
-    end
-
-    # The tile, or the block's, which is kept. Lookups of the same missing tile at once may each run the block.
-    def fetch(key)
-      found = @lock.synchronize { @tiles.key?(key) ? @tiles[key] = @tiles.delete(key) : nil }
-      return found if found
-
-      tile = yield
-      @lock.synchronize do
-        @tiles[key] = tile
-        @tiles.delete(@tiles.each_key.first) while @tiles.size > @limit
-      end
-      tile
-    end
-
-    def size
-      @lock.synchronize { @tiles.size }
-    end
-
-    def clear
-      @lock.synchronize { @tiles.clear }
-    end
+    heights.pack("n*")
   end
 
   TILES = TileCache.new(MAX_TILES)

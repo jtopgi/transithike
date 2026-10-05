@@ -8,6 +8,8 @@ module SearchesHelper
     "viewpoint" => ["🔭", "Viewpoint", "Viewpoints"]
   }.freeze
   FEET_PER_METER = 3.28084
+  # Routes at least this quiet, as NoiseService finds them, are mostly away from traffic.
+  QUIET_CHIP = 0.85
 
   # Where photos taken along the route are looked for, as "latitude,longitude|...".
   def photo_points(trail)
@@ -35,6 +37,9 @@ module SearchesHelper
       end
       details = highlights.filter_map { |highlight| highlight_detail(highlight) }
       chips << [icon, label, "#{highlights.one? ? one : many}#{": #{details.join(', ')}" if details.any?}"]
+    end
+    if trail.noise && trail.noise[:quiet] >= QUIET_CHIP
+      chips << ["🌲", "Quiet", "Mostly away from road, rail, and air traffic: under 45 dB on the U.S. DOT's noise map"]
     end
     chips
   end

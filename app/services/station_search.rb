@@ -29,9 +29,9 @@ class StationSearch
   # kept searches are only served while they're complete and less than
   # REFRESH_AFTER old, and earlier weeks' never.
   def self.start(station, departure_time, fresh: false, transit: TransitousService, hiking: OverpassService,
-    elevation: ElevationService, cache: Rails.cache, pool: Rails.configuration.x.station_pool)
+    elevation: ElevationService, noise: NoiseService, cache: Rails.cache, pool: Rails.configuration.x.station_pool)
     search = { station: station, departure_time: departure_time, keys: keys(station, departure_time), cache: cache,
-      providers: { transit: transit, hiking: hiking, elevation: elevation }, pool: pool }
+      providers: { transit: transit, hiking: hiking, elevation: elevation, noise: noise }, pool: pool }
     kept = cache.read(search[:keys][:day])
     if kept && !(fresh && (stale?(kept) || !complete?(kept[:result])))
       refresh(**search) if stale?(kept)

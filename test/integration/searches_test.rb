@@ -17,6 +17,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     Faraday.default_adapter_options = {}
     @requests = Hash.new { |requests, path| requests[path] = [] }
     ElevationService::TILES.clear
+    NoiseService::TILES.clear
   end
 
   teardown do
@@ -129,6 +130,15 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     @stubs.get(/\A#{Regexp.escape(path)}/) do |env|
       @requests[path] << env
       [200, {}, terrain_tile(env.url.path) { |latitude| height.(latitude) }]
+    end
+  end
+
+  # The noise map, with each place's level by its latitude, as noise_tile gives it.
+  def noise_map(&level)
+    path = URI(NoiseService::TILE_URL).path
+    @stubs.get(/\A#{Regexp.escape(path)}/) do |env|
+      @requests[path] << env
+      [200, {}, noise_tile(env.url.path, &level)]
     end
   end
 
@@ -423,6 +433,31 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
       data_for("place").sole["departure"]
   end
 
+  test "in the US, quiet hikes say so and rank higher, and hikes mostly beside loud traffic aren't shown" do
+    geocode
+    area
+    rail([[47.3, -122.0, 50], [47.36, -122.0, 55]])
+    hiking([route_element(id: 1, latitude: 47.3, name: "Forest Loop"), route_element(id: 2, latitude: 47.36, name: "Highway Path")])
+    transit([[{ duration: 5400, transfers: 1 }], [{ duration: 5400, transfers: 1 }]])
+    timetables
+    elevation
+    # Traffic is loud north of 47.35, along the highway, and quiet south of it.
+    noise_map { |latitude| latitude > 47.35 ? 70 : nil }
+    search_all(origin: "Seattle")
+
+    assert_equal ["Forest Loop"], cards.css("h2").map { |title| title.text.strip }
+    forest = cards.at_css("[data-trail][data-osm-id='1']")
+    # Quiet all along, it counts two points more, as a good view would.
+    assert_equal "2.0", forest["data-scenic"]
+    assert_equal "🌲 Quiet", forest.at_css(".trail-chip").text.squish.sub(/ \(.*\)\z/, "")
+    assert_select_in(forest, ".trail-chip[title*='under 45 dB']")
+    assert_not_empty @requests[URI(NoiseService::TILE_URL).path]
+  end
+
+  def assert_select_in(node, selector)
+    assert node.at_css(selector), "Expected #{selector} in #{node.to_html[0, 200]}"
+  end
+
   test "hikes without a way back the same day are left out" do
     geocode
     area
@@ -629,6 +664,7 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     back.each { |trip| trip[:legs].first[:from][:name] = "Mount Vernon" }
     planner(window: [train_there("15:19", "17:31"), train_there("16:19", "18:31"), train_there("23:19", "01:31")], back: back)
     localities
+    noise_map { nil }
     get hike_path(hike_params(station: "47.598,-122.33", station_name: "King Street"))
 
     assert_response :success
@@ -642,6 +678,8 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_select "caption", text: "Trips there from King Street"
     assert_select "[data-hike-map][data-path='[[[47.3,-122.0],[47.32,-122.0]]]'][data-start='[47.3,-122.0]']:not([data-finish])"
     assert_select ".trail-chip", text: /Twin Falls/
+    # Away from traffic all along.
+    assert_select ".trail-chip", text: /Quiet/
     facts = css_select(".hike-facts").sole.text.squish
     assert_match(/Hike ≈ 2.8 mi out and back, about 1 h 30 min/, facts)
     # It's dark at 7:35 PM, so the last trip back is at 7:30 PM, rather than 8:30 PM.

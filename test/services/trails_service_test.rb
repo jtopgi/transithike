@@ -189,6 +189,22 @@ class TrailsServiceTest < ActiveSupport::TestCase
   # Terrain by route name; a lookup including a name mapped to an exception fails,
   # and with a release event, lookups wait for it. Relief is by route id, and a
   # lookup including an id mapped to an exception fails.
+  # The traffic noise along routes by name, unknown for others; with failure, the lookup fails.
+  class FakeNoise
+    attr_reader :asked
+
+    def initialize(by_name = {}, failure: nil)
+      @by_name, @failure, @asked = by_name, failure, Concurrent::Array.new
+    end
+
+    def noise(trails)
+      @asked.concat(trails.map(&:name))
+      raise @failure if @failure
+
+      trails.to_h { |trail| [trail.osm_id, @by_name[trail.name]] }
+    end
+  end
+
   class FakeElevation
     attr_reader :lookups, :relief_lookups
 
@@ -233,9 +249,14 @@ class TrailsServiceTest < ActiveSupport::TestCase
   end
 
   def search(origin: "Seattle", day: nil, near: nil, places: FakePlaces.new, transit: FakeTransit.new,
-    hiking: FakeHiking.new([]), elevation: FakeElevation.new, &block)
+    hiking: FakeHiking.new([]), elevation: FakeElevation.new, noise: quiet_unknown, &block)
     TrailsService.search(origin: origin, day: day, near: near, places: places, transit: transit, hiking: hiking,
-      elevation: elevation, &block)
+      elevation: elevation, noise: noise, &block)
+  end
+
+  # A noise map that knows no routes, the same for a test's searches, so they can share station searches.
+  def quiet_unknown
+    @quiet_unknown ||= FakeNoise.new
   end
 
   def minutes(count)
@@ -447,6 +468,33 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal ["a"], result.trails.map(&:name)
     assert_equal Time.utc(2026, 9, 27, 2, 29), result.trails.first.last_return
     refute result.returns_checked
+  end
+
+  test "in the US, quiet routes rank higher, and routes mostly beside loud traffic aren't shown or planned" do
+    trails = %w[forest suburb highway unknown].map { |name| trail(name) }
+    noise = FakeNoise.new({ "forest" => { quiet: 1.0, loud: 0.0 }, "suburb" => { quiet: 0.2, loud: 0.3 },
+      "highway" => { quiet: 0.0, loud: 0.8 } })
+    transit = FakeTransit.new(trips: trails.to_h { |trail| [trail.name, minutes(60)] })
+    found = search(transit: transit, hiking: FakeHiking.new(trails), noise: noise).trails.index_by(&:name)
+
+    assert_equal %w[forest suburb unknown], found.keys.sort
+    assert_equal [{ quiet: 1.0, loud: 0.0 }, nil], found.values_at("forest", "unknown").map(&:noise)
+    # Quiet surroundings count up to two points, and unknown ones nothing.
+    assert_equal [2.0, 0.4, 0.0], found.values_at("forest", "suburb", "unknown").map { |trail| TrailsService.scenic(trail) }
+    assert_equal %w[forest highway suburb unknown], noise.asked.sort
+    assert_not_includes transit.timetables, "highway"
+  end
+
+  test "outside the noise map, noise isn't looked up, and when its lookup fails, routes are kept without it" do
+    noise = FakeNoise.new({ "a" => { quiet: 0.0, loud: 1.0 } })
+    # Vancouver, across the border, keeps Seattle's time.
+    canada = FakeTransit.new(trips: { "a" => minutes(30) }, area: { time_zone: "America/Vancouver", area: "Vancouver" })
+    assert_equal ["a"], search(transit: canada, hiking: FakeHiking.new([trail("a")]), noise: noise).trails.map(&:name)
+    assert_empty noise.asked
+
+    failing = FakeNoise.new(failure: SearchErrors::UpstreamError.new("The noise map is down"))
+    found = search(transit: FakeTransit.new(trips: { "b" => minutes(30) }), hiking: FakeHiking.new([trail("b")]), noise: failing)
+    assert_equal [["b"], [nil]], [found.trails.map(&:name), found.trails.map(&:noise)]
   end
 
   test "hikes need at least three trips there that arrive in time and three back before dark, so missing one isn't a worry" do
@@ -823,7 +871,9 @@ class TrailsServiceTest < ActiveSupport::TestCase
     transit = FakeTransit.new(trips: { "a" => minutes(30) })
     elevation = FakeElevation.new
     departure = SATURDAY.in_time_zone("America/Los_Angeles")
-    start = -> { StationSearch.start(STATION, departure, transit: transit, hiking: hiking, elevation: elevation, cache: cache) }
+    start = lambda do
+      StationSearch.start(STATION, departure, transit: transit, hiking: hiking, elevation: elevation, noise: quiet_unknown, cache: cache)
+    end
 
     first = start.call
     assert_same first, start.call
@@ -886,7 +936,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
     @station_cache ||= ActiveSupport::Cache::MemoryStore.new
     @station_pool ||= Class.new(Concurrent::ImmediateExecutor) { attr_accessor :queue_length }.new.tap { |pool| pool.queue_length = 0 }
     StationSearch.start(STATION, departure.in_time_zone("America/Los_Angeles"), transit: transit, hiking: hiking,
-      elevation: FakeElevation.new, cache: @station_cache, pool: @station_pool, **options)
+      elevation: FakeElevation.new, noise: quiet_unknown, cache: @station_cache, pool: @station_pool, **options)
   end
 
   # The routes a search shows, by name, and whether it ran rather than being kept.
@@ -993,7 +1043,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
     departure = SATURDAY.in_time_zone("America/Los_Angeles")
     start = lambda do |with|
       StationSearch.start(STATION, departure, transit: FakeTransit.new(trips: { "a" => minutes(30) }), hiking: hiking,
-        elevation: FakeElevation.new, cache: ActiveSupport::Cache::MemoryStore.new, pool: with)
+        elevation: FakeElevation.new, noise: quiet_unknown, cache: ActiveSupport::Cache::MemoryStore.new, pool: with)
     end
     assert_raises(Concurrent::RejectedExecutionError) { start.(pool) }
     assert_empty StationSearch::RUNNING.keys.select { |key| key.include?(hiking) }
