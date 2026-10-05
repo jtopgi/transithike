@@ -9,8 +9,8 @@ module GuideService
   CONFIG = Rails.root.join("config/guides.yml")
   # A new guide replaces the last one only when it has at least MIN_HIKES
   # hikes and at least KEEP_SHARE as many as the last one still shows, so a
-  # provider's bad day doesn't empty a city's pages, while a city where few
-  # hikes meet the rules, as around flat Berlin, still gets a small guide.
+  # provider's bad day doesn't empty a city's pages, while a city with few
+  # quiet hikes by train still gets a small guide.
   MIN_HIKES = 3
   KEEP_SHARE = 0.6
   # A photo lookup that fails is tried again after this long, since Commons is
@@ -204,8 +204,8 @@ module GuideService
         (hike.there.nil? || TripPlans.frequent?(departures: hike.departures, ways: hike.ways))
     end
 
-    # The guide's page, without hikes searches don't show, too loud or not
-    # scenic enough, hikes there isn't the daylight for, or hikes without
+    # The guide's page, without hikes searches don't show, too loud, hikes
+    # there isn't the daylight for, or hikes without
     # TripPlans::MIN_TRIPS trips there and as many back before dark. Guides
     # built before sunsets were kept have theirs worked out, and their trips
     # back after dark are left out.

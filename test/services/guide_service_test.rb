@@ -67,8 +67,7 @@ class GuideServiceTest < ActiveSupport::TestCase
     end
   end
 
-  # Climbing about 100 m, scenic enough to be shown, unless scenic says how many hundred meters it climbs.
-  def trail(name, osm_id, scenic: 1, **attributes)
+  def trail(name, osm_id, scenic: 0, **attributes)
     OverpassService::Trail.new(name: name, osm_id: osm_id, summary: "A route.", latitude: 41.4, longitude: -73.9, length: 3,
       path: [[[41.4, -73.9], [41.42, -73.9]]], loop: true, paved: 0, notable: false, duration: 5_400, transfers: 0,
       arrival: Time.utc(2026, 10, 10, 13, 30), last_return: Time.utc(2026, 10, 11, 0), sunset: Time.utc(2026, 10, 10, 22, 23),
@@ -269,19 +268,15 @@ class GuideServiceTest < ActiveSupport::TestCase
   end
 
   test "a guide leaves out hikes searches don't show" do
-    trails = [trail("Ridge Loop", 1), trail("Flat Loop", 2, scenic: 0.5), trail("Road Walk", 3, noise: { quiet: 0.1, typical: 60 })]
+    trails = [trail("Ridge Loop", 1, scenic: 1), trail("Flat Loop", 2), trail("Road Walk", 3, noise: { quiet: 0.1, typical: 60 })]
     data = GuideService.build(guide, search: FakeSearch.new(trails), transit: FakeTransit.new, photos: FakePhotos.new,
       places: FakePlaces.new)
-    assert_equal ["Ridge Loop"], data[:hikes].map { |hike| hike.dig(:trail, :name) }
+    # Flat ones are shown too, after the more scenic.
+    assert_equal ["Ridge Loop", "Flat Loop"], data[:hikes].map { |hike| hike.dig(:trail, :name) }
   end
 
-  test "guides leave out hikes searches don't show now: 45 dB or louder along half the way, or not scenic enough" do
-    loud = guide_data.tap { |data| data[:hikes].last[:trail][:noise] = { quiet: 0.3, typical: 45, loudest: 55 } }
-    # Without its waterfall, the lakes' 40 m climb isn't enough.
-    flat = guide_data.tap { |data| data[:hikes].last[:trail][:highlights] = [] }
-    [loud, flat].each do |data|
-      write_guide(data)
-      assert_equal ["breakneck-ridge-trail"], GuideService.page("new-york-city").hikes.map(&:slug)
-    end
+  test "guides leave out hikes searches don't show now: 45 dB or louder along half the way" do
+    write_guide(guide_data.tap { |data| data[:hikes].last[:trail][:noise] = { quiet: 0.3, typical: 45, loudest: 55 } })
+    assert_equal ["breakneck-ridge-trail"], GuideService.page("new-york-city").hikes.map(&:slug)
   end
 end

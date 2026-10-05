@@ -239,11 +239,8 @@ test Overpass connectivity from your deployment before launching.
   viewpoint with a Wikipedia article. Each waterfall scores 1.5, plus half a point
   for a name, one for a Wikipedia article, and one for every 20 m of mapped height,
   up to 1.5. Cards show "Big views" when the higher of the climb and the relief is
-  at least 300 m (about 1,000 ft), and "Views" from 150 m. Hikes need at least a
-  point of scenery to be shown: about 100 m (330 ft) of climb or relief, a
-  waterfall, or a smaller climb with a viewpoint or summit. A batch's routes
-  whose terrain is flatter are only planned when their highlights make up for
-  it, and those whose terrain isn't found in time are kept. In the 48 contiguous
+  at least 300 m (about 1,000 ft), and "Views" from 150 m. Scenery only ranks
+  hikes: flat ones are shown too, after the more scenic. In the 48 contiguous
   states, quiet surroundings score up to two points more, about as much as a good
   view: a point's quietness is 1 under 45 dB, two thirds from 45, a third from 50,
   and none from 55 dB, averaged over up to 64 points along the route. Cards show
@@ -323,17 +320,15 @@ test Overpass connectivity from your deployment before launching.
   Some hikes have no photos of nature nearby, and then show only the map. Credits
   leave out the names Commons repeats in hidden elements.
 - Provider failures produce a friendly error, not misleading empty results. The
-  origin's area, the tiles after the first four, and photos only refine a
-  search, which goes ahead without them, and so do highlights and terrain,
-  except that a flat route is only shown once its highlights are found; when
-  they or any tile's routes don't load, the page says some hikes couldn't be
-  checked, and guide builds try that city again. A hike shown before its
-  terrain came is taken off the page when that terrain is too flat. Highlights
-  not found within 5 seconds of the last batch, and terrain not found within 8
-  seconds after that, are left out, and the lookups finish in the background so
-  later searches have them; a batch's flat routes wait up to 45 seconds for
-  theirs. When the way back can't be looked up, hikes are shown with a notice
-  saying so.
+  origin's area, the tiles after the first four, highlights, terrain, and photos
+  only refine a search, which goes ahead without them; when any tile's routes
+  don't load, the page says some hikes couldn't be checked, and guide builds try
+  that city again. Each batch's terrain is looked up while its transit is
+  checked, so cards show their climb and rank by their views as they come.
+  Highlights not found within 5 seconds of the last batch, and terrain not found
+  within 8 seconds after that, are left out, and the lookups finish in the
+  background so later searches have them. When the way back can't be looked up,
+  hikes are shown with a notice saying so.
 
 Route data is © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright),
 available under the ODbL. The public Overpass server is shared infrastructure:

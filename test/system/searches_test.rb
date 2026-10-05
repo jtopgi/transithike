@@ -8,9 +8,8 @@ class SearchesTest < ApplicationSystemTestCase
   ROUTES = [["Short Loop", 47.81, 1.5, [{ duration: 4800, transfers: 0 }]],
     ["Ridge Trail", 47.83, 5, [{ duration: 4200, transfers: 1 }]],
     ["Long Traverse", 47.86, 8, [{ duration: 6000, transfers: 2 }]]].freeze
-  # A waterfall on the Short Loop and a famous viewpoint on the Long Traverse, which is otherwise flat; the Ridge
-  # Trail climbs to a summit.
-  HIGHLIGHTS = [["waterfall", 47.815, "Little Falls"], ["viewpoint", 47.95, nil, { "wikipedia" => "en:Lookout Point" }]].freeze
+  # A waterfall on the Short Loop and a viewpoint on the Long Traverse; the Ridge Trail climbs to a summit.
+  HIGHLIGHTS = [["waterfall", 47.815, "Little Falls"], ["viewpoint", 47.95, nil]].freeze
   SUMMIT = 47.9024
   # Photos taken near every route.
   PHOTOS = ["Ridge view.jpg", "Lake at dawn.jpg", "Autumn woods.jpg"].freeze
@@ -38,7 +37,7 @@ class SearchesTest < ApplicationSystemTestCase
       stub.post(URI(OverpassService::URLS.first).path) do |env|
         query = URI.decode_www_form(env.body).to_h.fetch("data")
         routes = ROUTES.each_with_index.map { |route, index| element(*route.first(3), index) }
-        highlights = HIGHLIGHTS.map { |kind, latitude, name, tags = {}| highlight_node(kind, latitude, -122.0, name: name, tags: tags) }
+        highlights = HIGHLIGHTS.map { |kind, latitude, name| highlight_node(kind, latitude, -122.0, name: name) }
         [200, {}, JSON.generate(elements: overpass_elements(query, routes: routes, highlights: highlights))]
       end
       # A station downtown, with trains far out, and trains from there to a station at each route's start, sooner for
@@ -198,7 +197,7 @@ class SearchesTest < ApplicationSystemTestCase
     assert_selector "article.trail-card", text: /Short Loop.*Little Falls/m
     assert_no_selector "[data-progress]", visible: true
     assert_text "Showing 3 of 3 hikes"
-    # The Ridge Trail's grand view beats the Short Loop's waterfall, and both beat a famous viewpoint on flat land.
+    # The Ridge Trail's grand view beats the Short Loop's waterfall, and both beat one small viewpoint.
     assert_equal ["Ridge Trail", "Short Loop", "Long Traverse"], route_names
     assert_selector "article.trail-card", text: /Ridge Trail.*Climb\s+≈ 1,550 ft/m
     assert_no_text "Distance"

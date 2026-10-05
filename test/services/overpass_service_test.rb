@@ -357,7 +357,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
     OverpassService::LOOKING_UP.delete("tile:shared")
   end
 
-  test "queries and highlights wait for one of the process's two slots, and cached lookups need none" do
+  test "queries wait for one of the process's two slots, highlights don't wait, and cached lookups need none" do
     slots = Rails.configuration.x.overpass_slots
     cache = ActiveSupport::Cache::MemoryStore.new
     calls = 0
@@ -368,14 +368,13 @@ class OverpassServiceTest < ActiveSupport::TestCase
     assert slots.try_acquire(2, 1)
 
     assert_equal cached, routes_in(counted, cache: cache)
-    stub_const(OverpassService, :SLOT_WAIT_SECONDS, 0.05) do
-      error = assert_raises(SearchErrors::ProviderBusy) { routes_in(counted, tiles: [[48.0, -122.0]], cache: cache) }
-      assert_equal OverpassService::BUSY, error.message
-      # Flat routes' highlights decide whether they're shown, so they wait too.
-      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      assert_raises(SearchErrors::ProviderBusy) { OverpassService.highlights(trails, connections: [counted], cache: cache) }
-      assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :>=, 0.05
+    error = stub_const(OverpassService, :SLOT_WAIT_SECONDS, 0.05) do
+      assert_raises(SearchErrors::ProviderBusy) { routes_in(counted, tiles: [[48.0, -122.0]], cache: cache) }
     end
+    assert_equal OverpassService::BUSY, error.message
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    assert_raises(SearchErrors::ProviderBusy) { OverpassService.highlights(trails, connections: [counted], cache: cache) }
+    assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 0.05
     assert_equal 0, calls
     assert_nil cache.read(OverpassService::FAILOVER_KEY)
   ensure
@@ -598,8 +597,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
     working = overpass_connection(highlights: [highlight_node("peak", 47.01, -122.0, name: "Knob")])
     assert_equal({ 1 => [{ kind: "peak", name: "Knob" }] }, OverpassService.highlights(trails, connections: [working], cache: cache))
     assert_equal({ 1 => [{ kind: "peak", name: "Knob" }] }, OverpassService.highlights(trails, connections: [failing], cache: cache))
-    # The failed lookup was tried once more after a pause, as other queries are.
-    assert_equal 2, calls
+    assert_equal 1, calls
     assert_equal({}, OverpassService.highlights([], connections: [failing], cache: cache))
   end
 end

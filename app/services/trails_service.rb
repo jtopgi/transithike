@@ -50,15 +50,9 @@ module TrailsService
   # Quiet surroundings, away from road, rail, and air traffic, count up to as
   # much as a good view, about 200 m up, where the noise map shows them.
   QUIET_SCENIC = 2.0
-  # Hikes need at least this much scenery to be shown: about 100 m of climb or
-  # relief, a waterfall, or a smaller climb with a viewpoint or summit.
-  SCENIC_MIN = 1.0
   # Searches wait at most this long for the noise along a batch's routes, which
   # are kept without it otherwise.
   NOISE_WAIT_SECONDS = 8
-  # A batch's flat routes wait at most this long, once its other routes are
-  # planned, for the highlights that decide whether they're shown.
-  FLAT_HIGHLIGHT_WAIT_SECONDS = 45
   # Highlights only refine the ranking, so searches wait at most this long for
   # them once every batch is checked. Slower lookups finish in the background
   # and are cached for later searches.
@@ -163,11 +157,6 @@ module TrailsService
       when :trails
         show(:trails, payload.select { |trail| @shown[trail.osm_id].nil? || TrailsService.sooner?(trail, @shown[trail.osm_id], @result.place) })
       when :update then show(:update, payload.select { |trail| @shown[trail.osm_id]&.station == trail.station })
-      when :hidden
-        # Only as found from the station shown.
-        hidden = payload.select { |trail| @shown[trail.osm_id]&.station == trail.station }
-        hidden.each { |trail| @shown.delete(trail.osm_id) }
-        @on_found&.call(:hidden, hidden) if hidden.any?
       when :done
         @result.returns_checked &&= payload.returns_checked
         @result.complete &&= payload.complete
@@ -212,8 +201,7 @@ module TrailsService
   # back to it by RETURN_BY_HOUR. The block, if any, is called as the search
   # goes: with :checking, how many routes a batch checks, and the station,
   # with :trails and each batch's routes that have a trip there and back, and
-  # with :hidden and routes shown before their terrain came, which is too flat,
-  # and with :update and every route once highlights and terrain rank them, each
+  # with :update and every route once highlights and terrain rank them, each
   # time with copies, so the search can go on. Returns the station's result.
   def self.from_station(station, departure_time, transit: TransitousService, hiking: OverpassService,
     elevation: ElevationService, noise: NoiseService, &on_found)
@@ -249,8 +237,7 @@ module TrailsService
     raise search.error if result.trails.empty? && search.error
     return result if result.trails.empty?
 
-    hidden = enrich(result, search.lookups, elevation)
-    on_found&.call(:hidden, hidden.map(&:dup)) if hidden.any?
+    enrich(result, search.lookups, elevation)
     on_found&.call(:update, result.trails.map(&:dup))
     result
   end
@@ -284,20 +271,9 @@ module TrailsService
       terrain = TrailsService.terrain_lookups(trails, @elevation)
       found = TrailsService.round_trips(@place, trails, @result, @transit, @budget)
       found = TrailsService.away_from_traffic(found, noise) if noise
-      # Routes on flat land are only planned when their highlights, such as a waterfall, make up for it.
-      scenic, flat = TrailsService.with_terrain(found, terrain).partition { |trail| TrailsService.scenic_enough?(trail) }
-      highlights = TrailsService.start(TrailsService.overpass_pool) { @hiking.highlights(flat) } if flat.any?
-      kept = plan(scenic)
+      # Knowing their terrain, hikes show with their climb, ranked by their views.
+      kept = plan(TrailsService.with_terrain(found, terrain))
       @lookups << [kept, TrailsService.start(TrailsService.overpass_pool) { @hiking.highlights(kept) }] if kept.any?
-      return unless highlights
-
-      # Without their highlights, flat routes can't be checked, and the search says so.
-      found = TrailsService.settle([highlights], timeout: FLAT_HIGHLIGHT_WAIT_SECONDS).first.value(0)
-      return fail_with(SearchErrors::ProviderBusy.new(OverpassService::BUSY)) unless highlights.fulfilled?
-
-      flat.each { |trail| trail.highlights = found[trail.osm_id] || [] }
-      kept = plan(flat.select { |trail| TrailsService.scenic_enough?(trail) })
-      @lookups << [kept, highlights] if kept.any?
     rescue SearchErrors::UpstreamError => error
       fail_with(error)
     end
@@ -527,8 +503,7 @@ module TrailsService
   end
 
   # Adds the highlights found in time and the terrain of the most promising
-  # routes still without it, then scores and orders every route shown, and
-  # returns those no longer shown.
+  # routes still without it, then scores and orders every route.
   def self.enrich(result, lookups, elevation)
     settle(lookups.map(&:last), timeout: HIGHLIGHT_WAIT_SECONDS)
     lookups.each do |trails, lookup|
@@ -537,11 +512,7 @@ module TrailsService
       trails.each { |trail| trail.highlights = found[trail.osm_id] || [] }
     end
     add_terrain(result.trails.reject(&:terrain).max_by(MAX_TERRAIN_LOOKUPS) { |trail| score(trail) }, elevation)
-    # Routes shown before their terrain came, which turns out too flat, are no longer.
-    hidden = result.trails.reject { |trail| shown?(trail) }
-    result.trails -= hidden
     rank(result.trails)
-    hidden
   end
 
   # How far the land rises around each route, as { id => meters }, looked up a
@@ -661,15 +632,10 @@ module TrailsService
     features.first(3).each_with_index.sum { |value, index| value / 2**index }
   end
 
-  # Whether a route has the scenery hikes need, SCENIC_MIN, or its terrain isn't known.
-  def self.scenic_enough?(trail)
-    trail.terrain.nil? || scenery(trail) >= SCENIC_MIN
-  end
-
   # Whether a hike is shown: under 45 dB along most of it, where the noise map
-  # says, and scenic enough.
+  # says. Scenery only ranks hikes.
   def self.shown?(trail)
-    !NoiseService.too_loud?(trail.noise) && scenic_enough?(trail)
+    !NoiseService.too_loud?(trail.noise)
   end
 
   # Views, from 0 to about 5.75: a point for every 100 m the route climbs or

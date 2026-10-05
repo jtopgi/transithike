@@ -485,46 +485,6 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_empty transit.timetables & %w[suburb highway]
   end
 
-  test "hikes need about 100 m of climb or relief, or a waterfall, and flat routes are only planned when highlights make up for it" do
-    trails = %w[ridge flat falls unknown].map { |name| trail(name) }
-    elevation = FakeElevation.new({ "ridge" => { climb: 150, relief: 120 }, "flat" => { climb: 30, relief: 20 },
-      "falls" => { climb: 20, relief: 10 } })
-    hiking = FakeHiking.new(trails, highlights: { trails[2].osm_id => [{ kind: "waterfall", name: "Falls" }] })
-    transit = FakeTransit.new(trips: trails.to_h { |trail| [trail.name, minutes(60)] })
-    found = search(transit: transit, hiking: hiking, elevation: elevation)
-
-    shown = found.trails.index_by(&:name)
-    assert_equal %w[falls ridge unknown], shown.keys.sort
-    assert_not_includes transit.timetables, "flat"
-    # Terrain is known as hikes are shown, and the waterfall makes up for the flat land: 2 and half of 0.2.
-    assert_equal [{ climb: 150, relief: 120 }, 2.1], [shown["ridge"].terrain, TrailsService.scenery(shown["falls"])]
-    assert found.complete
-
-    # Without its highlights, a flat route can't be checked, and the search says so.
-    busy = FakeHiking.new(trails.map(&:dup), highlights: SearchErrors::ProviderBusy.new("busy"))
-    found = search(transit: FakeTransit.new(trips: trails.to_h { |trail| [trail.name, minutes(60)] }), hiking: busy,
-      elevation: elevation)
-    assert_equal [%w[ridge unknown], false], [found.trails.map(&:name).sort, found.complete]
-  end
-
-  test "a hike shown before its terrain came is taken off once that terrain is too flat" do
-    elevation = FakeElevation.new({ "flatloop" => { climb: 30, relief: 20 } })
-    lookups = Concurrent::AtomicFixnum.new
-    # The batch's lookup is too slow, and the last one quick.
-    elevation.define_singleton_method(:terrain) do |trails|
-      sleep 0.5 if lookups.increment == 1
-      super(trails)
-    end
-    events = Concurrent::Array.new
-    found = stub_const(TrailsService, :TERRAIN_WAIT_SECONDS, 0.1) do
-      search(transit: FakeTransit.new(trips: { "flatloop" => minutes(30) }), hiking: FakeHiking.new([trail("flatloop")]),
-        elevation: elevation) { |event, payload| events << [event, Array(payload).map { |each| each.try(:name) }] }
-    end
-    assert_empty found.trails
-    assert_includes events, [:trails, ["flatloop"]]
-    assert_includes events, [:hidden, ["flatloop"]]
-  end
-
   test "noise is looked up from stations on the noise map, whoever searches, and when it fails, routes are kept without it" do
     noise = FakeNoise.new({ "a" => { quiet: 0.0, typical: 70, loudest: 80 } })
     # A station across the border, in Vancouver, isn't on it, even for searches from Seattle.
@@ -1025,7 +985,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal [%w[a b c], false], shown(station_search(again))
   end
 
-  test "a search that couldn't check every route doesn't bring back routes it found too loud, nor ones not shown now" do
+  test "a search that couldn't check every route doesn't bring back routes it found too loud, nor ones too loud now" do
     a, b, c = trail("a"), trail("b"), trail("c")
     down = FakeNoise.new(failure: SearchErrors::UpstreamError.new("The noise map is down"))
     assert_equal [%w[a b], true], shown(station_search(FakeHiking.new([a, b, c], failing: [c.osm_id]), noise: down))
@@ -1043,10 +1003,10 @@ class TrailsServiceTest < ActiveSupport::TestCase
     kept = station_search(unchecked, noise: loud).events_since(0).first.find { |event, _| event == :trails }.last
     assert_equal [{ quiet: 0.9, typical: 0, loudest: 45 }], kept.map(&:noise)
 
-    # Kept searches show without hikes that aren't shown now, as a flat one kept from before.
+    # Kept searches show without hikes that aren't shown now, as one kept from before the rule.
     key = StationSearch.keys(STATION, SATURDAY.in_time_zone("America/Los_Angeles"))[:day]
     entry = @station_cache.read(key)
-    entry[:result].trails.first.terrain = { climb: 30, relief: 20 }
+    entry[:result].trails.first.noise = { quiet: 0.2, typical: 50, loudest: 60 }
     @station_cache.write(key, entry)
     assert_equal [[], false], shown(station_search(unchecked, noise: loud))
   end
