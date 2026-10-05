@@ -1,6 +1,9 @@
 require "test_helper"
+require_relative "../support/guide_fixtures"
 
 class TrailsServiceTest < ActiveSupport::TestCase
+  include GuideFixtures
+
   class FakePlaces
     attr_reader :queries
 
@@ -1141,8 +1144,17 @@ class TrailsServiceTest < ActiveSupport::TestCase
     assert_equal [["a"], true], shown(start.(Concurrent::ImmediateExecutor.new))
   end
 
-  test "only the US guide cities' searches are kept ready" do
-    assert_equal %w[new-york-city boston washington-dc chicago seattle san-francisco los-angeles], SearchWarmer.cities.map(&:slug)
+  test "only the US guide cities that have a guide have their searches kept ready" do
+    directory = Pathname(Dir.mktmpdir("guides"))
+    GuideService.directory = directory
+    assert_empty SearchWarmer.cities
+    # New York's guide is published, and Boston's and Chicago's aren't yet; Europe's cities aren't kept ready.
+    %w[new-york-city london].each do |slug|
+      directory.join("#{slug}.json").write(JSON.generate(guide_data.merge(slug: slug)))
+    end
+    assert_equal ["new-york-city"], SearchWarmer.cities.map(&:slug)
+  ensure
+    GuideService.directory = nil
   end
 
   test "the guide cities' stations are searched one at a time for the weekend, kept ready, and failures don't stop the rest" do

@@ -140,18 +140,19 @@ test Overpass connectivity from your deployment before launching.
   no visitor waits on, searching again and keeping searches ready, run one at a
   time on threads of their own, so a visitor's search isn't queued behind them,
   and their requests to Overpass and Transitous wait behind those of visitors
-  and of searches visitors wait on, until a visitor waits on them too. Background searches wait while two others are
-  queued, and a station isn't searched again within 10 minutes of the last try. A hike that
-  several stations reach shows from the one that gets there soonest, counting
+  and of searches visitors wait on, until a visitor waits on them too.
+  Background searches wait while two others are queued, and a station isn't
+  searched again within 10 minutes of the last try. A hike that several
+  stations reach shows from the one that gets there soonest, counting
   the trip across the city to each station at about 15 km/h, and a card is
   replaced when a station that gets there sooner finds it. While nothing new is
   found, the stream sends a comment every 15 seconds to keep the connection open.
 - **Ready ahead.** With `WARM_SEARCHES=1`, the web server searches the major
-  stations of each guide city in the US, where most visitors are, for the next
-  Saturday and Sunday once a day, one at a time and starting 2 minutes after it
-  boots, unless their kept searches are recent and complete, so the first
-  visitor near them doesn't wait. These run in the background, behind searches
-  visitors wait on.
+  stations of each guide city in the US that has a guide, where most visitors
+  are, for the next Saturday and Sunday once a day, one at a time and starting 2
+  minutes after it boots, unless their kept searches are recent and complete,
+  so the first visitor near them doesn't wait. These run in the background,
+  behind searches visitors wait on.
 - **Weekend trips.** Searches are for Saturday or Sunday: the one chosen, or
   whichever comes first. Trips leave at **8 AM** that day in the time zone
   Transitous reports for the origin (UTC when unknown), or now (rounded to the
@@ -412,9 +413,8 @@ facts, and timetables there and back, built from the same search and trip
 planning, linked from the home page, the navigation, and an index of cities.
 
 - **Cities** are listed in `config/guides.yml`, each with the point trips start
-  from: New York City, Boston, Washington, DC, Chicago, Seattle, San Francisco,
-  and Los Angeles in the US, and London, Zurich, Berlin, Paris, Munich, and
-  Vienna in Europe. Trips are for the coming Saturday, from 8 AM, back by 11 PM.
+  from: New York City, Boston, and Chicago in the US, and London, Zurich, Berlin,
+  Paris, Munich, and Vienna in Europe. Trips are for the coming Saturday, from 8 AM, back by 11 PM.
 - **Weekly builds.** The [Guides workflow](.github/workflows/guides.yml) runs on
   Wednesdays (and from the Actions tab, for some cities if you like). It builds
   each city in a job of its own, two at a time so the free providers aren't

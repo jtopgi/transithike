@@ -73,7 +73,7 @@ jobs:
           # The log says which provider failed when the city's search does.
           RAILS_LOG_TO_STDOUT: "1"
           CITIES: ${{ matrix.city }}
-      # The city's guide, as built or, when the build was refused, as published.
+      # The city's guide, as built or, when the build was refused, as published, or none for a new city without one.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: guide-${{ matrix.city }}
@@ -82,9 +82,10 @@ jobs:
           retention-days: 7
 
   publish:
-    needs: build
-    # Cities whose builds failed keep their published guides.
-    if: ${{ !cancelled() }}
+    needs: [cities, build]
+    # Cities whose builds failed keep their published guides, and nothing is published when the cities asked for aren't
+    # guides.
+    if: ${{ !cancelled() && needs.cities.result == 'success' }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}

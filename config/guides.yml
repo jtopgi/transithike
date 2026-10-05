@@ -2,7 +2,10 @@
 # and the point trips start from. A city's guide is only published once a
 # build finds at least GuideService::MIN_HIKES hikes from it. Check that a new
 # city's hikes are its own: Philadelphia's were nearly all New York's, hours
-# away, since few hiking routes are mapped near its train stations.
+# away, since few hiking routes are mapped near its train stations. Searches
+# use OpenStreetMap's hiking route relations, which are rare near the train
+# lines of Los Angeles, San Francisco, and Seattle, where trails are mostly
+# mapped as paths alone, and Washington, DC's weekend trains reach only a few.
 new-york-city:
   name: New York City
   origin: Midtown Manhattan
@@ -15,36 +18,12 @@ boston:
   latitude: 42.3555
   longitude: -71.0603
   time_zone: America/New_York
-washington-dc:
-  name: Washington, DC
-  origin: downtown Washington
-  latitude: 38.8977
-  longitude: -77.0365
-  time_zone: America/New_York
 chicago:
   name: Chicago
   origin: the Loop
   latitude: 41.8818
   longitude: -87.6298
   time_zone: America/Chicago
-seattle:
-  name: Seattle
-  origin: downtown Seattle
-  latitude: 47.6062
-  longitude: -122.3321
-  time_zone: America/Los_Angeles
-san-francisco:
-  name: San Francisco
-  origin: downtown San Francisco
-  latitude: 37.7897
-  longitude: -122.3972
-  time_zone: America/Los_Angeles
-los-angeles:
-  name: Los Angeles
-  origin: downtown Los Angeles
-  latitude: 34.0522
-  longitude: -118.2437
-  time_zone: America/Los_Angeles
 london:
   name: London
   origin: central London

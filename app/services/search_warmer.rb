@@ -1,4 +1,4 @@
-# Keeps searches from the US guide cities ready, where most visitors are, so
+# Keeps searches from the US guide cities with guides ready, where most visitors are, so
 # the first visitor near one of their stations doesn't wait: every WARM_EVERY,
 # each city's major stations are searched for the next Saturday and Sunday,
 # one at a time, unless their kept searches are recent and complete, in the
@@ -27,15 +27,16 @@ module SearchWarmer
     end
   end
 
+  # The guide cities whose searches are kept ready: those in the US that have
+  # a guide, where visitors come from.
+  def self.cities(guides = GuideService.guides)
+    zones = TZInfo::Country.get("US").zone_identifiers
+    guides.select { |guide| zones.include?(guide.time_zone) && GuideService.page(guide.slug) }
+  end
+
   # Searches each guide city's major stations for the next Saturday and
   # Sunday, one station at a time, returning how many were searched. Each
   # station's search runs on the pool, and is only waited for here.
-  # The guide cities whose searches are kept ready: those in the US.
-  def self.cities(guides = GuideService.guides)
-    zones = TZInfo::Country.get("US").zone_identifiers
-    guides.select { |guide| zones.include?(guide.time_zone) }
-  end
-
   def self.warm(guides: cities, transit: TransitousService, searches: StationSearch, log: Rails.logger,
     wait: STATION_WAIT, pool: Rails.configuration.x.background_pool)
     guides.product(TrailsService::WEEKEND_DAYS.keys).sum do |guide, day|

@@ -110,7 +110,7 @@ class ProviderSlots
           return false if left && !left.positive?
 
           # Kept out by the reserve, it looks again once the reserve lapses.
-          lapse = @urgent_at + RESERVE_SECONDS - now if reserving?
+          lapse = reserving? ? @urgent_at + RESERVE_SECONDS - now : nil
           @turn.wait(@lock, [left, lapse].compact.min)
         end
         @free -= permits
