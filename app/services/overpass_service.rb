@@ -31,6 +31,10 @@ module OverpassService
   # Trips are checked for at most this many routes per search, in batches; Transitous
   # plans at most 128 destinations in one request.
   MAX_TRANSIT_ROUTES = 120
+  # Of them, up to this many are routes at least FAR_MINUTES away, however
+  # promising nearer ones are, as long trips there count against routes.
+  FAR_ROUTES = 40
+  FAR_MINUTES = 180
   # Routes this close together with the same name are sections of one trail.
   DUPLICATE_METERS = 5_000
   # Routes spanning less are rarely hikes worth a trip.
@@ -298,13 +302,21 @@ module OverpassService
       longitude: (corners[1] + corners[3]) / 2.0, bounds: corners, span: span.round, notable: notable?(tags) }
   end
 
-  # Up to MAX_TRANSIT_ROUTES ids of the routes transit may reach, most promising
-  # and quickest first, keeping each trail's quickest section. relief is how
-  # far the land rises around routes, in meters by id, as ElevationService.reliefs finds.
-  def self.pick(candidates, access:, relief: {})
+  # Up to MAX_TRANSIT_ROUTES ids of the routes transit may reach, counting the
+  # ids already checked, which aren't given again: most promising and quickest
+  # first, keeping each trail's quickest section, with up to FAR_ROUTES of the
+  # far ones among them. relief is how far the land rises around routes, in
+  # meters by id, as ElevationService.reliefs finds.
+  def self.pick(candidates, access:, relief: {}, checked: Set.new)
     reachable = candidates.filter_map { |route| (minutes = access.reach(route[:bounds])) && route.merge(minutes: minutes) }
-    distinct(reachable.sort_by { |route| route[:minutes] })
-      .sort_by { |route| [-promise(route, relief[route[:id]]), route[:minutes]] }.first(MAX_TRANSIT_ROUTES).pluck(:id)
+    ranked = distinct(reachable.sort_by { |route| route[:minutes] })
+      .sort_by { |route| [-promise(route, relief[route[:id]]), route[:minutes]] }
+    done, open = ranked.partition { |route| checked.include?(route[:id]) }
+    room = [MAX_TRANSIT_ROUTES - checked.size, 0].max
+    far_room = (FAR_ROUTES - done.count { |route| route[:minutes] >= FAR_MINUTES }).clamp(0, room)
+    far = open.select { |route| route[:minutes] >= FAR_MINUTES }.first(far_room)
+    picked = (far + (open - far).first(room - far.size)).pluck(:id).to_set
+    open.pluck(:id).select { |id| picked.include?(id) }
   end
 
   # The routes, leaving out any named like an earlier one within DUPLICATE_METERS.

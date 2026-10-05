@@ -401,6 +401,21 @@ class SearchesIntegrationTest < ActionDispatch::IntegrationTest
     assert_equal ["47.0,-122.0", nil, "47.01,-122.0"], hike.values_at("from", "origin", "station")
   end
 
+  test "until its trips are planned, a far hike's round trip is no more than hikes shown ride, and each way half of it" do
+    geocode
+    area
+    rail
+    hiking([route_element(latitude: 47.3)])
+    # 4 h 50 min to the hike, waiting for the train included, though its trains ride 1½ hours each way.
+    transit([[{ duration: 17_400, transfers: 1 }]])
+    timetables
+    elevation
+    search_all(origin: "Seattle")
+
+    assert cards.at_css("[data-trail][data-travel='28800']")
+    assert_match(/Round trip\s+≈ 8 h\s+≈ 4 h each way · 1 transfer/, cards.at_css(".trail-stats").text.squish)
+  end
+
   test "invalid coordinates fall back to looking up the typed place" do
     geocode
     area

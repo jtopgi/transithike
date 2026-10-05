@@ -30,10 +30,12 @@
         <div>
           <dt><span aria-hidden="true">🕒</span> Round trip</dt>
           <dd>
-            <%# Twice the trip there, waiting for the train included, until the planned trips there and back show. %>
+            <%# Twice the trip there, waiting for the train included, but no more than hikes shown ride, and each way
+                half of it, until the planned trips there and back show. %>
             <span data-travel-time>≈ <%= duration_label(TrailsService.round_trip_seconds(trail), approximate: true) %></span>
             <small class="trail-transfers" data-travel-detail>
-              ≈ <%= duration_label(trail.duration, approximate: true) %> each way · <%= transfers_label(trail.transfers) %>
+              ≈ <%= duration_label(TrailsService.round_trip_seconds(trail) / 2, approximate: true) %> each way ·
+              <%= transfers_label(trail.transfers) %>
             </small>
           </dd>
         </div>

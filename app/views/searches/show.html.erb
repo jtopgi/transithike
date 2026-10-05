@@ -97,7 +97,8 @@
       <%= TripPlans::MIN_TRIPS %> trips there that arrive in time to hike it all by sunset, and at least
       <%= TripPlans::MIN_TRIPS %> back to its station that leave before dark, with twilight left for the walk to the
       station, so missing one isn't a worry. Each card shows the soonest trip there and the last trip back, which rides
-      the same trains back where it can; the round trip adds the rides there and back. Hikes with the grandest view
+      the same trains back where it can; the round trip adds the rides there and back, up to
+      <%= TrailsService::MAX_ROUND_TRIP_HOURS %> hours. Hikes with the grandest view
       or waterfall come first: views count for how far a route climbs and how far its high point stands above the
       land around it, and more with a mapped viewpoint or a named or famous summit, while waterfalls count more with
       a name, a Wikipedia article, or height. The best counts in full and the next only half, so one grand view
@@ -114,7 +115,8 @@
     From each of up to <%= TransitousService::MAX_STATIONS %> major stations within
     <%= TransitousService::STATION_RADII.first / 1000 %> km, each search looks for mapped hiking routes within a
     <%= TransitAccess::MAX_WALK_MINUTES %>-minute walk of the stations its trains reach within
-    <%= duration_label(TransitousService::STATION_MINUTES * 60) %>, then checks trips for up to
+    <%= duration_label(TransitousService::STATION_MINUTES * 60) %> (less where they reach too many to list), then
+    checks trips for up to
     <%= OverpassService::MAX_TRANSIT_ROUTES %> hikes of <%= OverpassService::MIN_LENGTH_MILES.round %> to
     <%= OverpassService::MAX_LENGTH_MILES %> miles that aren't mostly paved. Searches from a station are shared with
     everyone who searches near it.

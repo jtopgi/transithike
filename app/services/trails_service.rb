@@ -50,6 +50,8 @@ module TrailsService
   # Quiet surroundings, away from road, rail, and air traffic, count up to as
   # much as a good view, about 200 m up, where the noise map shows them.
   QUIET_SCENIC = 2.0
+  # Hikes whose trips there and back ride longer than this in all aren't shown.
+  MAX_ROUND_TRIP_HOURS = 8
   # Searches wait at most this long for the noise along a batch's routes, which
   # are kept without it otherwise.
   NOISE_WAIT_SECONDS = 8
@@ -234,7 +236,8 @@ module TrailsService
       relief = relief.merge(reliefs(more, elevation))
       routes = (routes + more).uniq { |route| route[:id] }
     end
-    search.check(hiking.pick(routes, access: access, relief: relief))
+    # Counting the routes checked, so the far ones it keeps room for are checked too.
+    search.check(hiking.pick(routes, access: access, relief: relief, checked: search.checked))
     result.complete = false if failures.any?
     raise search.error if result.trails.empty? && search.error
     return result if result.trails.empty?
@@ -246,7 +249,7 @@ module TrailsService
 
   # Checks routes in batches, up to OverpassService::MAX_TRANSIT_ROUTES per search.
   class Search
-    attr_reader :lookups, :error
+    attr_reader :lookups, :error, :checked
 
     def initialize(station, place, access, result, transit, hiking, elevation, noise, on_found)
       @station, @place, @access, @result, @transit, @hiking, @on_found = station, place, access, result, transit, hiking, on_found
@@ -376,6 +379,7 @@ module TrailsService
         next
       end
       next unless (trips = done.value)
+      next if ride_hours(trips) > MAX_ROUND_TRIP_HOURS
 
       trail.arrival = Time.iso8601(trips[:there][:arrival])
       trail.last_return = Time.iso8601(trips[:ways][:last][:departure])
@@ -385,6 +389,14 @@ module TrailsService
     # Hikes skipped once planning was stuck weren't checked either.
     result.complete = false if stuck.true?
     kept
+  end
+
+  # Hours riding the soonest trip there and the first back after the hike, as
+  # each card's round trip adds them, or the last back when it's the only one.
+  def self.ride_hours(trips)
+    [trips[:there], trips[:ways][:back] || trips[:ways][:last]].sum do |trip|
+      (Time.iso8601(trip[:arrival]) - Time.iso8601(trip[:departure])) / 3600.0
+    end
   end
 
   # Searches no visitor waits on plan trips on a pool of their own.
@@ -497,9 +509,10 @@ module TrailsService
   end
 
   # Seconds on transit there and back. Coming back the same way takes about as
-  # long as going; each card shows the planned trips once they're looked up.
+  # long as going, though no hike shown rides over MAX_ROUND_TRIP_HOURS; each
+  # card shows the planned trips once they're looked up.
   def self.round_trip_seconds(trail)
-    trail.duration * 2
+    [trail.duration * 2, MAX_ROUND_TRIP_HOURS * 3600].min
   end
 
   # How far the hike goes: once along a loop or to the far end, and twice out and back.
