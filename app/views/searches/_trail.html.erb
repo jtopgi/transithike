@@ -23,7 +23,7 @@
         <span aria-hidden="true">📍</span> <span data-location-text><%= trail.location %></span>
       </p>
       <% if trail.station %>
-        <p class="trail-station small mb-3"><span aria-hidden="true">🚉</span> Trains from <strong><%= trail.station.name %></strong></p>
+        <p class="trail-station small mb-3"><span aria-hidden="true">🚉</span> From <strong><%= trail.station.name %></strong></p>
       <% end %>
       <div data-chips><%= render "searches/chips", trail: trail %></div>
       <dl class="trail-stats">

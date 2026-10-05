@@ -192,93 +192,90 @@ class TransitousServiceTest < ActiveSupport::TestCase
     }.each { |name, known| assert_equal known, TransitousService.station_name(name) }
   end
 
-  def rail_stations(connection, cache: ActiveSupport::Cache::MemoryStore.new, station: self.station)
-    TransitousService.rail_stations(origin: station, departure_time: DEPARTURE, connection: connection, cache: cache)
+  def reached_stops(connection, cache: ActiveSupport::Cache::MemoryStore.new, station: self.station)
+    TransitousService.reached_stops(origin: station, departure_time: DEPARTURE, connection: connection, cache: cache)
   end
 
-  test "rail stations are those trains reach from the station, quickest first" do
+  # A connection whose response arrives in pieces of size bytes, as Net::HTTP streams it.
+  def streaming(body, size: 7)
+    adapter = Class.new(Faraday::Adapter) do
+      define_method(:call) do |env|
+        super(env)
+        received = 0
+        body.b.scan(/.{1,#{size}}/m) { |piece| env.request.on_data.call(piece, received += piece.bytesize, env) }
+        save_response(env, 200, "")
+        @app.call(env)
+      end
+    end
+    Faraday.new { |builder| builder.adapter adapter }
+  end
+
+  test "stops are those any scheduled transit reaches from the station after a ride, the quickest in each cell first" do
     requests = []
     all = [
       reached_stop(47.598, -122.33, 0, rides: 0, id: "king-street"), reached_stop(47.65, -122.35, 18, id: "north"),
       reached_stop(47.2, -122.4, 40, id: "tacoma"), reached_stop(47.9, -122.2, 70.0, rides: 2, id: "everett"),
-      reached_stop(47.3, -122.2, 20, modes: ["BUS"], id: "bus"), reached_stop(47.65, -122.35, 25, rides: 2, id: "north")
+      reached_stop(47.534, -122.034, 35, modes: ["BUS"], id: "issaquah"),
+      reached_stop(47.62, -122.52, 50, modes: %w[FERRY BUS], id: "bainbridge"),
+      # Issaquah's cell, reached later.
+      reached_stop(47.536, -122.036, 45, modes: ["BUS"], id: "issaquah-highlands"),
+      reached_stop(47.45, -122.3, 30, modes: ["AIRPLANE"], id: "sea-tac"), reached_stop(47.4, -122.2, 25, modes: ["ODM"], id: "on-call")
     ]
-    connection = stub_connection(:get, { "all" => all }) { |request| requests << request.params }
-    assert_equal [[47.65, -122.35, 18], [47.2, -122.4, 40], [47.9, -122.2, 70.0]], rail_stations(connection)
+    connection = stub_connection(:get, { "one" => { "lat" => 47.598, "lon" => -122.33 }, "all" => all }) { |request| requests << request.params }
+    found = [[47.65, -122.35, 18], [47.534, -122.034, 35], [47.2, -122.4, 40], [47.62, -122.52, 50], [47.9, -122.2, 70.0]]
+    assert_equal found, reached_stops(connection)
+    # Read as it arrives, however it's split.
+    assert_equal found, reached_stops(streaming(JSON.generate("one" => {}, "all" => all)))
 
-    trains = TransitousService::TRAIN_MODES.join(",")
+    modes = TransitousService::STOP_MODES
     assert_equal [{ "one" => "king-street", "time" => "2026-09-23T15:00:00Z", "maxTravelTime" => TransitousService::STATION_MINUTES.to_s,
-      "transitModes" => trains }],
-      requests
-    assert_includes trains.split(","), "REGIONAL_RAIL"
-    assert_includes trains.split(","), "SUBURBAN"
-    # Transitous's RAIL takes the subway too, and METRO is its old name for suburban trains.
-    assert_empty trains.split(",") & %w[RAIL METRO SUBWAY TRAM BUS COACH]
+      "transitModes" => modes.join(",") }], requests
+    assert_empty %w[REGIONAL_RAIL SUBURBAN LONG_DISTANCE BUS COACH FERRY TRAM SUBWAY FUNICULAR AERIAL_LIFT] - modes
+    # Transitous's TRANSIT takes flights and rides on demand too, and its RAIL and METRO are other names for trains.
+    assert_empty modes & %w[TRANSIT RAIL METRO AIRPLANE ODM RIDE_SHARING FLEX]
 
-    rail_stations(connection, station: station(id: nil))
+    reached_stops(connection, station: station(id: nil))
     assert_equal "47.5980000,-122.3300000", requests.last["one"]
   end
 
-  test "where a station's trains reach too many stations to list, those within 210, 120, or 80 minutes are, and the limit that fits is remembered" do
-    travel_to Time.utc(2026, 9, 22, 12) do
-      cache = ActiveSupport::Cache::MemoryStore.new
-      limits = []
-      connection = stub_connection(:get, lambda { |request|
-        limits << request.params["maxTravelTime"]
-        raise SearchErrors::ResponseTooLarge unless request.params["maxTravelTime"] == "80"
-
-        { "all" => [reached_stop(48.0, -122.0, 70)] }
-      })
-      assert_equal [[48.0, -122.0, 70]], rail_stations(connection, cache: cache)
-      reach = TransitousService::STATION_MINUTES.to_s
-      assert_equal [reach, "210", "120", "80"], limits
-
-      rail_stations(connection, cache: cache, station: station(id: "nearby", latitude: 47.62))
-      assert_equal [reach, "210", "120", "80", "80"], limits
-      travel 1.day + 1.minute
-      rail_stations(connection, cache: cache, station: station(id: "another"))
-      assert_equal [reach, "210", "120", "80", "80", reach, "210", "120", "80"], limits
-
-      too_many = stub_connection(:get, {}) { raise SearchErrors::ResponseTooLarge }
-      assert_raises(SearchErrors::UpstreamError) { rail_stations(too_many) }
+  test "a list of stops too long to read, or that isn't one, fails" do
+    body = JSON.generate("all" => [reached_stop(48.0, -122.0, 20)] * 20)
+    stub_const(TransitousService, :MAX_STOP_LIST_BYTES, 200) do
+      assert_raises(SearchErrors::ResponseTooLarge) { reached_stops(streaming(body)) }
+      assert_raises(SearchErrors::ResponseTooLarge) { reached_stops(stub_connection(:get, body)) }
     end
+    assert_raises(SearchErrors::UpstreamError) { reached_stops(stub_connection(:get, { "error" => "Not found" })) }
+    assert_raises(SearchErrors::UpstreamError) { reached_stops(stub_connection(:get, { "all" => [] }, status: 500)) }
   end
 
-  test "rail stations are shared for hours by searches from the same station at the same time, and failures aren't" do
+  test "stops are shared for hours by searches from the same station at the same time, and failures aren't" do
     travel_to Time.utc(2026, 9, 22, 12) do
       cache = ActiveSupport::Cache::MemoryStore.new
       calls = 0
       connection = stub_connection(:get, { "all" => [reached_stop(48.0, -122.0, 20)] }) { calls += 1 }
-      2.times { rail_stations(connection, cache: cache) }
+      2.times { reached_stops(connection, cache: cache) }
       assert_equal 1, calls
-      rail_stations(connection, cache: cache, station: station(id: "another"))
+      reached_stops(connection, cache: cache, station: station(id: "another"))
       assert_equal 2, calls
       travel 6.hours + 1.minute
-      rail_stations(connection, cache: cache)
+      reached_stops(connection, cache: cache)
       assert_equal 3, calls
 
       failing = stub_connection(:get, {}, status: 500) { calls += 1 }
-      2.times { assert_raises(SearchErrors::UpstreamError) { rail_stations(failing, cache: cache, station: station(id: "down")) } }
+      2.times { assert_raises(SearchErrors::UpstreamError) { reached_stops(failing, cache: cache, station: station(id: "down")) } }
       assert_equal 5, calls
     end
   end
 
-  test "reachable stops skip malformed entries, and a list must be one" do
-    body = { "all" => [
-      reached_stop(47.61, -122.33, 12, modes: ["BUS"], id: "3rd-ave"),
-      reached_stop(47.5, -122.0, 95.0, rides: 2, modes: ["SUBURBAN", "BUS"]),
-      reached_stop(47.4, -122.1, 40, modes: "REGIONAL_RAIL", id: "x" * 201),
-      reached_stop(91, 0, 5), reached_stop(47.5, -122.0, -1), reached_stop(47.5, -122.0, 5, rides: "1"),
-      { "place" => nil, "duration" => 5, "k" => 1 }, nil
-    ] }
-    stops = TransitousService.reachable(stub_connection(:get, body), {})
-    assert_equal [
-      { key: "3rd-ave", latitude: 47.61, longitude: -122.33, minutes: 12, rides: 1, train: false },
-      { key: [47.5, -122.0], latitude: 47.5, longitude: -122.0, minutes: 95.0, rides: 2, train: true },
-      { key: [47.4, -122.1], latitude: 47.4, longitude: -122.1, minutes: 40, rides: 1, train: true }
-    ], stops
+  test "malformed stops are left out, and a list must be one" do
+    all = [
+      reached_stop(47.61, -122.0, 12, modes: "BUS"), reached_stop(47.5, -122.0, 95.0, rides: 2, modes: %w[SUBURBAN BUS]),
+      reached_stop(91, 0, 5), reached_stop(47.4, -122.0, -1), reached_stop(47.3, -122.0, 5, rides: "1"),
+      { "place" => nil, "duration" => 5, "k" => 1 }, reached_stop(47.2, -122.0, "5")
+    ]
+    assert_equal [[47.61, -122.0, 12], [47.5, -122.0, 95.0]], reached_stops(stub_connection(:get, { "all" => all }))
     [{}, { "all" => nil }, []].each do |invalid|
-      assert_raises(SearchErrors::UpstreamError) { TransitousService.reachable(stub_connection(:get, invalid), {}) }
+      assert_raises(SearchErrors::UpstreamError) { reached_stops(stub_connection(:get, invalid)) }
     end
   end
 

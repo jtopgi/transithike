@@ -1,11 +1,11 @@
-# Cities with weekly guides to day hikes by train, in the order they're listed,
+# Cities with weekly guides to day hikes by transit, in the order they're listed,
 # and the point trips start from. A city's guide is only published once a
 # build finds at least GuideService::MIN_HIKES hikes from it. Check that a new
 # city's hikes are its own: Philadelphia's were nearly all New York's, hours
-# away, since few hiking routes are mapped near its train stations. Searches
-# use OpenStreetMap's hiking route relations, which are rare near the train
-# lines of Los Angeles, San Francisco, and Seattle, where trails are mostly
-# mapped as paths alone, and Washington, DC's weekend trains reach only a few.
+# away, since few hiking routes were mapped near its train stations, when
+# searches only counted stops trains reach. Searches use OpenStreetMap's hiking
+# route relations, which are rare around Los Angeles and San Francisco, where
+# trails are mostly mapped as paths alone.
 new-york-city:
   name: New York City
   origin: Midtown Manhattan

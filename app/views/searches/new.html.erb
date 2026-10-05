@@ -1,7 +1,7 @@
 <% content_for :structured_data do %>
   <%= structured_data({ "@context" => "https://schema.org", "@type" => "WebApplication", "name" => "TransitHike",
         "url" => root_url, "applicationCategory" => "TravelApplication", "operatingSystem" => "Any",
-        "description" => "Weekend day hikes you can reach by train from the city, with a train back the same evening.",
+        "description" => "Weekend day hikes you can reach by transit from the city, with a way back the same evening.",
         "offers" => { "@type" => "Offer", "price" => "0", "priceCurrency" => "USD" } }) %>
 <% end %>
 <section class="hero text-white">
@@ -10,10 +10,10 @@
       <div class="col-lg-8 col-xl-7">
         <div class="text-center">
           <p class="hero-kicker text-uppercase fw-semibold small mb-2">Car-free day trips</p>
-          <h1 class="display-5 fw-bold mb-3">Weekend hikes you can reach by train</h1>
+          <h1 class="display-5 fw-bold mb-3">Weekend hikes you can reach by transit</h1>
           <p class="lead mb-4">
             Tell us where in the city you live and pick Saturday or Sunday. TransitHike finds hiking routes near
-            commuter and intercity rail stations, with a train back the same evening.
+            the stops trains, buses, and ferries reach, with a way back the same evening.
           </p>
         </div>
         <div class="card search-card border-0 shadow-lg">
@@ -49,7 +49,7 @@
 
 <% if @guides.any? %>
   <section class="container pb-5" aria-labelledby="guides-heading">
-    <h2 class="h4" id="guides-heading">Day hikes by train from</h2>
+    <h2 class="h4" id="guides-heading">Day hikes by transit from</h2>
     <p class="text-body-secondary">Weekly guides to every hike we found from these cities, with timetables there and back.</p>
     <div class="d-flex flex-wrap gap-2">
       <% @guides.each do |page| %>

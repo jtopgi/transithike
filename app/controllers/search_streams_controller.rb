@@ -35,7 +35,7 @@ class SearchStreamsController < ApplicationController
     case event
     when :place
       @result = payload
-      send_event("place", heading: "Day hikes by train from #{helpers.place_label(payload)}", departure: helpers.trip_times(payload),
+      send_event("place", heading: "Day hikes by transit from #{helpers.place_label(payload)}", departure: helpers.trip_times(payload),
         time_zone: payload.departure_time.time_zone.tzinfo.name,
         stations: (render_to_string(partial: "searches/stations", locals: { result: payload }) if payload.stations.any?))
     when :checking

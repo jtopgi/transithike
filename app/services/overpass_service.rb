@@ -8,7 +8,7 @@ module OverpassService
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
   ].freeze
   # Routes are found in tiles this many degrees across that hold routes within
-  # a walk of the stations. Each tile's routes are shared by every search.
+  # a walk of the stops transit reaches. Each tile's routes are shared by every search.
   TILE_DEGREES = 0.5
   # Where tiles' routes, routes' details, and their highlights are cached, by tile or route id.
   TILE_KEY = "overpass:tile:v2:".freeze
@@ -18,6 +18,12 @@ module OverpassService
   # quickest first, so the scenery farther out is searched as well as the nearest.
   TILE_BANDS = [[120, 8], [180, 7], [Float::INFINITY, 5]].freeze
   MAX_TILES = TILE_BANDS.sum(&:last)
+  # In each band, the tiles where the land rises most come first, by how far it
+  # rises in steps of TILE_RELIEF_STEP meters up to MAX_TILE_RELIEF, then the
+  # quickest: with buses as well as trains, many flat suburbs are as quick as
+  # the hills beyond them.
+  TILE_RELIEF_STEP = 100
+  MAX_TILE_RELIEF = 400
   # Where hiking routes are plentiful, as in the Alps, a tile lists a
   # megabyte of them, so a query lists at most this many tiles.
   TILES_PER_QUERY = 4
@@ -120,12 +126,15 @@ module OverpassService
   end
 
   # The [south, west] corners of tiles holding routes within a walk of the
-  # stations, [latitude, longitude, minutes] from the origin: those with the
-  # quickest stations first, and at most each TILE_BANDS band's share of them.
-  def self.tiles(stations)
+  # stops, [latitude, longitude, minutes] from the origin, at most each
+  # TILE_BANDS band's share of them, those with the quickest stops first.
+  # relief, when given, is called with the corners of the tiles in bands with
+  # more than their share and returns how far the land rises across each, in
+  # meters by corner.
+  def self.tiles(stops, relief: nil)
     reach = TransitAccess::WALK_METERS / 110_574.0
     quickest = {}
-    stations.each do |latitude, longitude, minutes|
+    stops.each do |latitude, longitude, minutes|
       reach_east = reach / [Math.cos(latitude * Math::PI / 180), 0.01].max
       rows = tile_index(latitude - reach)..tile_index(latitude + reach)
       columns = tile_index(longitude - reach_east)..tile_index(longitude + reach_east)
@@ -134,15 +143,23 @@ module OverpassService
       end
     end
     tiles = quickest.sort_by { |tile, minutes| [minutes, tile] }
+    corner = ->((row, column)) { [row * TILE_DEGREES, column * TILE_DEGREES] }
     floor = 0
-    picked = TILE_BANDS.flat_map do |limit, share|
-      band = tiles.select { |_, minutes| minutes >= floor && minutes < limit }.first(share)
+    bands = TILE_BANDS.map do |limit, share|
+      band = tiles.select { |_, minutes| minutes >= floor && minutes < limit }
       floor = limit
-      band
+      [band, share]
+    end
+    crowded = bands.select { |band, share| band.size > share }.flat_map { |band, _| band.map { |tile, _| corner.(tile) } }
+    rises = relief && crowded.any? ? relief.call(crowded) : {}
+    picked = bands.flat_map do |band, share|
+      # Equally hilly tiles stay quickest first.
+      band.sort_by.with_index { |(tile, _), index| [-[rises[corner.(tile)].to_i, MAX_TILE_RELIEF].min / TILE_RELIEF_STEP, index] }
+        .first(share)
     end
     # Bands without enough tiles leave room for more of the quickest.
     picked += (tiles - picked).first(MAX_TILES - picked.size)
-    picked.sort_by { |tile, minutes| [minutes, tile] }.map { |(row, column), _| [row * TILE_DEGREES, column * TILE_DEGREES] }
+    picked.sort_by { |tile, minutes| [minutes, tile] }.map { |tile, _| corner.(tile) }
   end
 
   def self.tile_index(degrees)

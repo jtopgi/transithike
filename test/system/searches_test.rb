@@ -132,7 +132,7 @@ class SearchesTest < ApplicationSystemTestCase
 
   test "suggests starting points as you type and searches the one you choose, for the day you choose" do
     visit root_url
-    assert_selector "h1", text: "Weekend hikes you can reach by train"
+    assert_selector "h1", text: "Weekend hikes you can reach by transit"
     assert_button "Use my location"
     assert_equal "rgb(25, 135, 84)", page.evaluate_script(
       "getComputedStyle(document.querySelector('button[type=submit]')).backgroundColor"
@@ -144,7 +144,7 @@ class SearchesTest < ApplicationSystemTestCase
     fill_in "Starting point", with: "Pike"
     find("[role=option]", text: "Pike Place Market, Seattle, Washington, United States").click
 
-    assert_selector "h1", text: "Day hikes by train from Pike Place Market, Seattle, Washington, United States"
+    assert_selector "h1", text: "Day hikes by transit from Pike Place Market, Seattle, Washington, United States"
     assert_includes current_url, "lat=47.6"
     assert_includes current_url, "day=sunday"
     # Capybara reads non-breaking spaces as spaces.

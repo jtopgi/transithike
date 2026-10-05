@@ -1,9 +1,9 @@
 <% guide = @page.guide
-   title = "Day hikes by train from #{guide.name}"
+   title = "Day hikes by transit from #{guide.name}"
    day = @page.departure_time.strftime("%A, %B %-d") %>
 <% content_for :title, title %>
-<% content_for :description, "#{@page.hikes.size} day hikes you can reach by train from #{guide_origin(@page)}, #{guide.name}, " \
-  "with a train back the same evening: the train line, travel time, last trip back, climb, and photos of each. Updated weekly." %>
+<% content_for :description, "#{@page.hikes.size} day hikes you can reach by transit from #{guide_origin(@page)}, #{guide.name}, " \
+  "with a way back the same evening: the line, travel time, last trip back, climb, and photos of each. Updated weekly." %>
 <% content_for :canonical, guide_url(guide.slug) %>
 <% content_for :og_image, @page.hikes.filter_map { |hike| hike.photos.first&.dig(:image_url) }.first %>
 <% content_for :structured_data do %>
@@ -11,18 +11,18 @@
         "numberOfItems" => @page.hikes.size,
         "itemListElement" => @page.hikes.each_with_index.map { |hike, index|
           { "@type" => "ListItem", "position" => index + 1, "name" => hike.title, "url" => guide_hike_url(guide.slug, hike.slug) } } }) %>
-  <%= structured_data(breadcrumbs_data([["TransitHike", root_url], ["Day hikes by train", guides_url], [guide.name, guide_url(guide.slug)]])) %>
+  <%= structured_data(breadcrumbs_data([["TransitHike", root_url], ["Day hikes by transit", guides_url], [guide.name, guide_url(guide.slug)]])) %>
 <% end %>
 <section class="results-hero text-white">
   <div class="container py-4">
     <nav aria-label="Breadcrumb" class="small mb-2">
-      <%= link_to "Day hikes by train", guides_path, class: "link-light" %> › <%= guide.name %>
+      <%= link_to "Day hikes by transit", guides_path, class: "link-light" %> › <%= guide.name %>
     </nav>
     <h1 class="h2 fw-bold mb-2"><%= title %></h1>
     <p class="mb-0 results-subtitle">
-      <%= pluralize(@page.hikes.size, "hike") %> you can reach by train from <%= guide_origin(@page) %> on a Saturday, with a train
-      back the same evening and time to hike all of each, most scenic first. Train times are for <%= day %>, and the
-      guide is updated every week.
+      <%= pluralize(@page.hikes.size, "hike") %> you can reach by transit from <%= guide_origin(@page) %> on a Saturday, with a way
+      back the same evening and time to hike all of each, most scenic first. Times are for <%= day %>, and the guide
+      is updated every week.
     </p>
   </div>
 </section>
@@ -48,9 +48,9 @@
     <%= render partial: "guides/hike_card", collection: @page.hikes, as: :hike, locals: { page: @page } %>
   </div>
   <p class="small text-body-secondary mt-4 mb-0">
-    Hikes are mapped hiking routes from OpenStreetMap within a 30-minute walk of stations that trains reach within
-    <%= duration_label(TransitousService::STATION_MINUTES * 60) %> (less where they reach too many to list), timed at
-    about 2 miles an hour with breaks, out and back unless they loop or end near transit home. Times
+    Hikes are mapped hiking routes from OpenStreetMap within a 30-minute walk of stops that trains, buses, ferries, and
+    lifts reach within <%= duration_label(TransitousService::STATION_MINUTES * 60) %>, timed at about 2 miles an hour
+    with breaks, out and back unless they loop or end near transit home. Times
     come from Transitous for <%= day %>; check them before you go. Routes start at their first mapped point, which may
     not be an official trailhead. Updated <%= @page.built_at.in_time_zone(@page.departure_time.time_zone).strftime("%B %-d, %Y") %>.
   </p>

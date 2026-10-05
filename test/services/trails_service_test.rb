@@ -52,7 +52,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
       @major
     end
 
-    def rail_stations(origin:, departure_time:)
+    def reached_stops(origin:, departure_time:)
       @station_requests << departure_time
       stations = @stations.is_a?(Hash) ? @stations.fetch(origin.name) : @stations
       raise stations if stations.is_a?(Exception)
@@ -138,23 +138,25 @@ class TrailsServiceTest < ActiveSupport::TestCase
   class FakeHiking
     FIRST_TILE = [47.5, -122.5].freeze
 
-    attr_reader :access, :batches, :checked_before, :reliefs, :stations, :tile_requests, :threads
+    attr_reader :access, :batches, :checked_before, :reliefs, :stations, :tile_relief, :tile_requests, :threads
 
     # stuck names the lookups that wait for release: :first_tiles, :other_tiles, :trails_for, or :highlights.
     # A lookup of routes including a failing one fails, and unstored routes are left out of a lookup that finds
     # others, as those stored are where Overpass can't be reached, saying so in its failures, until it's been
     # looked up busy times.
     def initialize(trails, far: [], highlights: {}, failing: [], unstored: [], busy: Float::INFINITY, release: nil,
-      stuck: [:highlights], tiles_failing: [])
+      stuck: [:highlights], tiles_failing: [], crowded: false)
       @trails, @far, @highlights, @failing, @release, @stuck = trails, far, highlights, failing, release, stuck
-      @unstored, @busy, @tiles_failing = unstored, busy, tiles_failing
+      @unstored, @busy, @tiles_failing, @crowded = unstored, busy, tiles_failing, crowded
       @batches, @threads, @tile_requests, @reliefs, @checked_before = [], [], Concurrent::Array.new, [], []
     end
 
-    # One tile, or five when there are routes in the others.
-    def tiles(stations)
+    # One tile, or five when there are routes in the others; crowded ones are picked knowing their relief.
+    def tiles(stations, relief: nil)
       @stations = stations
-      (0...(@far.empty? ? 1 : 5)).map { |index| [47.5, -122.5 + index * 0.5] }
+      corners = (0...(@far.empty? ? 1 : 5)).map { |index| [47.5, -122.5 + index * 0.5] }
+      @tile_relief = relief.call(corners) if @crowded
+      corners
     end
 
     # Tiles failing names the lookups, :first_tiles or :other_tiles, some of whose tiles don't load.
@@ -314,6 +316,14 @@ class TrailsServiceTest < ActiveSupport::TestCase
     failing = FakeElevation.new(relief: { near.osm_id => SearchErrors::UpstreamError.new("down") })
     assert_equal %w[near], search(transit: transit, hiking: hiking, elevation: failing).trails.map(&:name)
     assert_equal [{}, {}], hiking.reliefs
+  end
+
+  test "tiles in bands of travel time with more than their share are picked knowing how far the land rises across them" do
+    hiking = FakeHiking.new([trail("a")], crowded: true)
+    elevation = FakeElevation.new(relief: { [47.5, -122.5] => 300 })
+    search(transit: FakeTransit.new(trips: { "a" => minutes(30) }), hiking: hiking, elevation: elevation)
+    assert_equal({ [47.5, -122.5] => 300 }, hiking.tile_relief)
+    assert_includes elevation.relief_lookups, [[47.5, -122.5]]
   end
 
   test "a hike's location is its town and region, with its country when it isn't the starting point's" do
@@ -1086,7 +1096,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
   test "a station's search a visitor waits on goes ahead of background work, and searching again runs in the background" do
     priorities = Concurrent::Array.new
     transit = FakeTransit.new(trips: { "a" => minutes(30) })
-    transit.define_singleton_method(:rail_stations) { |**options| priorities << ProviderSlots.priority && super(**options) }
+    transit.define_singleton_method(:reached_stops) { |**options| priorities << ProviderSlots.priority && super(**options) }
     background = HeldPool.new
     visit = -> { ProviderSlots.with_priority(ProviderSlots::VISITOR) { station_search(FakeHiking.new([trail("a")]), transit: transit, background_pool: background) } }
     assert_equal [["a"], true], shown(visit.call)

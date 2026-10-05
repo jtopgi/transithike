@@ -21,13 +21,13 @@ class GuidesTest < ActionDispatch::IntegrationTest
     get guide_path("new-york-city")
 
     assert_response :success
-    assert_select "title", "Day hikes by train from New York City · TransitHike"
-    assert_select "h1", "Day hikes by train from New York City"
-    assert_select "link[rel=canonical][href='http://www.example.com/day-hikes-by-train/new-york-city']"
+    assert_select "title", "Day hikes by transit from New York City · TransitHike"
+    assert_select "h1", "Day hikes by transit from New York City"
+    assert_select "link[rel=canonical][href='http://www.example.com/day-hikes-by-transit/new-york-city']"
     assert_select "meta[name=robots]", count: 0
-    assert_select "meta[name=description][content^='2 day hikes you can reach by train from Midtown Manhattan, New York City']"
+    assert_select "meta[name=description][content^='2 day hikes you can reach by transit from Midtown Manhattan, New York City']"
     assert_select "meta[property='og:image'][content='https://upload.wikimedia.org/thumb/Breakneck.jpg/500px-Breakneck.jpg']"
-    assert_select ".results-subtitle", text: /Train times are for Saturday, October 10/
+    assert_select ".results-subtitle", text: /Times are for Saturday, October 10/
     # At a glance: the closest hike, the biggest climb, and the latest trip home.
     facts = css_select(".guide-facts").sole.text.squish
     assert_match(/Closest White Trail \(Tarrytown Lakes\), about 1 h each way/, facts)
@@ -36,7 +36,7 @@ class GuidesTest < ActionDispatch::IntegrationTest
     cards = css_select("article.trail-card")
     assert_equal ["Breakneck Ridge Trail", "White Trail (Tarrytown Lakes)"], cards.map { |card| card.at_css("h2").text.strip }
     breakneck = cards.first
-    assert breakneck.at_css("a[href='/day-hikes-by-train/new-york-city/breakneck-ridge-trail']")
+    assert breakneck.at_css("a[href='/day-hikes-by-transit/new-york-city/breakneck-ridge-trail']")
     assert_match(/Each way 1 h 28 min Hudson Line train to Breakneck Ridge/, breakneck.text.squish)
     assert_match(/Hike ≈ 5.0 mi out and back/, breakneck.text.squish)
     # The last trip back leaves before dark, at 6:05 PM, rather than at 8:50 PM.
@@ -48,9 +48,9 @@ class GuidesTest < ActionDispatch::IntegrationTest
     # Without a photo, a card previews its route once it scrolls into view.
     assert cards.last.at_css(".trail-map[data-lazy-map][data-path]")
     list = structured_data.fetch("ItemList")
-    assert_equal [2, "http://www.example.com/day-hikes-by-train/new-york-city/breakneck-ridge-trail"],
+    assert_equal [2, "http://www.example.com/day-hikes-by-transit/new-york-city/breakneck-ridge-trail"],
       [list["numberOfItems"], list["itemListElement"].first["url"]]
-    assert_equal ["TransitHike", "Day hikes by train", "New York City"], structured_data.fetch("BreadcrumbList")["itemListElement"].pluck("name")
+    assert_equal ["TransitHike", "Day hikes by transit", "New York City"], structured_data.fetch("BreadcrumbList")["itemListElement"].pluck("name")
   end
 
   test "a guide built from stations says where trips leave from" do
@@ -61,8 +61,8 @@ class GuidesTest < ActionDispatch::IntegrationTest
     write_guide(data)
 
     get guide_path("new-york-city")
-    assert_select "meta[name=description][content^='2 day hikes you can reach by train from Grand Central and Hoboken, New York City']"
-    assert_select ".results-subtitle", text: /you can reach by train from Grand Central and Hoboken on a Saturday/
+    assert_select "meta[name=description][content^='2 day hikes you can reach by transit from Grand Central and Hoboken, New York City']"
+    assert_select ".results-subtitle", text: /you can reach by transit from Grand Central and Hoboken on a Saturday/
     get guide_hike_path("new-york-city", "breakneck-ridge-trail")
     assert_select ".results-subtitle", text: /From Grand Central, it's about 1 h 28 min each way/
     assert_select "caption", text: "Trips there from Grand Central"
@@ -77,8 +77,8 @@ class GuidesTest < ActionDispatch::IntegrationTest
     data[:hikes].first.merge!(title: "Pilgrims' Way & Downs")
     write_guide(data)
     get guide_hike_path("new-york-city", "breakneck-ridge-trail")
-    assert_select "title", "Pilgrims' Way & Downs by train from New York City · TransitHike"
-    assert_select "meta[property='og:title'][content=?]", "Pilgrims' Way & Downs by train from New York City"
+    assert_select "title", "Pilgrims' Way & Downs by transit from New York City · TransitHike"
+    assert_select "meta[property='og:title'][content=?]", "Pilgrims' Way & Downs by transit from New York City"
     refute_includes response.body, "&amp;#39;"
   end
 
@@ -87,7 +87,7 @@ class GuidesTest < ActionDispatch::IntegrationTest
     get guide_hike_path("new-york-city", "breakneck-ridge-trail")
 
     assert_response :success
-    assert_select "title", "Breakneck Ridge Trail by train from New York City · TransitHike"
+    assert_select "title", "Breakneck Ridge Trail by transit from New York City · TransitHike"
     assert_select "h1", "Breakneck Ridge Trail"
     summary = "Breakneck Ridge Trail is a 5.0-mile hike near Cold Spring, New York (out and back) that climbs about 1,250 ft. " \
       "From Midtown Manhattan, " \
@@ -96,7 +96,7 @@ class GuidesTest < ActionDispatch::IntegrationTest
     assert_select ".results-subtitle", summary
     assert_select "meta[name=description][content=?]", summary
     assert_select ".trail-location", "📍 Cold Spring, New York"
-    assert_select "link[rel=canonical][href='http://www.example.com/day-hikes-by-train/new-york-city/breakneck-ridge-trail']"
+    assert_select "link[rel=canonical][href='http://www.example.com/day-hikes-by-transit/new-york-city/breakneck-ridge-trail']"
     assert_select "[data-hike-map][data-path]"
     assert_match(/Sunset 6:23 PM hike done by then ↩️ Last trip back 6:05 PM before dark, from Cold Spring\z/, css_select(".hike-facts").sole.text.squish)
     assert_includes css_select(".hike-facts").sole.text.squish, "🔈 Noise < 45 dB 60–70 dB in places"
@@ -109,7 +109,7 @@ class GuidesTest < ActionDispatch::IntegrationTest
     assert_select "tr.timetable-last", text: /6:05 PM.*Last/m
     assert_select "td", text: /Hudson Line from Grand Central to Breakneck Ridge/
     assert_select ".hike-photo img[alt='Breakneck Ridge view']"
-    assert_select "a[href='/day-hikes-by-train/new-york-city/white-trail-tarrytown-lakes']", text: "White Trail (Tarrytown Lakes)"
+    assert_select "a[href='/day-hikes-by-transit/new-york-city/white-trail-tarrytown-lakes']", text: "White Trail (Tarrytown Lakes)"
     attraction = structured_data.fetch("TouristAttraction")
     assert_equal ["Breakneck Ridge Trail", 41.443, true], [attraction["name"], attraction.dig("geo", "latitude"), attraction["isAccessibleForFree"]]
 
@@ -125,10 +125,10 @@ class GuidesTest < ActionDispatch::IntegrationTest
   test "the guides, the home page, and what search engines and AI assistants read list each city's guide" do
     write_guide
     get guides_path
-    assert_select "h2 a[href='/day-hikes-by-train/new-york-city']", text: "Day hikes by train from New York City"
+    assert_select "h2 a[href='/day-hikes-by-transit/new-york-city']", text: "Day hikes by transit from New York City"
 
     get root_path
-    assert_select "a.btn[href='/day-hikes-by-train/new-york-city']", text: "New York City"
+    assert_select "a.btn[href='/day-hikes-by-transit/new-york-city']", text: "New York City"
     assert_select "link[rel=canonical][href='http://www.example.com/']"
     assert_select "meta[property='og:image'][content='http://www.example.com/og-image.png']"
     assert_equal "WebApplication", structured_data.keys.sole
@@ -136,18 +136,27 @@ class GuidesTest < ActionDispatch::IntegrationTest
     get sitemap_path
     assert_equal "application/xml", response.media_type
     urls = Nokogiri::XML(response.body).remove_namespaces!.css("url").to_h { |url| [url.at_css("loc").text, url.at_css("lastmod")&.text] }
-    assert_equal({ "http://www.example.com/" => nil, "http://www.example.com/day-hikes-by-train" => "2026-10-07T09:00:00Z",
-      "http://www.example.com/day-hikes-by-train/new-york-city" => "2026-10-07T09:00:00Z",
-      "http://www.example.com/day-hikes-by-train/new-york-city/breakneck-ridge-trail" => "2026-10-07T09:00:00Z",
-      "http://www.example.com/day-hikes-by-train/new-york-city/white-trail-tarrytown-lakes" => "2026-10-07T09:00:00Z" }, urls)
+    assert_equal({ "http://www.example.com/" => nil, "http://www.example.com/day-hikes-by-transit" => "2026-10-07T09:00:00Z",
+      "http://www.example.com/day-hikes-by-transit/new-york-city" => "2026-10-07T09:00:00Z",
+      "http://www.example.com/day-hikes-by-transit/new-york-city/breakneck-ridge-trail" => "2026-10-07T09:00:00Z",
+      "http://www.example.com/day-hikes-by-transit/new-york-city/white-trail-tarrytown-lakes" => "2026-10-07T09:00:00Z" }, urls)
 
     get llms_path
     assert_equal "text/plain", response.media_type
-    assert_includes response.body, "- [Day hikes by train from New York City](http://www.example.com/day-hikes-by-train/new-york-city): " \
+    assert_includes response.body, "- [Day hikes by transit from New York City](http://www.example.com/day-hikes-by-transit/new-york-city): " \
       "2 hikes from Midtown Manhattan, including Breakneck Ridge Trail and White Trail (Tarrytown Lakes). Updated 2026-10-07."
     # AI assistants are asked to link people to the page they used.
     assert_includes response.body, "Please give people a link to the page you used"
     assert_includes response.body, "http://www.example.com/search?origin=Brooklyn&day=saturday"
+  end
+
+  test "guides' addresses from when they were by train lead to the new ones for good" do
+    { "/day-hikes-by-train" => "/day-hikes-by-transit", "/day-hikes-by-train/new-york-city" => "/day-hikes-by-transit/new-york-city",
+      "/day-hikes-by-train/new-york-city/breakneck-ridge-trail" => "/day-hikes-by-transit/new-york-city/breakneck-ridge-trail" }.each do |old, new|
+      get old
+      assert_response :moved_permanently
+      assert_redirected_to new
+    end
   end
 
   test "crawlers may read every page but not the lookups pages make, which would plan trips for them" do

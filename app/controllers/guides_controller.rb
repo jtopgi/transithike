@@ -1,4 +1,4 @@
-# Guides to day hikes by train from big cities, which search engines and AI
+# Guides to day hikes by transit from big cities, which search engines and AI
 # assistants can read: built weekly, so pages need no lookups.
 class GuidesController < ApplicationController
   def index

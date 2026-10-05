@@ -1,4 +1,4 @@
-# A search for hikes by train from one station on one day, shared by every
+# A search for hikes by transit from one station on one day, shared by every
 # search that starts there while it runs, and kept for later ones once done.
 # It runs in the background, so it finishes, and is kept, even when the
 # visitors who started it leave. Kept searches are served at once, and searched

@@ -81,6 +81,24 @@ class OverpassServiceTest < ActiveSupport::TestCase
     assert_equal [[15, 47.0], [3, 47.5], [2, 48.0]], few.group_by(&:first).map { |row, band| [band.size, row] }
   end
 
+  test "in each band of travel time with more tiles than its share, those where the land rises most are searched first" do
+    stations = [60, 130, 190].each_with_index.flat_map do |minutes, band|
+      (0...15).map { |index| centered(band, index, minutes + index) }
+    end
+    asked = []
+    # The slowest five within two hours are in the hills.
+    relief = lambda do |corners|
+      asked << corners
+      corners.to_h { |south, west| [[south, west], south == 47.0 && west >= -117.0 ? 600 : 90] }
+    end
+    near = OverpassService.tiles(stations, relief: relief).select { |south, _| south == 47.0 }.map(&:last)
+    assert_equal [-122.0, -121.5, -121.0, -117.0, -116.5, -116.0, -115.5, -115.0], near.sort
+    assert_equal 45, asked.sole.size
+
+    # Bands with no more than their share don't need it.
+    assert_equal [[47.0, -122.0]], OverpassService.tiles([centered(0, 0, 60)], relief: ->(_) { flunk "looked up" })
+  end
+
   test "routes in tiles are found by querying the region around them, and each tile's routes are kept and refreshed" do
     travel_to Time.utc(2026, 9, 22, 12) do
       cache = ActiveSupport::Cache::MemoryStore.new
