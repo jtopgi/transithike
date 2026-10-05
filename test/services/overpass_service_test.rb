@@ -338,6 +338,23 @@ class OverpassServiceTest < ActiveSupport::TestCase
     assert_equal OverpassService::URLS, OverpassService.urls(cache)
   end
 
+  test "a lookup another search waits on is at least as urgent as that search" do
+    other = [Concurrent::Promises.resolvable_future, ProviderSlots::Shared.new(ProviderSlots::BACKGROUND)]
+    OverpassService::LOOKING_UP.put_if_absent("tile:shared", other)
+    waiting = Thread.new do
+      ProviderSlots.with_priority(ProviderSlots::SEARCH) do
+        OverpassService.shared(["tile:shared"], ActiveSupport::Cache::MemoryStore.new) { {} }
+      end
+    end
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+    sleep 0.01 until other.last.provider_priority == ProviderSlots::SEARCH || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+    assert_equal ProviderSlots::SEARCH, other.last.provider_priority
+    other.first.fulfill("tile:shared" => [1])
+    assert_equal({ "tile:shared" => [1] }, waiting.value)
+  ensure
+    OverpassService::LOOKING_UP.delete("tile:shared")
+  end
+
   test "queries wait for one of the process's two slots, highlights don't wait, and cached lookups need none" do
     slots = Rails.configuration.x.overpass_slots
     cache = ActiveSupport::Cache::MemoryStore.new

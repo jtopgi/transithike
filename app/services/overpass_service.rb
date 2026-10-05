@@ -209,10 +209,13 @@ module OverpassService
     return if tile_of.empty?
 
     TrailsService.start(TrailsService.overpass_pool) do
-      tile_of.keys.sort.each_slice(TILES_PER_QUERY) do |keys|
-        shared(keys, cache) { |own| fetch_tiles(tile_of.values_at(*own), connections, cache) }
-      rescue SearchErrors::UpstreamError
-        next
+      # No one waits on it, so it waits behind those who do.
+      ProviderSlots.with_priority(ProviderSlots::BACKGROUND) do
+        tile_of.keys.sort.each_slice(TILES_PER_QUERY) do |keys|
+          shared(keys, cache) { |own| fetch_tiles(tile_of.values_at(*own), connections, cache) }
+        rescue SearchErrors::UpstreamError
+          next
+        end
       end
     end
   end
@@ -222,23 +225,25 @@ module OverpassService
   # search is looking up, and returns what it found for them, and then those
   # another search is looking up are waited for, at most SHARED_WAIT_SECONDS,
   # and read from the cache when that search stored them without saying so in
-  # time. Keys whose lookup fails or takes longer are left out.
+  # time. Keys whose lookup fails or takes longer are left out. Another
+  # search's lookup is at least as urgent as the searches waiting on it.
   def self.shared(keys, cache)
     keys = keys.uniq
-    mine = Concurrent::Promises.resolvable_future
+    mine = [Concurrent::Promises.resolvable_future, ProviderSlots::Shared.new(ProviderSlots.urgency)]
     others = keys.filter_map { |key| (other = LOOKING_UP.put_if_absent(key, mine)) && [key, other] }.to_h
     own = keys - others.keys
     found = {}
     begin
-      found = yield(own).to_h if own.any?
+      found = ProviderSlots.with_priority(mine.last) { yield(own).to_h } if own.any?
     ensure
       own.each { |key| LOOKING_UP.delete_pair(key, mine) }
-      mine.fulfill(found)
+      mine.first.fulfill(found)
     end
     return found if others.empty?
 
-    TrailsService.settle(others.values.uniq, timeout: SHARED_WAIT_SECONDS)
-    others.each do |key, other|
+    others.each_value { |(_, urgency)| urgency.raise_to(ProviderSlots.priority) }
+    TrailsService.settle(others.values.map(&:first).uniq, timeout: SHARED_WAIT_SECONDS)
+    others.each do |key, (other, _)|
       value = other.value(0) if other.fulfilled?
       found[key] = value[key] if value&.key?(key)
     end

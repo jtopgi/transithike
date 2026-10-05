@@ -125,7 +125,8 @@ test Overpass connectivity from your deployment before launching.
   Overpass is busy, is tried again in halves after a pause, and a half that still
   can't be is skipped; a search fails only when nothing is found.
 - **Shared searches.** Each major station's search runs in the background, at
-  most three at once per server process, and is shared by every search that
+  most three at once per server process for searches visitors wait on and one
+  more searching again in the background, and is shared by every search that
   starts there at the same time, so everyone near Grand Central waits on the same
   one. It finishes, and is kept in the database for 8 days, even when the visitor
   who started it leaves. Kept searches show at once, and once 12 hours old (10
@@ -137,9 +138,9 @@ test Overpass connectivity from your deployment before launching.
   the day, while the day is searched in the background: timetables rarely change
   from one week to the next, and each card plans its trips for the day. Searches
   no visitor waits on, searching again and keeping searches ready, run one at a
-  time on threads of their own, so a visitor's search starts at once, and their
-  requests to Overpass and Transitous wait behind those of visitors and of
-  searches visitors wait on. Background searches wait while two others are
+  time on threads of their own, so a visitor's search isn't queued behind them,
+  and their requests to Overpass and Transitous wait behind those of visitors
+  and of searches visitors wait on, until a visitor waits on them too. Background searches wait while two others are
   queued, and a station isn't searched again within 10 minutes of the last try. A hike that
   several stations reach shows from the one that gets there soonest, counting
   the trip across the city to each station at about 15 km/h, and a card is
@@ -360,9 +361,9 @@ major station it asks for the stations its trains reach with the one-to-all API
 batch, for every route's trip there, the trip there by city transit, and the
 latest trip back in three requests to the experimental one-to-many API. Trips
 follow timetables that hardly change until the day, so trips more than 12 hours
-ahead are cached for a day, longer than a kept search goes before the station is
-searched again, so cards show the trips their search planned at once, and the
-day's for 15 minutes. If that API fails,
+ahead are cached until 12 hours before they leave, for at most a day, longer
+than a kept search goes before the station is searched again, so cards show the
+trips their search planned at once, and the day's for 15 minutes. If that API fails,
 it plans up to 15 of the nearest routes one at a time. Once a search is
 done, each card the visitor scrolls to plans its trip there, then its trips back
 the same way from the end of the hike until the last one in one timetable

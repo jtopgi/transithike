@@ -12,7 +12,11 @@ class ProviderSlots
 
   # How urgent the current thread's requests are, BACKGROUND unless it says.
   def self.priority
-    urgency = Thread.current[KEY]
+    priority_of(Thread.current[KEY])
+  end
+
+  # The priority an urgency says now.
+  def self.priority_of(urgency)
     urgency = urgency.provider_priority if urgency.respond_to?(:provider_priority)
     urgency || BACKGROUND
   end
@@ -33,8 +37,27 @@ class ProviderSlots
     Thread.current[KEY] = previous
   end
 
+  # An urgency that others waiting on its work can raise, as when a visitor's
+  # search waits on a lookup a background search started.
+  class Shared
+    def initialize(urgency)
+      @urgency, @raised = urgency, Concurrent::AtomicReference.new(BACKGROUND)
+    end
+
+    def provider_priority
+      [ProviderSlots.priority_of(@urgency), @raised.get].min
+    end
+
+    def raise_to(priority)
+      @raised.update { |raised| [raised, priority].min }
+    end
+  end
+
+  # A request waiting for slots, with what its urgency comes from.
+  Waiter = Struct.new(:urgency)
+
   def initialize(count)
-    @free, @waiting, @lock, @turn = count, Array.new(BACKGROUND + 1, 0), Mutex.new, ConditionVariable.new
+    @free, @waiters, @lock, @turn = count, Set.new.compare_by_identity, Mutex.new, ConditionVariable.new
   end
 
   # Takes permits slots, once no more urgent request is waiting, waiting at
@@ -63,18 +86,20 @@ class ProviderSlots
 
   # How many requests are waiting for slots.
   def waiting
-    @lock.synchronize { @waiting.sum }
+    @lock.synchronize { @waiters.size }
   end
 
   private
 
-  # Waits until deadline, or as long as it takes without one.
+  # Waits until deadline, or as long as it takes without one. Each waiter's
+  # priority is read each time it's compared, so one that became more urgent
+  # while waiting, as when a visitor comes to wait on its search, goes ahead.
   def take(permits, deadline)
-    priority = self.class.priority
+    waiter = Waiter.new(Thread.current[KEY])
     @lock.synchronize do
-      @waiting[priority] += 1
+      @waiters << waiter
       begin
-        until @free >= permits && @waiting.first(priority).sum.zero?
+        until @free >= permits && first?(waiter)
           left = deadline && deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
           return false if left && !left.positive?
 
@@ -83,10 +108,16 @@ class ProviderSlots
         @free -= permits
         true
       ensure
-        @waiting[priority] -= 1
+        @waiters.delete(waiter)
         # Less urgent requests may go ahead once this one isn't waiting.
         @turn.broadcast
       end
     end
+  end
+
+  # Whether no request waiting is more urgent than the waiter.
+  def first?(waiter)
+    priority = self.class.priority_of(waiter.urgency)
+    @waiters.none? { |other| self.class.priority_of(other.urgency) < priority }
   end
 end

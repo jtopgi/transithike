@@ -81,9 +81,10 @@ module TransitousService
   # Legs in these modes are on foot or by private vehicle, not on transit.
   STREET_MODES = %w[WALK BIKE RENTAL CAR HGV CAR_PARKING CAR_DROPOFF ODM RIDE_SHARING FLEX].freeze
   # Trips follow the timetable, which hardly changes until the day, so trips
-  # more than TRIP_AHEAD before they leave are shared for TRIP_AHEAD_CACHE_TTL,
-  # longer than kept searches go before they're searched again, so cards plan
-  # the trips their search did at once, and the day's for TRIP_CACHE_TTL.
+  # more than TRIP_AHEAD before they leave are shared until then, for at most
+  # TRIP_AHEAD_CACHE_TTL, longer than kept searches go before they're searched
+  # again, so cards plan the trips their search did at once, and the day's for
+  # TRIP_CACHE_TTL.
   TRIP_CACHE_TTL = 15.minutes
   TRIP_AHEAD = 12.hours
   TRIP_AHEAD_CACHE_TTL = 1.day
@@ -93,7 +94,8 @@ module TransitousService
 
   # How long trips that leave at time are shared.
   def self.trip_cache_ttl(time)
-    time > TRIP_AHEAD.from_now ? TRIP_AHEAD_CACHE_TTL : TRIP_CACHE_TTL
+    ahead = time - TRIP_AHEAD.from_now
+    ahead.positive? ? ahead.seconds.clamp(TRIP_CACHE_TTL, TRIP_AHEAD_CACHE_TTL) : TRIP_CACHE_TTL
   end
 
   # The time zone and a readable area for coordinates, e.g.

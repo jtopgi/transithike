@@ -29,6 +29,37 @@ class ProviderSlotsTest < ActiveSupport::TestCase
     assert_equal 1, slots.available_permits
   end
 
+  test "a request that became more urgent while waiting, as when a visitor comes to wait on its search, goes ahead" do
+    slots = ProviderSlots.new(1)
+    slots.acquire
+    search = Struct.new(:provider_priority).new(ProviderSlots::BACKGROUND)
+    served = Queue.new
+    threads = [search, ProviderSlots::SEARCH].each_with_index.map do |urgency, index|
+      thread = Thread.new do
+        ProviderSlots.with_priority(urgency) do
+          served << ProviderSlots.priority if slots.try_acquire(1, 5)
+          slots.release
+        end
+      end
+      until_waiting(slots, index + 1)
+      thread
+    end
+    search.provider_priority = ProviderSlots::VISITOR
+    slots.release
+    threads.each(&:join)
+
+    assert_equal [ProviderSlots::VISITOR, ProviderSlots::SEARCH], Array.new(2) { served.pop }
+  end
+
+  test "an urgency others wait on is raised to theirs, and never lowered" do
+    shared = ProviderSlots::Shared.new(ProviderSlots::BACKGROUND)
+    assert_equal ProviderSlots::BACKGROUND, shared.provider_priority
+    shared.raise_to(ProviderSlots::SEARCH)
+    shared.raise_to(ProviderSlots::BACKGROUND)
+    assert_equal ProviderSlots::SEARCH, shared.provider_priority
+    assert_equal ProviderSlots::VISITOR, ProviderSlots::Shared.new(ProviderSlots::VISITOR).tap { |own| own.raise_to(ProviderSlots::SEARCH) }.provider_priority
+  end
+
   test "requests give up when no slot comes free in time, and then less urgent ones go ahead" do
     slots = ProviderSlots.new(2)
     assert slots.try_acquire(2)

@@ -20,7 +20,7 @@ Rails.application.config.x.trips_planned = Concurrent::AtomicFixnum.new
 Rails.application.config.x.station_pool = Concurrent::FixedThreadPool.new(3)
 # Searches no visitor waits on, refreshing kept ones and keeping the guide
 # cities' ready, run one at a time on a pool of their own, and plan trips on
-# another, so they never hold up searches visitors wait on.
+# another, so searches visitors wait on aren't queued behind them.
 Rails.application.config.x.background_pool = Concurrent::FixedThreadPool.new(1)
 Rails.application.config.x.background_trip_pool = Concurrent::FixedThreadPool.new(3)
 # Transitous answers at most three requests at once from a client, and turns
