@@ -115,7 +115,8 @@
     From each of up to <%= TransitousService::MAX_STATIONS %> major stations within
     <%= TransitousService::STATION_RADII.first / 1000 %> km, each search looks for mapped hiking routes within a
     <%= TransitAccess::MAX_WALK_MINUTES %>-minute walk of the stations its trains reach within
-    <%= duration_label(TransitousService::STATION_MINUTES * 60) %>, then checks trips for up to
+    <%= duration_label(TransitousService::STATION_MINUTES * 60) %> (less where they reach too many to list), then
+    checks trips for up to
     <%= OverpassService::MAX_TRANSIT_ROUTES %> hikes of <%= OverpassService::MIN_LENGTH_MILES.round %> to
     <%= OverpassService::MAX_LENGTH_MILES %> miles that aren't mostly paved. Searches from a station are shared with
     everyone who searches near it.

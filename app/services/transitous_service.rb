@@ -59,9 +59,10 @@ module TransitousService
   BOARD_WINDOW = 2.hours
   STATIONS_CACHE_TTL = 7.days
   # Where a station's trains reach too many stations to list in the time left,
-  # as across Switzerland, stations within 120 or 80 minutes of boarding are
+  # as from Paris, London, Berlin, or Munich, or across Switzerland, stations
+  # within the longest of 210, 120, or 80 minutes of boarding that fits are
   # listed instead, and searches remember for a day which limit fits an area.
-  RIDE_LIMITS = [nil, 120, 80].freeze
+  RIDE_LIMITS = [nil, 210, 120, 80].freeze
   RIDE_LIST_CACHE_TTL = 1.day
   # Weekend timetables rarely change, so a day's stations are shared for hours.
   RAIL_CACHE_TTL = 6.hours
@@ -268,7 +269,7 @@ module TransitousService
   # The stops trains reach from the station within the first RIDE_LIMITS
   # limit whose list isn't too long.
   def self.rides(station, departure_time, connection, cache)
-    list_key = "transitous:ride-list:v1:#{station.latitude.round(1)}:#{station.longitude.round(1)}"
+    list_key = "transitous:ride-list:v2:#{station.latitude.round(1)}:#{station.longitude.round(1)}"
     first = cache.read(list_key).to_i
     params = { one: station.id || format("%.7f,%.7f", station.latitude, station.longitude),
       time: departure_time.utc.iso8601, transitModes: TRAIN_MODES.join(",") }

@@ -236,7 +236,8 @@ module TrailsService
       relief = relief.merge(reliefs(more, elevation))
       routes = (routes + more).uniq { |route| route[:id] }
     end
-    search.check(hiking.pick(routes, access: access, relief: relief))
+    # Counting the routes checked, so the far ones it keeps room for are checked too.
+    search.check(hiking.pick(routes, access: access, relief: relief, checked: search.checked))
     result.complete = false if failures.any?
     raise search.error if result.trails.empty? && search.error
     return result if result.trails.empty?
@@ -248,7 +249,7 @@ module TrailsService
 
   # Checks routes in batches, up to OverpassService::MAX_TRANSIT_ROUTES per search.
   class Search
-    attr_reader :lookups, :error
+    attr_reader :lookups, :error, :checked
 
     def initialize(station, place, access, result, transit, hiking, elevation, noise, on_found)
       @station, @place, @access, @result, @transit, @hiking, @on_found = station, place, access, result, transit, hiking, on_found
@@ -508,9 +509,10 @@ module TrailsService
   end
 
   # Seconds on transit there and back. Coming back the same way takes about as
-  # long as going; each card shows the planned trips once they're looked up.
+  # long as going, though no hike shown rides over MAX_ROUND_TRIP_HOURS; each
+  # card shows the planned trips once they're looked up.
   def self.round_trip_seconds(trail)
-    trail.duration * 2
+    [trail.duration * 2, MAX_ROUND_TRIP_HOURS * 3600].min
   end
 
   # How far the hike goes: once along a loop or to the far end, and twice out and back.

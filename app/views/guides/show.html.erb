@@ -49,7 +49,8 @@
   </div>
   <p class="small text-body-secondary mt-4 mb-0">
     Hikes are mapped hiking routes from OpenStreetMap within a 30-minute walk of stations that trains reach within
-    3½ hours, timed at about 2 miles an hour with breaks, out and back unless they loop or end near transit home. Times
+    <%= duration_label(TransitousService::STATION_MINUTES * 60) %> (less where they reach too many to list), timed at
+    about 2 miles an hour with breaks, out and back unless they loop or end near transit home. Times
     come from Transitous for <%= day %>; check them before you go. Routes start at their first mapped point, which may
     not be an official trailhead. Updated <%= @page.built_at.in_time_zone(@page.departure_time.time_zone).strftime("%B %-d, %Y") %>.
   </p>

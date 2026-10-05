@@ -406,6 +406,13 @@ class OverpassServiceTest < ActiveSupport::TestCase
 
     # Without enough near routes, more far ones are checked.
     assert_equal [30, 90], pick(near.first(30) + far, access: access).partition { |id| id <= 130 }.map(&:size)
+
+    # Routes already checked count toward both, and aren't picked again.
+    checked = (near.first(30) + far.first(10)).pluck(:id).to_set
+    more = OverpassService.pick(near + far, access: access, checked: checked)
+    assert_equal [50, 30], more.partition { |id| id <= 130 }.map(&:size)
+    assert_empty more.select { |id| checked.include?(id) }
+    assert_empty OverpassService.pick(near + far, access: access, checked: (1..120).to_set)
   end
 
   test "promising routes are checked first" do

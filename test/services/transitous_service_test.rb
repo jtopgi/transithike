@@ -219,7 +219,7 @@ class TransitousServiceTest < ActiveSupport::TestCase
     assert_equal "47.5980000,-122.3300000", requests.last["one"]
   end
 
-  test "where a station's trains reach too many stations to list, those within 120 or 80 minutes are, and the limit that fits is remembered" do
+  test "where a station's trains reach too many stations to list, those within 210, 120, or 80 minutes are, and the limit that fits is remembered" do
     travel_to Time.utc(2026, 9, 22, 12) do
       cache = ActiveSupport::Cache::MemoryStore.new
       limits = []
@@ -231,13 +231,13 @@ class TransitousServiceTest < ActiveSupport::TestCase
       })
       assert_equal [[48.0, -122.0, 70]], rail_stations(connection, cache: cache)
       reach = TransitousService::STATION_MINUTES.to_s
-      assert_equal [reach, "120", "80"], limits
+      assert_equal [reach, "210", "120", "80"], limits
 
       rail_stations(connection, cache: cache, station: station(id: "nearby", latitude: 47.62))
-      assert_equal [reach, "120", "80", "80"], limits
+      assert_equal [reach, "210", "120", "80", "80"], limits
       travel 1.day + 1.minute
       rail_stations(connection, cache: cache, station: station(id: "another"))
-      assert_equal [reach, "120", "80", "80", reach, "120", "80"], limits
+      assert_equal [reach, "210", "120", "80", "80", reach, "210", "120", "80"], limits
 
       too_many = stub_connection(:get, {}) { raise SearchErrors::ResponseTooLarge }
       assert_raises(SearchErrors::UpstreamError) { rail_stations(too_many) }

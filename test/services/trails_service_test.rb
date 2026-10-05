@@ -138,7 +138,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
   class FakeHiking
     FIRST_TILE = [47.5, -122.5].freeze
 
-    attr_reader :access, :batches, :reliefs, :stations, :tile_requests, :threads
+    attr_reader :access, :batches, :checked_before, :reliefs, :stations, :tile_requests, :threads
 
     # stuck names the lookups that wait for release: :first_tiles, :other_tiles, :trails_for, or :highlights.
     # A lookup of routes including a failing one fails, and unstored routes are left out of a lookup that finds
@@ -148,7 +148,7 @@ class TrailsServiceTest < ActiveSupport::TestCase
       stuck: [:highlights], tiles_failing: [])
       @trails, @far, @highlights, @failing, @release, @stuck = trails, far, highlights, failing, release, stuck
       @unstored, @busy, @tiles_failing = unstored, busy, tiles_failing
-      @batches, @threads, @tile_requests, @reliefs = [], [], Concurrent::Array.new, []
+      @batches, @threads, @tile_requests, @reliefs, @checked_before = [], [], Concurrent::Array.new, [], []
     end
 
     # One tile, or five when there are routes in the others.
@@ -169,9 +169,10 @@ class TrailsServiceTest < ActiveSupport::TestCase
       (first ? @trails : @far).map { |trail| { id: trail.osm_id, latitude: trail.latitude, longitude: trail.longitude } }
     end
 
-    def pick(routes, access:, relief:)
+    def pick(routes, access:, relief:, checked: Set.new)
       @access = access
       @reliefs << relief
+      @checked_before << checked.to_a
       routes.pluck(:id)
     end
 
@@ -520,7 +521,17 @@ class TrailsServiceTest < ActiveSupport::TestCase
     trails = [trail("far"), trail("too far")]
     # Trips back ride an hour.
     transit = FakeTransit.new(trips: { "far" => minutes(400), "too far" => minutes(430) })
-    assert_equal ["far"], search(transit: transit, hiking: FakeHiking.new(trails)).trails.map(&:name)
+    found = search(transit: transit, hiking: FakeHiking.new(trails)).trails
+    assert_equal ["far"], found.map(&:name)
+    # Until its trips are planned, a card's round trip is twice the trip there, but no more than that.
+    assert_equal 8.hours, TrailsService.round_trip_seconds(found.sole)
+  end
+
+  test "routes picked once all tiles are found count those the first batch checked" do
+    near, far = trail("near"), trail("far")
+    hiking = FakeHiking.new([near], far: [far])
+    search(transit: FakeTransit.new(trips: { "near" => minutes(30), "far" => minutes(30) }), hiking: hiking)
+    assert_equal [[], [near.osm_id]], hiking.checked_before
   end
 
   test "hikes need at least three trips there that arrive in time and three back before dark, so missing one isn't a worry" do
