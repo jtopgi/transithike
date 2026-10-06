@@ -127,9 +127,14 @@ class OverpassServiceTest < ActiveSupport::TestCase
       found = routes_in(connection, tiles: [[47.0, -122.0], [47.5, -122.0], [48.5, -122.5]], cache: cache)
 
       assert_equal [1, 2], found.pluck(:id).sort
-      assert_equal '[out:json][timeout:40];relation["type"="route"]["route"="hiking"](47.0,-122.5,49.0,-121.5)->.region;' \
-        "(relation.region(47.0,-122.0,47.5,-121.5);relation.region(47.5,-122.0,48.0,-121.5);" \
-        "relation.region(48.5,-122.5,49.0,-122.0););out tags bb;", queries.sole
+      boxes = ["(47.0,-122.0,47.5,-121.5)", "(47.5,-122.0,48.0,-121.5)", "(48.5,-122.5,49.0,-122.0)"]
+      wider = ["(46.95,-122.05,47.55,-121.45)", "(47.45,-122.05,48.05,-121.45)", "(48.45,-122.55,49.05,-121.95)"]
+      # Named paths come too, a little beyond the tiles, but not the ways of hiking routes.
+      assert_equal %([out:json][timeout:60];relation["type"="route"]["route"="hiking"](47.0,-122.5,49.0,-121.5)->.region;) +
+        "(#{boxes.map { |box| "relation.region#{box};" }.join});out tags bb;" +
+        %(relation["type"="route"]["route"="hiking"](46.95,-122.55,49.05,-121.45);way(r)->.routed;) +
+        "way#{OverpassService::PATH_FILTER}(46.95,-122.55,49.05,-121.45)->.paths;" \
+        "((#{wider.map { |box| "way.paths#{box};" }.join}); - .routed;);out body bb;", queries.sole
       # The route across two tiles is in both.
       assert_equal [2], routes_in(connection, tiles: [[47.5, -122.0]], cache: cache).pluck(:id)
       assert_equal [1, 2], routes_in(connection, tiles: [[47.5, -122.0], [47.0, -122.0]], cache: cache).pluck(:id).sort
@@ -141,7 +146,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
       # A month on, the kept routes are used at once while the tile is looked up again in the background.
       travel 30.days + 1.minute
       assert_equal [2], routes_in(connection, tiles: [[47.5, -122.0]], cache: cache).pluck(:id)
-      Timeout.timeout(5) { sleep 0.01 until cache.read("overpass:tile:v2:47.5:-122.0")[:at] > 1.minute.ago }
+      Timeout.timeout(5) { sleep 0.01 until cache.read("#{OverpassService::TILE_KEY}47.5:-122.0")[:at] > 1.minute.ago }
       assert_equal 3, queries.size
       assert_includes queries.last, "(47.5,-122.0,48.0,-121.5)->.region;"
       routes_in(connection, tiles: [[47.5, -122.0]], cache: cache)
@@ -176,7 +181,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
     racing = stub_connection(:post, lambda { |request|
       query = URI.decode_www_form(request.body).to_h.fetch("data")
       queries << query
-      cache.write("overpass:tile:v2:51.0:-122.0", { routes: [{ id: 7 }], at: Time.current }) if query.include?("relation.region(49.0,")
+      cache.write("#{OverpassService::TILE_KEY}51.0:-122.0", { routes: [{ id: 7 }], at: Time.current }) if query.include?("relation.region(49.0,")
       { "elements" => [] }
     })
     assert_equal [7], routes_in(racing, tiles: later, cache: cache).pluck(:id)
@@ -248,7 +253,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
       reads.reset
       waiting = Thread.new { routes_in(connection, tiles: [[47.0, -122.0]], cache: cache) }
       assert reads.wait(5)
-      cache.write("overpass:tile:v2:47.0:-122.0", { routes: [{ id: 9 }], at: Time.current })
+      cache.write("#{OverpassService::TILE_KEY}47.0:-122.0", { routes: [{ id: 9 }], at: Time.current })
       assert_equal [9], waiting.join(5).value.pluck(:id)
     end
     # Only the first search asked Overpass.
@@ -309,13 +314,29 @@ class OverpassServiceTest < ActiveSupport::TestCase
     end
     assert_equal 1, calls
 
-    calls = 0
-    huge = stub_connection(:post, {}) do
-      calls += 1
+    queries = []
+    huge = stub_connection(:post, {}) do |request|
+      queries << URI.decode_www_form(request.body).to_h.fetch("data")
       raise SearchErrors::ResponseTooLarge
     end
     assert_raises(SearchErrors::ResponseTooLarge) { routes_in(huge, cache: ActiveSupport::Cache::MemoryStore.new) }
-    assert_equal 1, calls
+    # The other instance would list as much, so only the tile's routes alone are asked for again.
+    assert_equal [true, false], queries.map { |query| query.include?("out body bb") }
+  end
+
+  test "where named paths are too many to list with the routes, the tiles keep their routes alone" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    queries = []
+    dense = stub_connection(:post, lambda { |request|
+      queries << URI.decode_www_form(request.body).to_h.fetch("data")
+      raise SearchErrors::ResponseTooLarge if queries.last.include?("out body bb")
+
+      { "elements" => [candidate_of(route_element(id: 1))] }
+    })
+    assert_equal [1], routes_in(dense, cache: cache).pluck(:id)
+    assert_equal [1], routes_in(dense, cache: cache).pluck(:id)
+    assert_equal 2, queries.size
+    assert_nil cache.read(OverpassService::FAILOVER_KEY)
   end
 
   test "a query that fails quickly on both instances succeeds on the preferred one's second try" do
@@ -450,6 +471,105 @@ class OverpassServiceTest < ActiveSupport::TestCase
     assert_empty OverpassService.pick(near + far, access: access, checked: (1..120).to_set)
   end
 
+  test "named paths that aren't hiking routes are routes too, each the ways of one name joined at a node" do
+    paths = [path_way(1, nodes: [10, 11]), path_way(2, nodes: [11, 12], latitude: 47.02),
+      # The same name elsewhere is another trail, and a short path isn't one.
+      path_way(3, nodes: [30, 31], latitude: 47.3), path_way(4, name: "Lot Path", nodes: [40, 41], latitude: 47.4, length: 0.001)]
+    found = routes_in(overpass_connection(routes: [route_element(id: 9)], paths: paths), cache: ActiveSupport::Cache::MemoryStore.new)
+    assert_equal [[9, nil], [-1, [1, 2]], [-3, [3]]], found.map { |route| route.values_at(:id, :ways) }
+    joined = found.find { |route| route[:id] == -1 }
+    assert_equal ["Mount Si Trail", [47.0, -122.0, 47.04, -122.0], 4448, false],
+      [joined[:name], joined[:bounds].map { |degrees| degrees.round(6) }, joined[:span], joined[:notable]]
+  end
+
+  test "a named path is measured from its ways and kept with them, and its highlights are found along them" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    queries = []
+    paths = [path_way(1, nodes: [10, 11], length: 0.03), path_way(2, nodes: [11, 12], latitude: 47.03, surface: "asphalt")]
+    peak = highlight_node("peak", 47.05, -122.0, name: "Mount Si")
+    connection = overpass_connection(routes: [], paths: paths, paved: [2], highlights: [peak], queries: queries)
+    trail = OverpassService.trails_for([-1], lat: 47.0, lon: -122.0, connections: [connection], cache: cache,
+      paths: { -1 => [1, 2] }).sole
+    assert_includes queries.last, "way(id:1,2)->.named;.named out tags geom;(.named;)->.measured;"
+    assert_equal ["Mount Si Trail", false, 0.4, "https://www.openstreetmap.org/way/1"], [trail.name, trail.loop, trail.paved, trail.osm_url]
+    assert_in_delta 3.45, trail.length, 0.01
+    # It starts at a loose end.
+    assert_includes [47.0, 47.05], trail.latitude
+    assert_equal [1, 2], cache.read("#{OverpassService::ROUTE_KEY}-1")[:ways]
+
+    assert_equal({ -1 => [{ kind: "peak", name: "Mount Si" }] }, OverpassService.highlights([trail], connections: [connection], cache: cache))
+    assert_includes queries.last, "way(id:1,2)->.named;(.named;)->.ways;"
+
+    # A named path whose ways aren't known isn't looked up, or written off as unmeasurable.
+    assert_empty OverpassService.trails_for([-5], lat: 47.0, lon: -122.0, connections: [connection], cache: cache)
+    assert_equal 2, queries.size
+    assert_not cache.exist?("#{OverpassService::ROUTE_KEY}-5")
+  end
+
+  test "a trail across a tile's edge is one, whichever tiles list its pieces, and measured from all its ways" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    queries = []
+    # Way 100 crosses 47.5° north, between way 200 to its south and way 300 to its north.
+    across = path_way(100, nodes: [1, 2], latitude: 47.48, length: 0.04)
+    south, north = path_way(200, nodes: [3, 1], latitude: 47.4, length: 0.08), path_way(300, nodes: [2, 4], latitude: 47.52, length: 0.08)
+    connection = stub_connection(:post, lambda { |request|
+      query = URI.decode_www_form(request.body).to_h.fetch("data")
+      queries << query
+      named = query[/way\(id:([\d,]+)\)->\.named/, 1].to_s.split(",").map(&:to_i)
+      ways = if query.include?("out ids") then [across, south, north].select { |way| named.include?(way["id"]) }
+      elsif query.include?("relation.region(47.0,") then [across, south].map { |way| listed_way(way) }
+      else [across, north].map { |way| listed_way(way) }
+      end
+      { "elements" => ways }
+    })
+    found = stub_const(OverpassService, :TILES_PER_QUERY, 1) do
+      routes_in(connection, tiles: [[47.0, -122.0], [47.5, -122.0]], cache: cache)
+    end
+    assert_equal 2, queries.size
+    assert_equal [[-100, [100, 200, 300]]], found.map { |route| route.values_at(:id, :ways) }
+
+    # Measured from the pieces one tile listed, it's measured again once its other ways are known.
+    first = OverpassService.trails_for([-100], lat: 47.4, lon: -122.0, connections: [connection], cache: cache,
+      paths: { -100 => [100, 200] }).sole
+    whole = OverpassService.trails_for([-100], lat: 47.4, lon: -122.0, connections: [connection], cache: cache,
+      paths: { -100 => [100, 300] }).sole
+    assert_includes queries.last, "way(id:100,200,300)->.named;"
+    assert_equal [100, 200, 300], cache.read("#{OverpassService::ROUTE_KEY}-100")[:ways]
+    assert_in_delta first.length * 5 / 3, whole.length, 0.01
+  end
+
+  test "a named path that can't be measured again keeps what was measured, a while, and ways gone since aren't asked for again" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    calls = 0
+    down = stub_connection(:post, {}) do
+      calls += 1
+      raise Faraday::ConnectionFailed, "timed out"
+    end
+    cache.write("#{OverpassService::ROUTE_KEY}-1", { osm_id: -1, name: "Mount Si Trail", latitude: 47.0, longitude: -122.0,
+      length: 2.0, path: [[[47.0, -122.0], [47.03, -122.0]]], loop: false, paved: 0.0, ways: [1, 2] })
+    failures = []
+    measure = -> { OverpassService.trails_for([-1], lat: 47.0, lon: -122.0, connections: [down], cache: cache, failures: failures, paths: { -1 => [1, 2, 3] }) }
+    assert_equal ["Mount Si Trail"], measure.().map(&:name)
+    assert_empty failures
+    asked = calls
+    assert_equal ["Mount Si Trail"], measure.().map(&:name)
+    assert_equal asked, calls
+
+    # Measured from ways 1 and 2, though 3 has gone, it isn't measured again for 3.
+    queries = []
+    paths = [path_way(1, nodes: [10, 11]), path_way(2, nodes: [11, 12], latitude: 47.02)]
+    gone = overpass_connection(routes: [], paths: paths, queries: queries)
+    2.times do
+      OverpassService.trails_for([-7], lat: 47.0, lon: -122.0, connections: [gone], cache: cache, paths: { -7 => [1, 2, 3] })
+    end
+    assert_equal 1, queries.size
+    assert_equal [1, 2, 3], cache.read("#{OverpassService::ROUTE_KEY}-7")[:ways]
+  end
+
+  test "a named path is a little less promising than a hiking route alike" do
+    assert_equal [1, -1], pick([candidate(-1, 10, name: "Cougar Ridge"), candidate(1, 10, name: "Squak Ridge")])
+  end
+
   test "promising routes are checked first" do
     routes = [candidate(1, 2, name: "Trail 1"), candidate(2, 3, span: 500), candidate(3, 4, notable: true, span: 500),
       candidate(4, 5)]
@@ -489,7 +609,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
     trail = fetch([route], paved: [456], queries: queries).sole
 
     assert_includes queries.last, "relation(id:123)->.routes;.routes out geom;way(r.routes)->.ways;"
-    assert_includes queries.last, 'way.ways["footway"="sidewalk"];'
+    assert_includes queries.last, 'way.measured["footway"="sidewalk"];'
     assert_equal "Forest Loop", trail.name
     assert_equal "A wooded walk", trail.summary
     assert_equal [47.0, -122.0], [trail.latitude, trail.longitude]
@@ -624,7 +744,7 @@ class OverpassServiceTest < ActiveSupport::TestCase
     connection = overpass_connection(highlights: nodes, queries: queries)
     highlights = OverpassService.highlights(trails, connections: [connection], cache: Rails.cache)
 
-    assert_includes queries.sole, "relation(id:1,2);way(r)->.ways;"
+    assert_includes queries.sole, "relation(id:1,2);way(r)->.routed;(.routed;)->.ways;"
     assert_includes queries.sole, 'node(around.ways:150)["waterway"="waterfall"];'
     assert_equal({ 1 => [{ kind: "waterfall" }, { kind: "peak", name: "Knob" },
       { kind: "viewpoint", name: "Lookout" }, { kind: "viewpoint" }], 2 => [] }, highlights)

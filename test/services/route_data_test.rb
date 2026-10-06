@@ -105,6 +105,16 @@ class RouteDataTest < ActiveSupport::TestCase
     HikingRoute.singleton_class.remove_method(:where) if HikingRoute.singleton_class.method_defined?(:where, false)
   end
 
+  test "named paths are collected and stored like routes, with their ways" do
+    recorder = RouteData::Recorder.new
+    recorder.write("#{OverpassService::ROUTE_KEY}-5", { osm_id: -5, name: "Mount Si Trail", summary: OverpassService::PATH_SUMMARY,
+      latitude: 47.3, longitude: -122.0, length: 3.4, path: PATH, loop: false, paved: 0.0, notable: false, ways: [5, 6] })
+    assert_equal 1, import(recorder)
+    assert_equal "Mount Si Trail", OverpassService.trails_for([-5], lat: 47.0, lon: -122.0, connections: [unreachable],
+      cache: ActiveSupport::Cache::MemoryStore.new).sole.name
+    assert_equal({ -5 => [5, 6] }, OverpassService.path_ways([-5], ActiveSupport::Cache::MemoryStore.new))
+  end
+
   test "a newer file replaces what was stored of each route, and keeps the rest" do
     import(collected)
     newer = RouteData::Recorder.new

@@ -77,7 +77,7 @@
           <%= link_to "🧭 Directions back", directions_back_url(trail, place), class: "btn btn-success btn-sm", target: "_blank",
                 rel: "noopener" %>
         <% end %>
-        <%= link_to "View on OpenStreetMap", "https://www.openstreetmap.org/relation/#{trail.osm_id}",
+        <%= link_to "View on OpenStreetMap", trail.osm_url,
               class: "btn btn-outline-secondary btn-sm", target: "_blank", rel: "noopener" %>
       </div>
     </div>

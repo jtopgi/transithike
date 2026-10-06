@@ -33,14 +33,30 @@ module SearchTestSupport
 
   # The tiles, route details, or highlights response for an Overpass query,
   # built from full route elements.
-  def overpass_elements(query, routes:, highlights: [], paved: [])
+  # Named paths' ways are listed with the tiles, and with their geometry when asked for by id.
+  def overpass_elements(query, routes:, highlights: [], paved: [], paths: [])
     if query.include?("out tags bb")
-      routes.map { |route| candidate_of(route) }
-    elsif query.include?("out geom")
-      routes + paved.map { |id| { "type" => "way", "id" => id } }
+      routes.map { |route| candidate_of(route) } + paths.map { |way| listed_way(way) }
+    elsif query.include?("out ids")
+      named = query[/way\(id:([\d,]+)\)->\.named/, 1].to_s.split(",").map(&:to_i)
+      (query.include?("relation(id:") ? routes : []) + paths.select { |way| named.include?(way["id"]) } +
+        paved.map { |id| { "type" => "way", "id" => id } }
     else
       highlights
     end
+  end
+
+  # A named path's way, with its nodes and geometry, north from latitude.
+  def path_way(id, name: "Mount Si Trail", nodes: [id * 10, id * 10 + 1], latitude: 47.0, length: 0.02, **tags)
+    { "type" => "way", "id" => id, "tags" => { "highway" => "path", "name" => name, **tags }, "nodes" => nodes,
+      "geometry" => [{ "lat" => latitude, "lon" => -122.0 }, { "lat" => latitude + length, "lon" => -122.0 }] }
+  end
+
+  # A way as the tiles query lists it: with its nodes and bounds, but not its geometry.
+  def listed_way(way)
+    latitudes, longitudes = way["geometry"].pluck("lat"), way["geometry"].pluck("lon")
+    way.except("geometry").merge("bounds" => { "minlat" => latitudes.min, "minlon" => longitudes.min,
+      "maxlat" => latitudes.max, "maxlon" => longitudes.max })
   end
 
   # A one-to-all entry: a stop served by modes, reached after minutes and rides.

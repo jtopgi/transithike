@@ -7,7 +7,8 @@ class HikesController < ApplicationController
   # The page shows without the route's highlights, terrain, or photos when they take longer.
   EXTRAS_WAIT_SECONDS = 10
 
-  # route is the OpenStreetMap relation id; from, to, and finish are
+  # route is the OpenStreetMap relation id, or a named path's (see
+  # OverpassService::PATH_FILTER), whose details its search kept; from, to, and finish are
   # "latitude,longitude" for the search's starting point, where transit
   # reaches the route, and where a hike to the far end finishes; station, if
   # given, is "latitude,longitude" for the station trips leave from, and
@@ -23,7 +24,7 @@ class HikesController < ApplicationController
     @zone = ActiveSupport::TimeZone[params[:tz]] if params[:tz].is_a?(String) && params[:tz].length <= 64
     route = Integer(params[:route], 10, exception: false) if params[:route].is_a?(String)
     @origin_name, @station_name = [params[:origin], params[:station_name]].map { |name| name_param(name) }
-    unless origin && start && route&.positive? && PLANS.include?(params[:plan]) && (finish || params[:plan] != "through") &&
+    unless origin && start && route&.nonzero? && PLANS.include?(params[:plan]) && (finish || params[:plan] != "through") &&
         (station || !params.key?(:station)) &&
         leave && back_by && @zone && leave.between?(1.day.ago, 8.days.from_now) && back_by.between?(leave, leave + 1.day)
       return head(:bad_request)
