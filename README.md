@@ -125,8 +125,12 @@ test Overpass connectivity from your deployment before launching.
   listed with their nodes but not their geometry (about 3 MB for four tiles
   around the Issaquah Alps or Marin), and 0.05° beyond the tiles, so a trail
   across a tile's edge is found whole from either side. Pieces of one that
-  tiles list apart are joined where they share a way, and a path measured from
-  fewer of its ways than a search knows is measured again from them all. A
+  tiles list apart, the first four tiles' and the rest's too, are joined where
+  they share a way, keeping the id of a piece already checked. A path measured
+  from fewer of its ways than a search knows is measured again from them all,
+  or, where that fails, as Overpass does from the server, keeps what was
+  measured, without trying again for 6 hours; details list the ways a path was
+  measured from, those gone since too, so they aren't asked for again. A
   named path's id is the negative of its first way's, its details are measured
   from its ways once a search picks it, and its highlights found along them,
   and its OpenStreetMap link is to that way. A mapped hiking route is likelier

@@ -538,6 +538,34 @@ class OverpassServiceTest < ActiveSupport::TestCase
     assert_in_delta first.length * 5 / 3, whole.length, 0.01
   end
 
+  test "a named path that can't be measured again keeps what was measured, a while, and ways gone since aren't asked for again" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    calls = 0
+    down = stub_connection(:post, {}) do
+      calls += 1
+      raise Faraday::ConnectionFailed, "timed out"
+    end
+    cache.write("#{OverpassService::ROUTE_KEY}-1", { osm_id: -1, name: "Mount Si Trail", latitude: 47.0, longitude: -122.0,
+      length: 2.0, path: [[[47.0, -122.0], [47.03, -122.0]]], loop: false, paved: 0.0, ways: [1, 2] })
+    failures = []
+    measure = -> { OverpassService.trails_for([-1], lat: 47.0, lon: -122.0, connections: [down], cache: cache, failures: failures, paths: { -1 => [1, 2, 3] }) }
+    assert_equal ["Mount Si Trail"], measure.().map(&:name)
+    assert_empty failures
+    asked = calls
+    assert_equal ["Mount Si Trail"], measure.().map(&:name)
+    assert_equal asked, calls
+
+    # Measured from ways 1 and 2, though 3 has gone, it isn't measured again for 3.
+    queries = []
+    paths = [path_way(1, nodes: [10, 11]), path_way(2, nodes: [11, 12], latitude: 47.02)]
+    gone = overpass_connection(routes: [], paths: paths, queries: queries)
+    2.times do
+      OverpassService.trails_for([-7], lat: 47.0, lon: -122.0, connections: [gone], cache: cache, paths: { -7 => [1, 2, 3] })
+    end
+    assert_equal 1, queries.size
+    assert_equal [1, 2, 3], cache.read("#{OverpassService::ROUTE_KEY}-7")[:ways]
+  end
+
   test "a named path is a little less promising than a hiking route alike" do
     assert_equal [1, -1], pick([candidate(-1, 10, name: "Cougar Ridge"), candidate(1, 10, name: "Squak Ridge")])
   end

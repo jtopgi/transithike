@@ -233,10 +233,11 @@ module TrailsService
     if farther
       more = optional { finished(farther).value! }
       result.complete = false unless more
-      more = Array(more).reject { |route| relief.key?(route[:id]) }
-      search.known(more)
-      relief = relief.merge(reliefs(more, elevation))
-      routes = (routes + more).uniq { |route| route[:id] }
+      # Named paths across the edge between the first tiles and the rest are joined, keeping the ids of those checked.
+      paths, routes = (routes + Array(more)).partition { |route| route[:ways] }
+      routes = routes.uniq { |route| route[:id] } + OverpassService.joined_paths(paths, keep: search.checked)
+      search.known(routes)
+      relief = relief.merge(reliefs(routes.reject { |route| relief.key?(route[:id]) }, elevation))
     end
     # Counting the routes checked, so the far ones it keeps room for are checked too.
     search.check(hiking.pick(routes, access: access, relief: relief, checked: search.checked))

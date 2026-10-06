@@ -45,6 +45,11 @@ module OverpassService
   # Paths are listed this far beyond their tiles too, so a trail across a
   # tile's edge is found whole, and the same, from either side.
   PATH_MARGIN_DEGREES = 0.05
+  # A named path measured from fewer of its ways than a search knows is
+  # measured again, but where that fails, as Overpass does from the server,
+  # keeps what was measured, and isn't tried again for this long.
+  REMEASURE_KEY = "overpass:remeasure:v1:".freeze
+  REMEASURE_PAUSE = 6.hours
   # A hiking route someone mapped is likelier to be a hike worth the trip than
   # a named path, so paths are this much less promising.
   PATH_PROMISE = 0.5
@@ -338,15 +343,17 @@ module OverpassService
   end
 
   # The named paths, those tiles list as pieces of one, as across a tile's
-  # edge, joined where they share a way.
-  def self.joined_paths(paths)
+  # edge, joined where they share a way, keeping the id of any piece in keep,
+  # as when a search has checked it.
+  def self.joined_paths(paths, keep: Set.new)
     connected(paths) { |path| path[:ways] }.map do |pieces|
       next pieces.first if pieces.size == 1
 
       ways = pieces.flat_map { |piece| piece[:ways] }.uniq.sort
       corners = pieces.map { |piece| piece[:bounds] }.transpose
       corners = [corners[0].min, corners[1].min, corners[2].max, corners[3].max]
-      { id: -ways.first, name: pieces.first[:name], latitude: (corners[0] + corners[2]) / 2.0,
+      id = pieces.map { |piece| piece[:id] }.find { |each| keep.include?(each) } || -ways.first
+      { id: id, name: pieces.first[:name], latitude: (corners[0] + corners[2]) / 2.0,
         longitude: (corners[1] + corners[3]) / 2.0, bounds: corners, span: distance(*corners).round,
         notable: pieces.any? { |piece| piece[:notable] }, ways: ways }
     end
@@ -470,14 +477,12 @@ module OverpassService
     keys = ids.to_h { |id| [id, "#{ROUTE_KEY}#{id}"] }
     found = cache.read_multi(*keys.values)
     RouteStore.details(ids.reject { |id| found.key?(keys[id]) }).each { |id, details| found[keys[id]] = details }
-    # A named path measured from fewer of its ways than are known now is measured again, from them all.
-    paths = paths.slice(*ids).to_h do |id, ways|
-      measured = found[keys[id]]
-      next [id, ways] unless measured.is_a?(Hash) && (ways - Array(measured[:ways])).any?
-
-      found.delete(keys[id])
-      [id, (ways | Array(measured[:ways])).sort]
-    end
+    # Named paths measured from fewer of their ways than are known now are measured again, from them all.
+    paths = paths.slice(*ids)
+    stale = paths.select { |id, ways| found[keys[id]].is_a?(Hash) && (ways - Array(found[keys[id]][:ways])).any? }
+    paused = stale.empty? ? {} : cache.read_multi(*stale.keys.map { |id| "#{REMEASURE_KEY}#{id}" })
+    stale = stale.keys.reject { |id| paused.key?("#{REMEASURE_KEY}#{id}") }.to_h { |id| [id, found.delete(keys[id])] }
+    stale.each { |id, measured| paths[id] = (paths[id] | Array(measured[:ways])).sort }
     missing = ids.reject { |id| found.key?(keys[id]) || (id.negative? && !paths.key?(id)) }
     if missing.any?
       id_of = keys.invert
@@ -494,9 +499,15 @@ module OverpassService
         error = failure
         {}
       end)
-      # Routes another search was looking up, but couldn't in time.
-      error ||= SearchErrors::ProviderBusy.new(BUSY) unless missing.all? { |id| found.key?(keys[id]) }
-      if error
+      stale.each do |id, measured|
+        next if found.key?(keys[id])
+
+        found[keys[id]] = measured
+        cache.write("#{REMEASURE_KEY}#{id}", true, expires_in: REMEASURE_PAUSE)
+      end
+      # Routes that couldn't be looked up, or that another search was looking up, but couldn't in time.
+      if missing.any? { |id| !found.key?(keys[id]) }
+        error ||= SearchErrors::ProviderBusy.new(BUSY)
         failures&.push(error)
         raise error if ids.none? { |id| found.key?(keys[id]) }
       end
@@ -536,7 +547,8 @@ module OverpassService
     by_id = with_geometry.index_by { |way| way["id"] }
     named.each do |id|
       path = path_attributes(id, paths.fetch(id).filter_map { |way| by_id[way] }, paved)
-      routes[id] = path if path
+      # Measured from all of the ways asked for, though some may have gone since their tiles listed them.
+      routes[id] = path.merge(ways: paths.fetch(id).sort) if path
     end
     routes
   end

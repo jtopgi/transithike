@@ -145,9 +145,9 @@ class TrailsServiceTest < ActiveSupport::TestCase
     # others, as those stored are where Overpass can't be reached, saying so in its failures, until it's been
     # looked up busy times.
     def initialize(trails, far: [], highlights: {}, failing: [], unstored: [], busy: Float::INFINITY, release: nil,
-      stuck: [:highlights], tiles_failing: [], crowded: false)
+      stuck: [:highlights], tiles_failing: [], crowded: false, ways: {})
       @trails, @far, @highlights, @failing, @release, @stuck = trails, far, highlights, failing, release, stuck
-      @unstored, @busy, @tiles_failing, @crowded = unstored, busy, tiles_failing, crowded
+      @unstored, @busy, @tiles_failing, @crowded, @ways = unstored, busy, tiles_failing, crowded, ways
       @batches, @threads, @tile_requests, @reliefs, @checked_before, @paths_given = [], [], Concurrent::Array.new, [], [], []
     end
 
@@ -168,10 +168,11 @@ class TrailsServiceTest < ActiveSupport::TestCase
 
       failures&.push(SearchErrors::UpstreamError.new("busy")) if @tiles_failing.include?(first ? :first_tiles : :other_tiles)
 
-      # Named paths, with negative ids, list their ways.
+      # Named paths, with negative ids, list their ways: their first, unless told others.
       (first ? @trails : @far).map do |trail|
-        { id: trail.osm_id, latitude: trail.latitude, longitude: trail.longitude, ways: ([-trail.osm_id] if trail.osm_id.negative?) }
-          .compact
+        ways = @ways[trail.osm_id] || ([-trail.osm_id] if trail.osm_id.negative?)
+        { id: trail.osm_id, latitude: trail.latitude, longitude: trail.longitude, bounds: [trail.latitude, -122.1, trail.latitude, -122.1],
+          ways: ways }.compact
       end
     end
 
@@ -329,6 +330,14 @@ class TrailsServiceTest < ActiveSupport::TestCase
     result = search(transit: FakeTransit.new(trips: { "route" => minutes(30), "path" => minutes(30) }), hiking: hiking)
     assert_equal %w[path route], result.trails.map(&:name).sort
     assert_equal [{ -77 => [77] }], hiking.paths_given
+  end
+
+  test "pieces of a named path in the first tiles and the rest are one, which isn't checked again" do
+    near, far = trail("Ridge Trail", osm_id: -100), trail("Ridge Trail", osm_id: -50)
+    hiking = FakeHiking.new([near], far: [far], ways: { -100 => [100, 200], -50 => [50, 100] })
+    result = search(transit: FakeTransit.new(trips: { "Ridge Trail" => minutes(30) }), hiking: hiking)
+    assert_equal [[-100]], hiking.batches
+    assert_equal ["Ridge Trail"], result.trails.map(&:name)
   end
 
   test "tiles in bands of travel time with more than their share are picked knowing how far the land rises across them" do
