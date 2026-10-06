@@ -3,9 +3,9 @@
 # build finds at least GuideService::MIN_HIKES hikes from it. Check that a new
 # city's hikes are its own: Philadelphia's were nearly all New York's, hours
 # away, since few hiking routes were mapped near its train stations, when
-# searches only counted stops trains reach. Searches use OpenStreetMap's hiking
-# route relations, which are rare around Los Angeles and San Francisco, where
-# trails are mostly mapped as paths alone.
+# searches only counted stops trains reach and OpenStreetMap's hiking route
+# relations, before they counted named paths too, as trails are mostly mapped
+# around Los Angeles and San Francisco.
 new-york-city:
   name: New York City
   origin: Midtown Manhattan

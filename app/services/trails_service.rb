@@ -263,9 +263,10 @@ module TrailsService
       @stuck = Concurrent::AtomicBoolean.new
     end
 
-    # Notes the ways of the named paths among the routes the search may check.
+    # Notes the ways of the named paths among the routes the search may check,
+    # all those of each that any of its tiles lists.
     def known(routes)
-      routes.each { |route| @paths[route[:id]] = route[:ways] if route[:ways] }
+      routes.each { |route| @paths[route[:id]] = (@paths.fetch(route[:id], []) | route[:ways]).sort if route[:ways] }
     end
 
     def check(ids)

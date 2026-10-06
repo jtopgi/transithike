@@ -127,13 +127,14 @@ class OverpassServiceTest < ActiveSupport::TestCase
       found = routes_in(connection, tiles: [[47.0, -122.0], [47.5, -122.0], [48.5, -122.5]], cache: cache)
 
       assert_equal [1, 2], found.pluck(:id).sort
-      region = "(47.0,-122.5,49.0,-121.5)"
       boxes = ["(47.0,-122.0,47.5,-121.5)", "(47.5,-122.0,48.0,-121.5)", "(48.5,-122.5,49.0,-122.0)"]
-      # Named paths come too, but not the ways of hiking routes.
-      assert_equal %([out:json][timeout:60];relation["type"="route"]["route"="hiking"]#{region}->.region;) +
-        "(#{boxes.map { |box| "relation.region#{box};" }.join});out tags bb;" \
-        "way(r.region)->.routed;way#{OverpassService::PATH_FILTER}#{region}->.paths;" \
-        "((#{boxes.map { |box| "way.paths#{box};" }.join}); - .routed;);out body bb;", queries.sole
+      wider = ["(46.95,-122.05,47.55,-121.45)", "(47.45,-122.05,48.05,-121.45)", "(48.45,-122.55,49.05,-121.95)"]
+      # Named paths come too, a little beyond the tiles, but not the ways of hiking routes.
+      assert_equal %([out:json][timeout:60];relation["type"="route"]["route"="hiking"](47.0,-122.5,49.0,-121.5)->.region;) +
+        "(#{boxes.map { |box| "relation.region#{box};" }.join});out tags bb;" +
+        %(relation["type"="route"]["route"="hiking"](46.95,-122.55,49.05,-121.45);way(r)->.routed;) +
+        "way#{OverpassService::PATH_FILTER}(46.95,-122.55,49.05,-121.45)->.paths;" \
+        "((#{wider.map { |box| "way.paths#{box};" }.join}); - .routed;);out body bb;", queries.sole
       # The route across two tiles is in both.
       assert_equal [2], routes_in(connection, tiles: [[47.5, -122.0]], cache: cache).pluck(:id)
       assert_equal [1, 2], routes_in(connection, tiles: [[47.5, -122.0], [47.0, -122.0]], cache: cache).pluck(:id).sort
@@ -313,13 +314,29 @@ class OverpassServiceTest < ActiveSupport::TestCase
     end
     assert_equal 1, calls
 
-    calls = 0
-    huge = stub_connection(:post, {}) do
-      calls += 1
+    queries = []
+    huge = stub_connection(:post, {}) do |request|
+      queries << URI.decode_www_form(request.body).to_h.fetch("data")
       raise SearchErrors::ResponseTooLarge
     end
     assert_raises(SearchErrors::ResponseTooLarge) { routes_in(huge, cache: ActiveSupport::Cache::MemoryStore.new) }
-    assert_equal 1, calls
+    # The other instance would list as much, so only the tile's routes alone are asked for again.
+    assert_equal [true, false], queries.map { |query| query.include?("out body bb") }
+  end
+
+  test "where named paths are too many to list with the routes, the tiles keep their routes alone" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    queries = []
+    dense = stub_connection(:post, lambda { |request|
+      queries << URI.decode_www_form(request.body).to_h.fetch("data")
+      raise SearchErrors::ResponseTooLarge if queries.last.include?("out body bb")
+
+      { "elements" => [candidate_of(route_element(id: 1))] }
+    })
+    assert_equal [1], routes_in(dense, cache: cache).pluck(:id)
+    assert_equal [1], routes_in(dense, cache: cache).pluck(:id)
+    assert_equal 2, queries.size
+    assert_nil cache.read(OverpassService::FAILOVER_KEY)
   end
 
   test "a query that fails quickly on both instances succeeds on the preferred one's second try" do
@@ -487,6 +504,38 @@ class OverpassServiceTest < ActiveSupport::TestCase
     assert_empty OverpassService.trails_for([-5], lat: 47.0, lon: -122.0, connections: [connection], cache: cache)
     assert_equal 2, queries.size
     assert_not cache.exist?("#{OverpassService::ROUTE_KEY}-5")
+  end
+
+  test "a trail across a tile's edge is one, whichever tiles list its pieces, and measured from all its ways" do
+    cache = ActiveSupport::Cache::MemoryStore.new
+    queries = []
+    # Way 100 crosses 47.5° north, between way 200 to its south and way 300 to its north.
+    across = path_way(100, nodes: [1, 2], latitude: 47.48, length: 0.04)
+    south, north = path_way(200, nodes: [3, 1], latitude: 47.4, length: 0.08), path_way(300, nodes: [2, 4], latitude: 47.52, length: 0.08)
+    connection = stub_connection(:post, lambda { |request|
+      query = URI.decode_www_form(request.body).to_h.fetch("data")
+      queries << query
+      named = query[/way\(id:([\d,]+)\)->\.named/, 1].to_s.split(",").map(&:to_i)
+      ways = if query.include?("out ids") then [across, south, north].select { |way| named.include?(way["id"]) }
+      elsif query.include?("relation.region(47.0,") then [across, south].map { |way| listed_way(way) }
+      else [across, north].map { |way| listed_way(way) }
+      end
+      { "elements" => ways }
+    })
+    found = stub_const(OverpassService, :TILES_PER_QUERY, 1) do
+      routes_in(connection, tiles: [[47.0, -122.0], [47.5, -122.0]], cache: cache)
+    end
+    assert_equal 2, queries.size
+    assert_equal [[-100, [100, 200, 300]]], found.map { |route| route.values_at(:id, :ways) }
+
+    # Measured from the pieces one tile listed, it's measured again once its other ways are known.
+    first = OverpassService.trails_for([-100], lat: 47.4, lon: -122.0, connections: [connection], cache: cache,
+      paths: { -100 => [100, 200] }).sole
+    whole = OverpassService.trails_for([-100], lat: 47.4, lon: -122.0, connections: [connection], cache: cache,
+      paths: { -100 => [100, 300] }).sole
+    assert_includes queries.last, "way(id:100,200,300)->.named;"
+    assert_equal [100, 200, 300], cache.read("#{OverpassService::ROUTE_KEY}-100")[:ways]
+    assert_in_delta first.length * 5 / 3, whole.length, 0.01
   end
 
   test "a named path is a little less promising than a hiking route alike" do

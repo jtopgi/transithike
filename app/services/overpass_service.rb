@@ -42,6 +42,9 @@ module OverpassService
   PATH_FILTER = (%(["highway"~"^(path|footway|bridleway)$"]["name"]["footway"!~"^(sidewalk|crossing)$"]) +
     %(["access"!~"^(private|no)$"]["foot"!~"^(private|no)$"])).freeze
   PATH_SUMMARY = "A trail mapped by OpenStreetMap contributors.".freeze
+  # Paths are listed this far beyond their tiles too, so a trail across a
+  # tile's edge is found whole, and the same, from either side.
+  PATH_MARGIN_DEGREES = 0.05
   # A hiking route someone mapped is likelier to be a hike worth the trip than
   # a named path, so paths are this much less promising.
   PATH_PROMISE = 0.5
@@ -223,7 +226,8 @@ module OverpassService
     end
     raise error if error && keys.values.none? { |key| found.key?(key) }
 
-    keys.values.filter_map { |key| found[key]&.dig(:routes) }.flatten(1).uniq { |route| route[:id] }
+    paths, routes = keys.values.filter_map { |key| found[key]&.dig(:routes) }.flatten(1).partition { |route| route[:ways] }
+    routes.uniq { |route| route[:id] } + joined_paths(paths)
   end
 
   def self.tile_key(tile)
@@ -231,10 +235,16 @@ module OverpassService
   end
 
   # The tiles' routes and named paths, in one query, kept as
-  # { tile key => { routes:, at: } }, when they were looked up.
+  # { tile key => { routes:, at: } }, when they were looked up. Where named
+  # paths are too many to list with the routes, as around Zürich, which has
+  # hiking routes aplenty, the tiles keep their routes alone.
   def self.fetch_tiles(tiles, connections, cache)
-    ways, relations = elements(tiles_query(tiles), connections, cache, timeout: LONG_QUERY_SECONDS)
-      .partition { |element| element.is_a?(Hash) && element["type"] == "way" }
+    found = begin
+      elements(tiles_query(tiles), connections, cache, timeout: LONG_QUERY_SECONDS)
+    rescue SearchErrors::ResponseTooLarge
+      elements(tiles_query(tiles, paths: false), connections, cache, timeout: LONG_QUERY_SECONDS)
+    end
+    ways, relations = found.partition { |element| element.is_a?(Hash) && element["type"] == "way" }
     routes = relations.filter_map { |element| candidate(element) } + path_candidates(ways)
     at = Time.current
     tiles.to_h do |south, west|
@@ -298,15 +308,21 @@ module OverpassService
     late.any? ? found.merge(cache.read_multi(*late)) : found
   end
 
-  def self.tiles_query(tiles)
-    region = [tiles.map(&:first).min, tiles.map(&:last).min,
-      tiles.map(&:first).max + TILE_DEGREES, tiles.map(&:last).max + TILE_DEGREES].join(",")
-    boxes = tiles.map { |south, west| "(#{south},#{west},#{south + TILE_DEGREES},#{west + TILE_DEGREES})" }
-    # Named paths come with the nodes they're joined by, but not the ways of the routes, which are routes already.
-    %([out:json][timeout:60];relation["type"="route"]["route"="hiking"](#{region})->.region;) +
-      "(#{boxes.map { |box| "relation.region#{box};" }.join});out tags bb;" \
-      "way(r.region)->.routed;way#{PATH_FILTER}(#{region})->.paths;" \
-      "((#{boxes.map { |box| "way.paths#{box};" }.join}); - .routed;);out body bb;"
+  def self.tiles_query(tiles, paths: true)
+    # A [south, west, north, east] box, margin degrees wider all around.
+    box = lambda do |south, west, north, east, margin = 0|
+      [south - margin, west - margin, north + margin, east + margin].map { |degrees| degrees.round(6) }.join(",")
+    end
+    region = [tiles.map(&:first).min, tiles.map(&:last).min, tiles.map(&:first).max + TILE_DEGREES, tiles.map(&:last).max + TILE_DEGREES]
+    corners = tiles.map { |south, west| [south, west, south + TILE_DEGREES, west + TILE_DEGREES] }
+    query = %([out:json][timeout:60];relation["type"="route"]["route"="hiking"](#{box.(*region)})->.region;) +
+      "(#{corners.map { |corner| "relation.region(#{box.(*corner)});" }.join});out tags bb;"
+    return query unless paths
+
+    # Named paths come with the nodes they're joined by, but not the ways of hiking routes, which are routes already.
+    wider = box.(*region, PATH_MARGIN_DEGREES)
+    query + %(relation["type"="route"]["route"="hiking"](#{wider});way(r)->.routed;way#{PATH_FILTER}(#{wider})->.paths;) +
+      "((#{corners.map { |corner| "way.paths(#{box.(*corner, PATH_MARGIN_DEGREES)});" }.join}); - .routed;);out body bb;"
   end
 
   # Candidates like #candidate's for the named paths among the ways, with the
@@ -317,21 +333,40 @@ module OverpassService
         way["nodes"].is_a?(Array) && way["bounds"].is_a?(Hash)
     end
     ways.group_by { |way| name(way["tags"]).downcase }.values.flat_map do |named|
-      leader = named.to_h { |way| [way["id"], way["id"]] }
-      find = lambda do |id|
-        id = leader[id] while leader[id] != id
-        id
-      end
-      first_way = {}
-      named.each do |way|
-        way["nodes"].each do |node|
-          other = first_way[node] ||= way["id"]
-          joined = [find.(way["id"]), find.(other)]
-          leader[joined.max] = joined.min
-        end
-      end
-      named.group_by { |way| find.(way["id"]) }.values.filter_map { |trail| path_candidate(trail) }
+      connected(named) { |way| way["nodes"] }.filter_map { |trail| path_candidate(trail) }
     end
+  end
+
+  # The named paths, those tiles list as pieces of one, as across a tile's
+  # edge, joined where they share a way.
+  def self.joined_paths(paths)
+    connected(paths) { |path| path[:ways] }.map do |pieces|
+      next pieces.first if pieces.size == 1
+
+      ways = pieces.flat_map { |piece| piece[:ways] }.uniq.sort
+      corners = pieces.map { |piece| piece[:bounds] }.transpose
+      corners = [corners[0].min, corners[1].min, corners[2].max, corners[3].max]
+      { id: -ways.first, name: pieces.first[:name], latitude: (corners[0] + corners[2]) / 2.0,
+        longitude: (corners[1] + corners[3]) / 2.0, bounds: corners, span: distance(*corners).round,
+        notable: pieces.any? { |piece| piece[:notable] }, ways: ways }
+    end
+  end
+
+  # The items, grouped where they share any of the keys the block gives for each.
+  def self.connected(items)
+    leader = (0...items.size).to_a
+    find = lambda do |index|
+      index = leader[index] while leader[index] != index
+      index
+    end
+    first = {}
+    items.each_with_index do |item, index|
+      yield(item).each do |key|
+        joined = [find.(index), find.(first[key] ||= index)]
+        leader[joined.max] = joined.min
+      end
+    end
+    items.each_index.group_by { |index| find.(index) }.values.map { |group| items.values_at(*group) }
   end
 
   def self.path_candidate(ways)
@@ -435,6 +470,14 @@ module OverpassService
     keys = ids.to_h { |id| [id, "#{ROUTE_KEY}#{id}"] }
     found = cache.read_multi(*keys.values)
     RouteStore.details(ids.reject { |id| found.key?(keys[id]) }).each { |id, details| found[keys[id]] = details }
+    # A named path measured from fewer of its ways than are known now is measured again, from them all.
+    paths = paths.slice(*ids).to_h do |id, ways|
+      measured = found[keys[id]]
+      next [id, ways] unless measured.is_a?(Hash) && (ways - Array(measured[:ways])).any?
+
+      found.delete(keys[id])
+      [id, (ways | Array(measured[:ways])).sort]
+    end
     missing = ids.reject { |id| found.key?(keys[id]) || (id.negative? && !paths.key?(id)) }
     if missing.any?
       id_of = keys.invert
@@ -698,6 +741,9 @@ module OverpassService
       begin
         connections.each_with_index do |connection, index|
           return request(connection, query)
+        rescue SearchErrors::ResponseTooLarge
+          # The other instance would list as much, so it isn't asked, and isn't preferred.
+          raise
         rescue SearchErrors::UpstreamError
           cache.write(FAILOVER_KEY, !cache.read(FAILOVER_KEY), expires_in: FAILOVER_TTL) if index.zero?
           raise if index == connections.size - 1

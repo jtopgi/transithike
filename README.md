@@ -123,11 +123,17 @@ test Overpass connectivity from your deployment before launching.
   crossings, private, or part of a hiking route are routes too
   (`OverpassService::PATH_FILTER`): each the ways of one name joined at a node,
   listed with their nodes but not their geometry (about 3 MB for four tiles
-  around the Issaquah Alps or Marin). A named path's id is the negative of its
-  first way's, its details are measured from its ways once a search picks it,
-  and its highlights found along them, and its OpenStreetMap link is to that
-  way. A mapped hiking route is likelier to be a hike worth the trip, so a
-  named path is half a point less promising.
+  around the Issaquah Alps or Marin), and 0.05° beyond the tiles, so a trail
+  across a tile's edge is found whole from either side. Pieces of one that
+  tiles list apart are joined where they share a way, and a path measured from
+  fewer of its ways than a search knows is measured again from them all. A
+  named path's id is the negative of its first way's, its details are measured
+  from its ways once a search picks it, and its highlights found along them,
+  and its OpenStreetMap link is to that way. A mapped hiking route is likelier
+  to be a hike worth the trip, so a named path is half a point less promising.
+  Where named paths are too many to list with the routes (over 8 MB), as around
+  Zürich, which has hiking routes aplenty, tiles keep their routes alone, and a
+  response that large isn't asked of the other instance.
 - The four quickest tiles are queried first, the rest four neighbors at a
   time, each query finding the routes of the region around its tiles once, then
   keeping those in the tiles (a tile's routes are left out when its query
