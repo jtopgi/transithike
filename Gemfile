@@ -30,7 +30,7 @@ gem 'faraday', '~> 2.14'
 gem 'solid_cache', '~> 1.0'
 
 group :development, :test do
-  gem 'brakeman', '~> 8.0', require: false
+  gem 'brakeman', '~> 8.1', require: false
   gem 'bundler-audit', '~> 0.9', require: false
 end
 
