@@ -679,6 +679,41 @@ Image tags are `<commit>-<run>-<attempt>`, one for each deployment, because the
 same commit is deployed again whenever the guides are rebuilt. Builds from
 before then are tagged with just the commit.
 
+### Suspending and resuming
+
+While the site isn't needed, it can cost nothing. Stopping the web app alone
+isn't enough: its plan is billed while it exists, and a stopped database starts
+itself again after 7 days. Instead, the web app is stopped on the Free plan,
+which keeps its address and settings. The database and registry are deleted,
+since everything in them is rebuilt: the cache, the hiking routes imported from
+the `routes-data` release, and the images. The Guides workflow is disabled,
+since its weekly run deploys. While suspended, a deploy from `master` fails at
+`az acr login`.
+
+```sh
+gh workflow disable guides.yml
+az webapp stop -n transithike -g rg-transithike
+az webapp config set -n transithike -g rg-transithike --always-on false
+az appservice plan update -n asp-transithike -g rg-transithike --sku F1
+az webapp config appsettings delete -n transithike -g rg-transithike --setting-names DATABASE_URL
+az postgres flexible-server delete -n <database> -g rg-transithike --yes
+az acr delete -n <registry> -g rg-transithike --yes
+```
+
+To resume, put the plan back on B1 first, because `bin/azure-setup` turns on
+Always On, which the Free plan lacks. The script then creates the database and
+registry again, with a new `DATABASE_URL`, and a deploy builds and pushes the
+image. The app prepares the database as it starts and imports the hiking routes
+a minute later.
+
+```sh
+az appservice plan update -n asp-transithike -g rg-transithike --sku B1
+bin/azure-setup
+az webapp start -n transithike -g rg-transithike
+gh workflow run ci.yml --ref master                                       # build and deploy
+gh workflow enable guides.yml
+```
+
 ## Visits
 
 TransitHike counts visits in [Application Insights](https://learn.microsoft.com/azure/azure-monitor/app/app-insights-overview)
