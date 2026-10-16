@@ -76,13 +76,13 @@ jobs:
           # What the build looked up of each hiking route, for the site's database.
           ROUTE_DATA: tmp/routes-${{ matrix.city }}.ndjson.gz
       # The city's guide, as built or, when the build was refused, as published, or none for a new city without one.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: guide-${{ matrix.city }}
           path: db/guides/${{ matrix.city }}.json
           if-no-files-found: ignore
           retention-days: 7
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: routes-${{ matrix.city }}
           path: tmp/routes-${{ matrix.city }}.ndjson.gz
