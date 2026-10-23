@@ -25,7 +25,7 @@ gem 'jbuilder', '~> 2.15'
 gem 'bootsnap', '~> 1.26', require: false
 
 # HTTP/REST API client library.
-gem 'faraday', '~> 2.14'
+gem 'faraday', '~> 2.15'
 # Keeps the cache in the database, so what searches find outlives deploys.
 gem 'solid_cache', '~> 1.0'
 
